@@ -232,6 +232,29 @@ export class CanvasRenderer {
         ctx.lineWidth = 40;
 
         rooms.forEach(room => {
+            // Skip corridor/lobby - no furniture
+            if (room.type === 'corridor') {
+                // Draw lobby pattern (subtle grid)
+                ctx.save();
+                ctx.strokeStyle = '#dddddd';
+                ctx.lineWidth = 10;
+                const step = 500;
+                for (let x = room.x; x < room.x + room.width; x += step) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, room.y);
+                    ctx.lineTo(x, room.y + room.height);
+                    ctx.stroke();
+                }
+                for (let y = room.y; y < room.y + room.height; y += step) {
+                    ctx.beginPath();
+                    ctx.moveTo(room.x, y);
+                    ctx.lineTo(room.x + room.width, y);
+                    ctx.stroke();
+                }
+                ctx.restore();
+                return;
+            }
+
             const padding = Math.min(room.width, room.height) * 0.1;
             const fw = room.width - padding * 2;
             const fh = room.height - padding * 2;

@@ -1,10 +1,9 @@
 /**
  * Geometry Agent
- * Intelligent room placement with architectural adjacency rules
- * - Bathroom adjacent to bedrooms
- * - Kitchen adjacent to dining
- * - Living room at front
- * - Private rooms (bedrooms) at back
+ * Grid-based room placement with central corridor
+ * - No gaps between rooms
+ * - Central corridor/lobby for circulation
+ * - Logical room arrangement
  */
 
 import {
@@ -18,37 +17,10 @@ import {
     getSharedEdge
 } from '../utils/geometry.js';
 
-// Room adjacency rules - which rooms should be near each other
-const ADJACENCY_RULES = {
-    'master_bedroom': ['bathroom'],
-    'bedroom': ['bathroom'],
-    'kitchen': ['dining_room', 'utility'],
-    'dining_room': ['kitchen', 'living_room'],
-    'living_room': ['dining_room', 'balcony'],
-    'bathroom': ['bedroom', 'master_bedroom'],
-    'parking': [],
-    'balcony': ['living_room', 'bedroom'],
-    'study': ['bedroom'],
-    'pooja_room': ['living_room', 'kitchen']
-};
-
-// Room zones - front (public) to back (private)
-const ROOM_ZONES = {
-    'parking': 0,      // Front - entrance area
-    'living_room': 1,  // Front - public
-    'dining_room': 1,  // Front - public
-    'kitchen': 2,      // Middle
-    'utility': 2,      // Middle
-    'pooja_room': 2,   // Middle
-    'study': 2,        // Middle
-    'bathroom': 3,     // Back area
-    'bedroom': 3,      // Back - private
-    'master_bedroom': 4, // Far back - most private
-    'balcony': 2       // Side/back
-};
+const CORRIDOR_WIDTH = 1200; // 1.2m corridor
 
 /**
- * Generate room layout with intelligent placement
+ * Generate room layout with corridor
  */
 export function generateLayout(planData) {
     const { plot, rooms } = planData;
@@ -60,33 +32,32 @@ export function generateLayout(planData) {
         height: plot.usableHeight
     };
 
-    // Sort rooms by zone (front to back placement)
-    const sortedRooms = [...rooms].sort((a, b) => {
-        const zoneA = ROOM_ZONES[a.type] ?? 3;
-        const zoneB = ROOM_ZONES[b.type] ?? 3;
-        if (zoneA !== zoneB) return zoneA - zoneB;
-        // Within same zone, larger rooms first
-        return (b.suggestedWidth * b.suggestedHeight) - (a.suggestedWidth * a.suggestedHeight);
-    });
+    // Group rooms by type for logical placement
+    const roomGroups = groupRooms(rooms);
 
-    // Scale rooms if needed to fit
-    const scaledRooms = scaleRoomsToFit(sortedRooms, bounds);
-
-    // Place rooms with adjacency awareness
-    const result = placeRoomsLogically(scaledRooms, bounds);
+    // Create layout with central corridor
+    const result = createGridLayout(roomGroups, bounds);
 
     if (!result.success) {
         return {
             success: false,
-            error: result.error || 'Unable to fit all rooms'
+            error: result.error || 'Unable to create layout'
         };
     }
 
-    // Generate doors
+    // Generate doors connecting to corridor
     const roomsWithDoors = result.rooms.map((room, i) => {
-        const door = generateDoorPosition(room, result.rooms, i, bounds);
+        const door = generateDoorPosition(room, result.rooms, result.corridor, bounds);
         return { ...room, door };
     });
+
+    // Add corridor as a room
+    if (result.corridor) {
+        roomsWithDoors.push({
+            ...result.corridor,
+            door: null
+        });
+    }
 
     return {
         success: true,
@@ -99,259 +70,283 @@ export function generateLayout(planData) {
 }
 
 /**
- * Scale rooms proportionally to fit available space
+ * Group rooms by category
  */
-function scaleRoomsToFit(rooms, bounds) {
-    const totalArea = rooms.reduce((sum, r) => sum + r.suggestedWidth * r.suggestedHeight, 0);
-    const availableArea = bounds.width * bounds.height;
+function groupRooms(rooms) {
+    const groups = {
+        public: [],      // Living, Dining
+        service: [],     // Kitchen, Utility, Parking
+        private: [],     // Bedrooms
+        wet: [],         // Bathrooms
+        other: []        // Balcony, Study, etc.
+    };
 
-    if (totalArea <= availableArea * 0.8) {
-        return rooms;
-    }
+    rooms.forEach(room => {
+        switch (room.type) {
+            case 'living_room':
+            case 'dining_room':
+                groups.public.push(room);
+                break;
+            case 'kitchen':
+            case 'utility':
+            case 'parking':
+                groups.service.push(room);
+                break;
+            case 'bedroom':
+            case 'master_bedroom':
+                groups.private.push(room);
+                break;
+            case 'bathroom':
+                groups.wet.push(room);
+                break;
+            default:
+                groups.other.push(room);
+        }
+    });
 
-    const scale = Math.sqrt((availableArea * 0.7) / totalArea);
-    return rooms.map(r => ({
-        ...r,
-        suggestedWidth: Math.max(2000, Math.floor(r.suggestedWidth * scale)),
-        suggestedHeight: Math.max(2000, Math.floor(r.suggestedHeight * scale))
-    }));
+    return groups;
 }
 
 /**
- * Place rooms with logical adjacency
+ * Create grid layout with central corridor
  */
-function placeRoomsLogically(rooms, bounds) {
+function createGridLayout(groups, bounds) {
     const placed = [];
-    const grid = createGrid(bounds);
-
-    // Divide bounds into zones (front, middle, back)
-    const zoneHeight = bounds.height / 3;
-    const zones = [
-        { y: bounds.y, h: zoneHeight },                    // Front
-        { y: bounds.y + zoneHeight, h: zoneHeight },       // Middle
-        { y: bounds.y + zoneHeight * 2, h: zoneHeight }    // Back
+    const allRooms = [
+        ...groups.public,
+        ...groups.service,
+        ...groups.private,
+        ...groups.wet,
+        ...groups.other
     ];
 
-    for (const room of rooms) {
-        let roomPlaced = false;
-        const zone = ROOM_ZONES[room.type] ?? 2;
+    // Calculate total area needed
+    const totalRoomArea = allRooms.reduce((sum, r) =>
+        sum + (r.suggestedWidth * r.suggestedHeight), 0);
+    const availableArea = bounds.width * bounds.height;
 
-        // Determine target Y range based on zone
-        let targetStartY, targetEndY;
-        if (zone <= 1) {
-            // Front zone
-            targetStartY = bounds.y;
-            targetEndY = bounds.y + bounds.height * 0.4;
-        } else if (zone === 2) {
-            // Middle zone
-            targetStartY = bounds.y + bounds.height * 0.3;
-            targetEndY = bounds.y + bounds.height * 0.7;
-        } else {
-            // Back zone (private)
-            targetStartY = bounds.y + bounds.height * 0.5;
-            targetEndY = bounds.y + bounds.height;
-        }
+    // Determine layout type based on aspect ratio
+    const isWide = bounds.width > bounds.height;
 
-        // Try to place adjacent to required rooms
-        const adjacentTo = ADJACENCY_RULES[room.type] || [];
-        for (const adjType of adjacentTo) {
-            if (roomPlaced) break;
+    // Create corridor in center
+    let corridor;
+    let leftZone, rightZone, topZone, bottomZone;
 
-            const adjRoom = placed.find(p => p.type === adjType);
-            if (adjRoom) {
-                const pos = findAdjacentPosition(room, adjRoom, bounds, placed);
-                if (pos) {
-                    placed.push({
-                        ...room,
-                        x: pos.x,
-                        y: pos.y,
-                        width: pos.width,
-                        height: pos.height
-                    });
-                    roomPlaced = true;
-                }
+    if (isWide) {
+        // Horizontal layout: corridor runs vertically in middle
+        const corridorX = bounds.x + (bounds.width - CORRIDOR_WIDTH) / 2;
+        corridor = {
+            type: 'corridor',
+            label: 'Lobby',
+            x: corridorX,
+            y: bounds.y,
+            width: CORRIDOR_WIDTH,
+            height: bounds.height,
+            color: '#f0f0f0'
+        };
+
+        leftZone = { x: bounds.x, y: bounds.y, width: corridorX - bounds.x, height: bounds.height };
+        rightZone = { x: corridorX + CORRIDOR_WIDTH, y: bounds.y, width: bounds.x + bounds.width - corridorX - CORRIDOR_WIDTH, height: bounds.height };
+    } else {
+        // Vertical layout: corridor runs horizontally in middle
+        const corridorY = bounds.y + (bounds.height - CORRIDOR_WIDTH) / 2;
+        corridor = {
+            type: 'corridor',
+            label: 'Lobby',
+            x: bounds.x,
+            y: corridorY,
+            width: bounds.width,
+            height: CORRIDOR_WIDTH,
+            color: '#f0f0f0'
+        };
+
+        topZone = { x: bounds.x, y: bounds.y, width: bounds.width, height: corridorY - bounds.y };
+        bottomZone = { x: bounds.x, y: corridorY + CORRIDOR_WIDTH, width: bounds.width, height: bounds.y + bounds.height - corridorY - CORRIDOR_WIDTH };
+    }
+
+    // Place rooms in zones
+    if (isWide) {
+        // Left side: Public + Service rooms
+        const leftRooms = [...groups.public, ...groups.service, ...groups.other];
+        placeRoomsInZone(leftRooms, leftZone, placed);
+
+        // Right side: Private + Wet rooms
+        const rightRooms = [...groups.private, ...groups.wet];
+        placeRoomsInZone(rightRooms, rightZone, placed);
+    } else {
+        // Top: Public + Service rooms (front of house)
+        const topRooms = [...groups.public, ...groups.service];
+        placeRoomsInZone(topRooms, topZone, placed);
+
+        // Bottom: Private + Wet + Other (back of house)
+        const bottomRooms = [...groups.private, ...groups.wet, ...groups.other];
+        placeRoomsInZone(bottomRooms, bottomZone, placed);
+    }
+
+    if (placed.length < allRooms.length) {
+        // Some rooms couldn't be placed, try without corridor
+        return createSimpleGridLayout(allRooms, bounds);
+    }
+
+    return { success: true, rooms: placed, corridor };
+}
+
+/**
+ * Place rooms in a zone using grid
+ */
+function placeRoomsInZone(rooms, zone, placed) {
+    if (rooms.length === 0) return;
+
+    // Calculate scale factor to fit rooms in zone
+    const totalArea = rooms.reduce((sum, r) => sum + r.suggestedWidth * r.suggestedHeight, 0);
+    const zoneArea = zone.width * zone.height;
+    const scale = Math.sqrt(zoneArea * 0.95 / totalArea);
+
+    // Sort by size (largest first)
+    const sortedRooms = [...rooms].sort((a, b) =>
+        (b.suggestedWidth * b.suggestedHeight) - (a.suggestedWidth * a.suggestedHeight)
+    );
+
+    // Calculate number of columns based on zone shape
+    const avgRoomWidth = sortedRooms.reduce((sum, r) => sum + r.suggestedWidth * scale, 0) / rooms.length;
+    const cols = Math.max(1, Math.round(zone.width / avgRoomWidth));
+    const colWidth = zone.width / cols;
+
+    let currentCol = 0;
+    let currentY = zone.y;
+    let colHeights = new Array(cols).fill(zone.y);
+
+    for (const room of sortedRooms) {
+        // Scale room to fit
+        let w = Math.floor(room.suggestedWidth * scale);
+        let h = Math.floor(room.suggestedHeight * scale);
+
+        // Ensure minimum size
+        w = Math.max(2000, Math.min(w, zone.width));
+        h = Math.max(1500, Math.min(h, zone.height / 2));
+
+        // Find column with most space
+        let bestCol = 0;
+        let minHeight = colHeights[0];
+        for (let c = 0; c < cols; c++) {
+            if (colHeights[c] < minHeight) {
+                minHeight = colHeights[c];
+                bestCol = c;
             }
         }
 
-        // If not placed by adjacency, place in target zone
-        if (!roomPlaced) {
-            const pos = findPositionInZone(room, bounds, placed, targetStartY, targetEndY);
-            if (pos) {
-                placed.push({
-                    ...room,
-                    x: pos.x,
-                    y: pos.y,
-                    width: pos.width,
-                    height: pos.height
-                });
-                roomPlaced = true;
+        // Check if room spans multiple columns
+        let roomCols = Math.ceil(w / colWidth);
+        roomCols = Math.min(roomCols, cols - bestCol);
+
+        const actualWidth = roomCols * colWidth;
+        const x = zone.x + bestCol * colWidth;
+        const y = colHeights[bestCol];
+
+        // Check if fits in zone
+        if (y + h <= zone.y + zone.height) {
+            placed.push({
+                ...room,
+                x: x,
+                y: y,
+                width: actualWidth,
+                height: h
+            });
+
+            // Update column heights
+            for (let c = bestCol; c < bestCol + roomCols; c++) {
+                colHeights[c] = y + h;
             }
         }
+    }
+}
 
-        // Fallback: find any available space
-        if (!roomPlaced) {
-            const pos = findAnyPosition(room, bounds, placed);
-            if (pos) {
-                placed.push({
-                    ...room,
-                    x: pos.x,
-                    y: pos.y,
-                    width: pos.width,
-                    height: pos.height
-                });
-                roomPlaced = true;
-            }
+/**
+ * Simple grid layout without corridor (fallback)
+ */
+function createSimpleGridLayout(rooms, bounds) {
+    const placed = [];
+
+    // Calculate grid dimensions
+    const n = rooms.length;
+    const cols = Math.ceil(Math.sqrt(n * bounds.width / bounds.height));
+    const rows = Math.ceil(n / cols);
+
+    const cellWidth = bounds.width / cols;
+    const cellHeight = bounds.height / rows;
+
+    // Sort rooms by priority
+    const sortedRooms = [...rooms].sort((a, b) => (a.priority || 5) - (b.priority || 5));
+
+    let i = 0;
+    for (let row = 0; row < rows && i < sortedRooms.length; row++) {
+        for (let col = 0; col < cols && i < sortedRooms.length; col++) {
+            const room = sortedRooms[i];
+
+            placed.push({
+                ...room,
+                x: bounds.x + col * cellWidth,
+                y: bounds.y + row * cellHeight,
+                width: cellWidth,
+                height: cellHeight
+            });
+
+            i++;
         }
+    }
 
-        if (!roomPlaced) {
+    return { success: true, rooms: placed, corridor: null };
+}
+
+/**
+ * Generate door position (opening to corridor or adjacent room)
+ */
+function generateDoorPosition(room, allRooms, corridor, bounds) {
+    const doorWidth = MIN_DOOR_WIDTH;
+
+    // If corridor exists, door opens to corridor
+    if (corridor) {
+        // Check which side of room faces corridor
+        if (room.x + room.width >= corridor.x && room.x + room.width <= corridor.x + corridor.width / 2) {
+            // Room is to the left of corridor
             return {
-                success: false,
-                error: `Cannot place ${room.label} - no suitable space found`
+                direction: 'east',
+                x: room.x + room.width,
+                y: room.y + (room.height - doorWidth) / 2,
+                width: doorWidth
+            };
+        } else if (room.x >= corridor.x + corridor.width / 2 && room.x <= corridor.x + corridor.width) {
+            // Room is to the right of corridor  
+            return {
+                direction: 'west',
+                x: room.x,
+                y: room.y + (room.height - doorWidth) / 2,
+                width: doorWidth
+            };
+        } else if (room.y + room.height >= corridor.y && room.y + room.height <= corridor.y + corridor.height / 2) {
+            // Room is above corridor
+            return {
+                direction: 'south',
+                x: room.x + (room.width - doorWidth) / 2,
+                y: room.y + room.height,
+                width: doorWidth
+            };
+        } else if (room.y >= corridor.y + corridor.height / 2 && room.y <= corridor.y + corridor.height) {
+            // Room is below corridor
+            return {
+                direction: 'north',
+                x: room.x + (room.width - doorWidth) / 2,
+                y: room.y,
+                width: doorWidth
             };
         }
     }
 
-    return { success: true, rooms: placed };
-}
+    // Default: find shared edge with another room
+    for (const other of allRooms) {
+        if (other === room) continue;
 
-/**
- * Find position adjacent to another room
- */
-function findAdjacentPosition(room, adjRoom, bounds, placed) {
-    const w = room.suggestedWidth;
-    const h = room.suggestedHeight;
-    const gap = WALL_THICKNESS;
-
-    // Try positions around the adjacent room
-    const positions = [
-        // Right of adjacent room
-        { x: adjRoom.x + adjRoom.width + gap, y: adjRoom.y, w, h },
-        // Left of adjacent room
-        { x: adjRoom.x - w - gap, y: adjRoom.y, w, h },
-        // Below adjacent room
-        { x: adjRoom.x, y: adjRoom.y + adjRoom.height + gap, w, h },
-        // Above adjacent room
-        { x: adjRoom.x, y: adjRoom.y - h - gap, w, h },
-    ];
-
-    // Also try rotated dimensions
-    if (getAspectRatio(h, w) <= MAX_ASPECT_RATIO) {
-        positions.push(
-            { x: adjRoom.x + adjRoom.width + gap, y: adjRoom.y, w: h, h: w },
-            { x: adjRoom.x - h - gap, y: adjRoom.y, w: h, h: w },
-            { x: adjRoom.x, y: adjRoom.y + adjRoom.height + gap, w: h, h: w },
-            { x: adjRoom.x, y: adjRoom.y - w - gap, w: h, h: w }
-        );
-    }
-
-    for (const pos of positions) {
-        if (isValidPosition(pos.x, pos.y, pos.w, pos.h, bounds, placed)) {
-            return { x: pos.x, y: pos.y, width: pos.w, height: pos.h };
-        }
-    }
-
-    return null;
-}
-
-/**
- * Find position within a Y zone
- */
-function findPositionInZone(room, bounds, placed, minY, maxY) {
-    const step = 250;
-    const orientations = [
-        { w: room.suggestedWidth, h: room.suggestedHeight },
-        { w: room.suggestedHeight, h: room.suggestedWidth }
-    ];
-
-    for (const orient of orientations) {
-        if (getAspectRatio(orient.w, orient.h) > MAX_ASPECT_RATIO) continue;
-
-        // Search within zone
-        for (let y = minY; y + orient.h <= maxY && y + orient.h <= bounds.y + bounds.height; y += step) {
-            for (let x = bounds.x; x + orient.w <= bounds.x + bounds.width; x += step) {
-                if (isValidPosition(x, y, orient.w, orient.h, bounds, placed)) {
-                    return { x, y, width: orient.w, height: orient.h };
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
-/**
- * Find any available position (fallback)
- */
-function findAnyPosition(room, bounds, placed) {
-    const step = 250;
-    const scales = [1, 0.9, 0.8, 0.7, 0.6];
-
-    for (const scale of scales) {
-        const w = Math.max(2000, Math.floor(room.suggestedWidth * scale));
-        const h = Math.max(2000, Math.floor(room.suggestedHeight * scale));
-
-        const orientations = [
-            { w, h },
-            { w: h, h: w }
-        ];
-
-        for (const orient of orientations) {
-            if (getAspectRatio(orient.w, orient.h) > MAX_ASPECT_RATIO) continue;
-
-            for (let y = bounds.y; y + orient.h <= bounds.y + bounds.height; y += step) {
-                for (let x = bounds.x; x + orient.w <= bounds.x + bounds.width; x += step) {
-                    if (isValidPosition(x, y, orient.w, orient.h, bounds, placed)) {
-                        return { x, y, width: orient.w, height: orient.h };
-                    }
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
-/**
- * Check if position is valid (within bounds and no overlap)
- */
-function isValidPosition(x, y, w, h, bounds, placed) {
-    // Check bounds
-    if (x < bounds.x || y < bounds.y) return false;
-    if (x + w > bounds.x + bounds.width) return false;
-    if (y + h > bounds.y + bounds.height) return false;
-
-    // Check overlap with placed rooms
-    const rect = { x, y, width: w, height: h };
-    for (const p of placed) {
-        if (rectanglesOverlap(rect, p)) return false;
-    }
-
-    return true;
-}
-
-/**
- * Create occupancy grid
- */
-function createGrid(bounds) {
-    const cellSize = 250;
-    const cols = Math.ceil(bounds.width / cellSize);
-    const rows = Math.ceil(bounds.height / cellSize);
-    return { cellSize, cols, rows };
-}
-
-/**
- * Generate door position
- */
-function generateDoorPosition(room, allRooms, roomIndex, bounds) {
-    const doorWidth = MIN_DOOR_WIDTH;
-
-    // Find shared edges with other rooms for internal doors
-    for (let i = 0; i < allRooms.length; i++) {
-        if (i === roomIndex) continue;
-
-        const other = allRooms[i];
         const shared = getSharedEdge(room, other);
-
         if (shared && shared.length >= doorWidth) {
             if (shared.direction === 'vertical') {
                 return {
@@ -371,24 +366,13 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         }
     }
 
-    // Default door positions based on room location
-    const edges = [];
-
-    if (room.y > bounds.y + 100) {
-        edges.push({ dir: 'south', x: room.x + (room.width - doorWidth) / 2, y: room.y });
-    }
-    if (room.y + room.height < bounds.y + bounds.height - 100) {
-        edges.push({ dir: 'north', x: room.x + (room.width - doorWidth) / 2, y: room.y + room.height });
-    }
-    if (room.x > bounds.x + 100) {
-        edges.push({ dir: 'west', x: room.x, y: room.y + (room.height - doorWidth) / 2 });
-    }
-    if (room.x + room.width < bounds.x + bounds.width - 100) {
-        edges.push({ dir: 'east', x: room.x + room.width, y: room.y + (room.height - doorWidth) / 2 });
-    }
-
-    const edge = edges[0] || { dir: 'south', x: room.x + (room.width - doorWidth) / 2, y: room.y };
-    return { direction: edge.dir, x: edge.x, y: edge.y, width: doorWidth };
+    // Default door on bottom edge
+    return {
+        direction: 'south',
+        x: room.x + (room.width - doorWidth) / 2,
+        y: room.y,
+        width: doorWidth
+    };
 }
 
 export function createErrorResponse(reason) {
