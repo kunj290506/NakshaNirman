@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description"
-    content="CAD Floor Plan Generator - Create construction-ready residential floor plans with intelligent AI agent and DXF export">
+    content="CAD Floor Plan Generator - AI-powered residential floor plan design with DXF export">
   <title>CAD Floor Plan Generator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,14 +28,14 @@
         <h1 class="header-title">CAD Floor Planner</h1>
       </div>
       <div class="header-actions">
-        <button class="btn btn-secondary" id="resetBtn" title="New Conversation">
+        <button class="btn btn-secondary" id="resetBtn" title="Start New Design">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
             <path d="M3 3v5h5" />
           </svg>
           New
         </button>
-        <button class="btn btn-primary" id="downloadBtn" disabled title="Download DXF">
+        <button class="btn btn-primary" id="downloadBtn" disabled title="Download DXF File">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="7,10 12,15 17,10" />
@@ -79,7 +79,7 @@
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <path d="M3 9h18M9 21V9M15 15h3M15 18h3" />
             </svg>
-            <p>Describe your house requirements to generate a floor plan</p>
+            <p>Your floor plan will appear here</p>
           </div>
         </div>
       </section>
@@ -87,7 +87,7 @@
       <!-- Resize Handle -->
       <div class="resize-handle" id="resizeHandle"></div>
 
-      <!-- Right Pane - AI Agent Chat -->
+      <!-- Right Pane - AI Agent -->
       <section class="pane pane-right" id="agentPane">
         <div class="pane-header">
           <div class="agent-header">
@@ -100,7 +100,7 @@
             </div>
             <div class="agent-info">
               <h2>Floor Plan Agent</h2>
-              <span class="agent-status">Ready to help</span>
+              <span class="agent-status">Online</span>
             </div>
           </div>
         </div>
@@ -118,18 +118,13 @@
                 </svg>
               </div>
               <div class="message-content">
-                <p>Hello! I am your Floor Plan Agent. I will help you design a construction-ready residential floor
-                  plan.</p>
-                <p>Please tell me your requirements. You can specify:</p>
-                <ul class="message-list">
-                  <li>Total area of your house (e.g., "100 sqm house")</li>
-                  <li>Rooms you need (e.g., "2 bedrooms of 12 sqm each")</li>
-                  <li>Or describe everything at once</li>
-                </ul>
+                <p>Hello! I am your Floor Plan Agent. I can help you design a construction-ready residential floor plan.
+                </p>
+                <p>Just tell me what you have in mind. For example, you could say:</p>
                 <div class="message-examples">
-                  <span class="example-chip">100 sqm house</span>
-                  <span class="example-chip">2 bedrooms, 1 kitchen, 1 bathroom</span>
-                  <span class="example-chip">living room 20 sqm</span>
+                  <span class="example-chip">I want a 100 sqm house</span>
+                  <span class="example-chip">2 bedrooms and 1 bathroom</span>
+                  <span class="example-chip">help</span>
                 </div>
               </div>
             </div>
@@ -139,8 +134,7 @@
         <!-- Chat Input -->
         <div class="chat-input-wrapper">
           <div class="chat-input-container">
-            <textarea id="chatInput" class="chat-input" placeholder="Describe your floor plan requirements..."
-              rows="1"></textarea>
+            <textarea id="chatInput" class="chat-input" placeholder="Type your message..." rows="1"></textarea>
             <button class="btn btn-primary btn-send" id="sendBtn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="m22 2-7 20-4-9-9-4 20-7z" />

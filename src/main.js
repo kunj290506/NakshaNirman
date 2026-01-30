@@ -1,25 +1,19 @@
 /**
  * CAD Floor Planner - Main Entry Point
- * Intelligent chat interface with natural language processing
+ * Intelligent conversational interface
  */
 
-// Import agents
-import { parseNaturalLanguage, validateRequirements } from './agents/requirementAgent.js';
+import { parseNaturalLanguage, validateRequirements, resetConversation } from './agents/requirementAgent.js';
 import { checkFeasibility } from './agents/planningAgent.js';
 import { generateLayout } from './agents/geometryAgent.js';
 import { generateDXF, downloadDXF } from './agents/cadAgent.js';
 
-// Import components
 import { CanvasRenderer } from './components/canvas.js';
 import { ChatInterface } from './components/chatInterface.js';
 import { SplitPane } from './components/splitPane.js';
 
-// Import state
 import { resetState } from './state.js';
 
-/**
- * Main application class
- */
 class FloorPlannerApp {
     constructor() {
         this.canvas = null;
@@ -76,54 +70,55 @@ class FloorPlannerApp {
     }
 
     async handleChatMessage(text) {
-        // Handle action commands from buttons
+        // Handle button actions
         if (text.startsWith('__action__:')) {
-            const action = text.replace('__action__:', '');
-            this.handleAction(action);
+            this.handleAction(text.replace('__action__:', ''));
             return;
         }
 
         this.chat.setLoading(true);
 
-        // Small delay for natural feel
-        await this.delay(400 + Math.random() * 300);
+        // Natural typing delay
+        await this.delay(300 + Math.random() * 400);
 
         try {
-            // Parse the user's message
-            const parseResult = parseNaturalLanguage(text, this.context);
+            // Process with intelligent agent
+            const result = parseNaturalLanguage(text, this.context);
 
-            // Update conversation context
-            this.context = parseResult.data;
+            // Update context
+            this.context = result.data;
 
-            // Handle different parse outcomes
-            if (parseResult.complete) {
-                // Requirements are complete - show summary with generate button
+            // Check if user wants to generate
+            if (result.wantsToGenerate) {
+                await this.generateFloorPlan();
+                return;
+            }
+
+            // Show agent response
+            if (result.complete) {
+                // Requirements complete - show with action buttons
                 const rooms = this.context.rooms.map(r => ({
                     ...r,
                     label: r.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
                 }));
 
-                this.chat.addMessage('agent', parseResult.response, {
+                this.chat.addMessage('agent', result.response, {
                     rooms: rooms,
                     totalArea: this.context.totalAreaSqm,
                     actions: [
                         { id: 'generate', label: 'Generate Floor Plan' },
-                        { id: 'modify', label: 'Modify Requirements' }
+                        { id: 'modify', label: 'Make Changes' }
                     ]
                 });
-            } else if (parseResult.wantsToGenerate && this.context.rooms && this.context.totalAreaSqm) {
-                // User confirmed - generate directly
-                this.generateFloorPlan();
             } else {
-                // Need more information or provide feedback
-                this.chat.addMessage('agent', parseResult.response);
+                // Still gathering requirements
+                this.chat.addMessage('agent', result.response);
             }
 
         } catch (error) {
-            console.error('Error processing message:', error);
+            console.error('Error:', error);
             this.chat.addMessage('agent',
-                "There was an error processing your request. Please try rephrasing your requirements.",
-                { error: error.message }
+                "I encountered an issue. Could you please rephrase that?"
             );
         } finally {
             this.chat.setLoading(false);
@@ -137,7 +132,7 @@ class FloorPlannerApp {
                 break;
             case 'modify':
                 this.chat.addMessage('agent',
-                    "What would you like to change?\n\n- To change room sizes, say something like \"make bedroom 15 sqm\"\n- To add rooms, say \"add 1 study room of 10 sqm\"\n- To change total area, say \"total area should be 120 sqm\""
+                    "What would you like to change? You can:\n\n- Adjust room sizes (e.g., \"make bedroom 15 sqm\")\n- Add rooms (e.g., \"add a study room\")\n- Remove rooms (e.g., \"remove the balcony\")\n- Change total area (e.g., \"total area 120 sqm\")"
                 );
                 break;
             case 'download':
@@ -151,69 +146,68 @@ class FloorPlannerApp {
 
     async generateFloorPlan() {
         this.chat.setLoading(true);
-        this.chat.addMessage('agent', 'Generating your floor plan. Please wait...');
+        this.chat.addMessage('agent', 'Processing your requirements and generating the floor plan...');
 
-        await this.delay(600);
+        await this.delay(500);
 
         try {
-            // Validate requirements
+            // Validate
             const validation = validateRequirements(this.context);
 
             if (!validation.success) {
                 this.chat.addMessage('agent',
-                    `There is an issue with your requirements:\n\n${validation.error}\n\nPlease correct this and try again.`
+                    `I cannot generate the floor plan yet:\n\n${validation.error}\n\nPlease provide the missing information.`
                 );
                 this.chat.setLoading(false);
                 return;
             }
 
-            // Check architectural feasibility
+            // Check feasibility
             const planResult = checkFeasibility(validation.data);
 
             if (!planResult.success) {
                 this.chat.addMessage('agent',
-                    `The floor plan is not feasible:\n\n${planResult.error}\n\nPlease adjust your requirements.`
+                    `The design is not feasible:\n\n${planResult.error}\n\nPlease adjust your requirements.`
                 );
                 this.chat.setLoading(false);
                 return;
             }
 
-            // Generate room layout
+            // Generate layout
             const layoutResult = generateLayout(planResult.data);
 
             if (!layoutResult.success) {
                 this.chat.addMessage('agent',
-                    `I could not fit all rooms in the available space:\n\n${layoutResult.error}\n\nTry increasing the total area or reducing room sizes.`
+                    `I could not fit all rooms:\n\n${layoutResult.error}\n\nTry increasing the total area or making some rooms smaller.`
                 );
                 this.chat.setLoading(false);
                 return;
             }
 
-            // Success - store data and render
+            // Success
             this.geometryData = layoutResult.data;
             this.dxfContent = generateDXF(this.geometryData);
 
-            // Update canvas
+            // Update UI
             this.canvas.setGeometry(this.geometryData);
             document.getElementById('canvasPlaceholder').classList.add('hidden');
             document.getElementById('downloadBtn').disabled = false;
 
-            // Show success message
             this.chat.addMessage('agent',
-                "Your floor plan has been generated successfully.\n\nYou can see the preview on the left side of the screen. Use the zoom controls to inspect the details.\n\nClick \"Download DXF\" to export the floor plan for use in AutoCAD or other CAD software.",
+                "Your floor plan is ready.\n\nThe preview is shown on the left. You can use the zoom controls to examine the details.\n\nWhen you are satisfied, download the DXF file to use in CAD software like AutoCAD.",
                 {
-                    success: 'Floor plan is ready',
+                    success: 'Floor plan generated successfully',
                     actions: [
-                        { id: 'download', label: 'Download DXF' },
+                        { id: 'download', label: 'Download DXF File' },
                         { id: 'new', label: 'Start New Design' }
                     ]
                 }
             );
 
         } catch (error) {
-            console.error('Error generating floor plan:', error);
+            console.error('Generation error:', error);
             this.chat.addMessage('agent',
-                `An error occurred while generating the floor plan:\n\n${error.message}\n\nPlease try again.`
+                `An error occurred: ${error.message}\n\nPlease try again or adjust your requirements.`
             );
         } finally {
             this.chat.setLoading(false);
@@ -224,6 +218,7 @@ class FloorPlannerApp {
         this.geometryData = null;
         this.dxfContent = null;
         this.context = {};
+        resetConversation();
 
         this.canvas.clear();
         document.getElementById('canvasPlaceholder').classList.remove('hidden');
@@ -231,7 +226,7 @@ class FloorPlannerApp {
 
         this.chat.reset();
         this.chat.addMessage('agent',
-            "Starting a new design. Please tell me your floor plan requirements.\n\nYou can specify the total area and the rooms you need."
+            "Starting fresh. Tell me about the house you want to design - the total area and what rooms you need."
         );
 
         resetState();
@@ -240,7 +235,7 @@ class FloorPlannerApp {
     handleDownload() {
         if (!this.dxfContent) {
             this.chat.addMessage('agent',
-                "There is no floor plan to download. Please generate a floor plan first."
+                "No floor plan has been generated yet. Please tell me your requirements first."
             );
             return;
         }
@@ -251,7 +246,7 @@ class FloorPlannerApp {
         downloadDXF(this.dxfContent, filename);
 
         this.chat.addMessage('agent',
-            `The file "${filename}" has been downloaded.\n\nYou can open this file in AutoCAD, LibreCAD, or any DXF-compatible software.`
+            `Downloaded: ${filename}\n\nThis file can be opened in AutoCAD, LibreCAD, DraftSight, or any DXF-compatible software.`
         );
     }
 
@@ -260,7 +255,6 @@ class FloorPlannerApp {
     }
 }
 
-// Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new FloorPlannerApp();
 });
