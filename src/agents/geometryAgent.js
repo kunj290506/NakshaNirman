@@ -1,26 +1,20 @@
 /**
  * Geometry Agent
- * Grid-based room placement with central corridor
- * - No gaps between rooms
- * - Central corridor/lobby for circulation
- * - Logical room arrangement
+ * Uses Real-World Reference Templates to generate floor plans
  */
 
 import {
     WALL_THICKNESS,
-    MIN_DOOR_WIDTH,
-    MAX_ASPECT_RATIO
+    MIN_DOOR_WIDTH
 } from '../utils/constants.js';
 import {
-    rectanglesOverlap,
-    getAspectRatio,
     getSharedEdge
 } from '../utils/geometry.js';
-
-const CORRIDOR_WIDTH = 1200; // 1.2m corridor
+import { FLOOR_PLAN_TEMPLATES } from '../data/floorPlanTemplates.js';
 
 /**
- * Generate room layout with corridor
+ * Geometry Agent
+ * Uses Real-World Reference Templates to generate floor plans
  */
 export function generateLayout(planData) {
     const { plot, rooms } = planData;
@@ -32,32 +26,79 @@ export function generateLayout(planData) {
         height: plot.usableHeight
     };
 
-    // Group rooms by type for logical placement
-    const roomGroups = groupRooms(rooms);
+    // 1. Analyze Requirements to find best Template
+    const bedroomCount = rooms.filter(r => r.type === 'bedroom' || r.type === 'master_bedroom').length;
 
-    // Create layout with central corridor
-    const result = createGridLayout(roomGroups, bounds);
+    let matchingTemplate = null;
 
-    if (!result.success) {
-        return {
-            success: false,
-            error: result.error || 'Unable to create layout'
-        };
+    if (bedroomCount >= 3) {
+        matchingTemplate = FLOOR_PLAN_TEMPLATES.find(t => t.id === '3bhk_modern_luxury');
+    } else {
+        matchingTemplate = FLOOR_PLAN_TEMPLATES.find(t => t.id === '2bhk_standard_type_a');
     }
 
-    // Generate doors connecting to corridor
-    const roomsWithDoors = result.rooms.map((room, i) => {
-        const door = generateDoorPosition(room, result.rooms, result.corridor, bounds);
-        return { ...room, door };
+    // Fallback if no specific template found (though we covered 2 and 3 BHK)
+    if (!matchingTemplate) matchingTemplate = FLOOR_PLAN_TEMPLATES[0];
+
+    // 2. Adapt Template to Plot
+    // We map the normalized coordinates (0-1) to valid bounds
+
+    const placedRooms = [];
+    const templateSlots = [...matchingTemplate.structure];
+
+    // We need to map "User Requested Rooms" to "Template Slots"
+    // Heuristic: Match by type exactly first, then fill empty slots
+
+    const requests = [...rooms];
+
+    templateSlots.forEach(slot => {
+        // Find a matching request
+        const matchIndex = requests.findIndex(r => r.type === slot.type);
+
+        let roomData = null;
+
+        if (matchIndex !== -1) {
+            // Found exact match (e.g., User wants Kitchen, Template has Kitchen slot)
+            roomData = requests[matchIndex];
+            requests.splice(matchIndex, 1); // Remove from requests
+        } else {
+            // Template has a slot (e.g. Utility) but user didn't ask for it
+            // We keep it as a "Bonus Room" or merge it?
+            // Let's keep it to maintain the "Real Layout" shape
+            roomData = { type: slot.type, label: slot.type.replace('_', ' ').toUpperCase() };
+        }
+
+        // Scale Coordinate
+        const x = bounds.x + (slot.x * bounds.width);
+        const y = bounds.y + (slot.y * bounds.height);
+        const w = slot.w * bounds.width;
+        const h = slot.h * bounds.height;
+
+        placedRooms.push({
+            ...roomData,
+            x: x,
+            y: y,
+            width: w,
+            height: h,
+            // Keep original properties if it was a real request, else defaults
+            ...roomData
+        });
     });
 
-    // Add corridor as a room
-    if (result.corridor) {
-        roomsWithDoors.push({
-            ...result.corridor,
-            door: null
-        });
-    }
+    // Handle "Leftover" requests (e.g. Parking, Puja) that weren't in template
+    // Ideally we should have a "Flex Zone" in templates, but for now we might skip or warn
+    // OR just place them in the 'Setback' area or override a generic slot
+
+    // 3. Generate Doors (Logic remains similar: verify adjacency)
+    const corridor = placedRooms.find(r => r.type === 'corridor');
+
+    const roomsWithDoors = placedRooms.map((room, i) => {
+        if (room.type === 'corridor') return { ...room, door: null }; // No door for the corridor itself usually
+
+        const target = corridor || placedRooms.find(r => r.type === 'living_room'); // Default to living
+        const door = generateDoorPosition(room, placedRooms, target, bounds); // Reuse existing door logic or simple edge check
+        return { ...room, door };
+    });
 
     return {
         success: true,
@@ -67,6 +108,60 @@ export function generateLayout(planData) {
             rooms: roomsWithDoors
         }
     };
+}
+
+/**
+ * Generate door position (Reused/Simplified)
+ */
+function generateDoorPosition(room, allRooms, target, bounds) {
+    const doorWidth = MIN_DOOR_WIDTH;
+
+    // Try to find shared edge with Target (Hall/Corridor)
+    if (target && target !== room) {
+        const shared = getSharedEdge(room, target);
+        if (shared && shared.length > doorWidth) {
+            if (shared.direction === 'vertical') {
+                return {
+                    direction: shared.x === room.x ? 'west' : 'east',
+                    x: shared.x,
+                    y: (shared.y1 + shared.y2) / 2 - doorWidth / 2,
+                    width: doorWidth
+                };
+            } else {
+                return {
+                    direction: shared.y === room.y ? 'south' : 'north',
+                    x: (shared.x1 + shared.x2) / 2 - doorWidth / 2,
+                    y: shared.y,
+                    width: doorWidth
+                };
+            }
+        }
+    }
+
+    // Default: internal edge check logic or just place on "inner" side
+    // Simplified: Place door on the side closest to center of house
+    const cx = bounds.x + bounds.width / 2;
+    const cy = bounds.y + bounds.height / 2;
+    const rcx = room.x + room.width / 2;
+    const rcy = room.y + room.height / 2;
+
+    if (Math.abs(cx - rcx) > Math.abs(cy - rcy)) {
+        // More horizontal offset -> Vertical Door (East/West)
+        return {
+            direction: rcx < cx ? 'east' : 'west',
+            x: rcx < cx ? room.x + room.width : room.x,
+            y: room.y + room.height / 2 - doorWidth / 2,
+            width: doorWidth
+        };
+    } else {
+        // Vertical offset -> Horizontal Door (North/South)
+        return {
+            direction: rcy < cy ? 'south' : 'north',
+            x: room.x + room.width / 2 - doorWidth / 2,
+            y: rcy < cy ? room.y + room.height : room.y,
+            width: doorWidth
+        };
+    }
 }
 
 /**
