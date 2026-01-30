@@ -1,6 +1,6 @@
 /**
  * CAD Floor Planner - Main Entry Point
- * Intelligent conversational interface
+ * Intelligent AI-powered floor plan generator
  */
 
 import { parseNaturalLanguage, validateRequirements, resetConversation } from './agents/requirementAgent.js';
@@ -12,6 +12,7 @@ import { CanvasRenderer } from './components/canvas.js';
 import { ChatInterface } from './components/chatInterface.js';
 import { SplitPane } from './components/splitPane.js';
 
+import { initAI, getStoredApiKey, storeApiKey, isAIAvailable } from './services/aiService.js';
 import { resetState } from './state.js';
 
 class FloorPlannerApp {
@@ -31,11 +32,23 @@ class FloorPlannerApp {
         this.init();
     }
 
-    init() {
+    async init() {
+        // Initialize AI if key exists
+        const apiKey = getStoredApiKey();
+        if (apiKey) {
+            initAI(apiKey);
+        }
+
         this.initCanvas();
         this.initChat();
         this.initSplitPane();
         this.initToolbar();
+        this.initAPIKeyModal();
+
+        // Show API key prompt if not configured
+        if (!apiKey) {
+            this.showAPIKeyModal();
+        }
 
         console.log('CAD Floor Planner initialized');
     }
@@ -67,6 +80,58 @@ class FloorPlannerApp {
     initToolbar() {
         document.getElementById('resetBtn').addEventListener('click', this.handleReset);
         document.getElementById('downloadBtn').addEventListener('click', this.handleDownload);
+
+        // Settings button for API key
+        const settingsBtn = document.getElementById('settingsBtn');
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', () => this.showAPIKeyModal());
+        }
+    }
+
+    initAPIKeyModal() {
+        const modal = document.getElementById('apiKeyModal');
+        const input = document.getElementById('apiKeyInput');
+        const saveBtn = document.getElementById('saveApiKeyBtn');
+        const skipBtn = document.getElementById('skipApiKeyBtn');
+        const closeBtn = document.getElementById('closeModalBtn');
+
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => {
+                const key = input.value.trim();
+                if (key) {
+                    storeApiKey(key);
+                    this.hideAPIKeyModal();
+                    this.chat.addMessage('agent', 'AI mode enabled! I can now understand complex requests. Try asking me anything about floor plans!');
+                }
+            });
+        }
+
+        if (skipBtn) {
+            skipBtn.addEventListener('click', () => {
+                this.hideAPIKeyModal();
+                this.chat.addMessage('agent', 'Running in basic mode. For smarter responses, add your Gemini API key in settings.');
+            });
+        }
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => this.hideAPIKeyModal());
+        }
+    }
+
+    showAPIKeyModal() {
+        const modal = document.getElementById('apiKeyModal');
+        if (modal) {
+            modal.classList.remove('hidden');
+            const existing = getStoredApiKey();
+            if (existing) {
+                document.getElementById('apiKeyInput').value = existing;
+            }
+        }
+    }
+
+    hideAPIKeyModal() {
+        const modal = document.getElementById('apiKeyModal');
+        if (modal) modal.classList.add('hidden');
     }
 
     async handleChatMessage(text) {
@@ -78,15 +143,12 @@ class FloorPlannerApp {
 
         this.chat.setLoading(true);
 
-        // Natural typing delay
-        await this.delay(300 + Math.random() * 400);
-
         try {
-            // Process with intelligent agent
-            const result = parseNaturalLanguage(text, this.context);
+            // Process with AI or fallback
+            const result = await parseNaturalLanguage(text, this.context);
 
             // Update context
-            this.context = result.data;
+            this.context = result.data || this.context;
 
             // Check if user wants to generate
             if (result.wantsToGenerate) {
@@ -96,8 +158,7 @@ class FloorPlannerApp {
 
             // Show agent response
             if (result.complete) {
-                // Requirements complete - show with action buttons
-                const rooms = this.context.rooms.map(r => ({
+                const rooms = (this.context.rooms || []).map(r => ({
                     ...r,
                     label: r.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
                 }));
@@ -111,15 +172,12 @@ class FloorPlannerApp {
                     ]
                 });
             } else {
-                // Still gathering requirements
                 this.chat.addMessage('agent', result.response);
             }
 
         } catch (error) {
             console.error('Error:', error);
-            this.chat.addMessage('agent',
-                "I encountered an issue. Could you please rephrase that?"
-            );
+            this.chat.addMessage('agent', 'Something went wrong. Please try again.');
         } finally {
             this.chat.setLoading(false);
         }
@@ -132,7 +190,7 @@ class FloorPlannerApp {
                 break;
             case 'modify':
                 this.chat.addMessage('agent',
-                    "What would you like to change? You can:\n\n- Adjust room sizes (e.g., \"make bedroom 15 sqm\")\n- Add rooms (e.g., \"add a study room\")\n- Remove rooms (e.g., \"remove the balcony\")\n- Change total area (e.g., \"total area 120 sqm\")"
+                    'What would you like to change? You can:\n- Adjust room sizes\n- Add or remove rooms\n- Change total area'
                 );
                 break;
             case 'download':
@@ -146,18 +204,14 @@ class FloorPlannerApp {
 
     async generateFloorPlan() {
         this.chat.setLoading(true);
-        this.chat.addMessage('agent', 'Processing your requirements and generating the floor plan...');
-
-        await this.delay(500);
+        this.chat.addMessage('agent', 'Generating your floor plan...');
 
         try {
             // Validate
             const validation = validateRequirements(this.context);
 
             if (!validation.success) {
-                this.chat.addMessage('agent',
-                    `I cannot generate the floor plan yet:\n\n${validation.error}\n\nPlease provide the missing information.`
-                );
+                this.chat.addMessage('agent', `Cannot generate: ${validation.error}`);
                 this.chat.setLoading(false);
                 return;
             }
@@ -166,9 +220,7 @@ class FloorPlannerApp {
             const planResult = checkFeasibility(validation.data);
 
             if (!planResult.success) {
-                this.chat.addMessage('agent',
-                    `The design is not feasible:\n\n${planResult.error}\n\nPlease adjust your requirements.`
-                );
+                this.chat.addMessage('agent', `Design issue: ${planResult.error}`);
                 this.chat.setLoading(false);
                 return;
             }
@@ -177,9 +229,7 @@ class FloorPlannerApp {
             const layoutResult = generateLayout(planResult.data);
 
             if (!layoutResult.success) {
-                this.chat.addMessage('agent',
-                    `I could not fit all rooms:\n\n${layoutResult.error}\n\nTry increasing the total area or making some rooms smaller.`
-                );
+                this.chat.addMessage('agent', `Layout issue: ${layoutResult.error}`);
                 this.chat.setLoading(false);
                 return;
             }
@@ -194,21 +244,19 @@ class FloorPlannerApp {
             document.getElementById('downloadBtn').disabled = false;
 
             this.chat.addMessage('agent',
-                "Your floor plan is ready.\n\nThe preview is shown on the left. You can use the zoom controls to examine the details.\n\nWhen you are satisfied, download the DXF file to use in CAD software like AutoCAD.",
+                'Your floor plan is ready! Check the preview on the left.\n\nThe layout includes a central lobby connecting all rooms.',
                 {
-                    success: 'Floor plan generated successfully',
+                    success: 'Floor plan generated',
                     actions: [
-                        { id: 'download', label: 'Download DXF File' },
-                        { id: 'new', label: 'Start New Design' }
+                        { id: 'download', label: 'Download DXF' },
+                        { id: 'new', label: 'New Design' }
                     ]
                 }
             );
 
         } catch (error) {
             console.error('Generation error:', error);
-            this.chat.addMessage('agent',
-                `An error occurred: ${error.message}\n\nPlease try again or adjust your requirements.`
-            );
+            this.chat.addMessage('agent', `Error: ${error.message}`);
         } finally {
             this.chat.setLoading(false);
         }
@@ -225,33 +273,21 @@ class FloorPlannerApp {
         document.getElementById('downloadBtn').disabled = true;
 
         this.chat.reset();
-        this.chat.addMessage('agent',
-            "Starting fresh. Tell me about the house you want to design - the total area and what rooms you need."
-        );
+        this.chat.addMessage('agent', 'Starting fresh. Tell me about your dream house!');
 
         resetState();
     }
 
     handleDownload() {
         if (!this.dxfContent) {
-            this.chat.addMessage('agent',
-                "No floor plan has been generated yet. Please tell me your requirements first."
-            );
+            this.chat.addMessage('agent', 'No floor plan to download. Generate one first!');
             return;
         }
 
-        const timestamp = new Date().toISOString().slice(0, 10);
-        const filename = `floor_plan_${timestamp}.dxf`;
-
+        const filename = `floor_plan_${new Date().toISOString().slice(0, 10)}.dxf`;
         downloadDXF(this.dxfContent, filename);
 
-        this.chat.addMessage('agent',
-            `Downloaded: ${filename}\n\nThis file can be opened in AutoCAD, LibreCAD, DraftSight, or any DXF-compatible software.`
-        );
-    }
-
-    delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        this.chat.addMessage('agent', `Downloaded: ${filename}\n\nOpen in AutoCAD or any DXF viewer.`);
     }
 }
 

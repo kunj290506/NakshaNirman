@@ -121,7 +121,17 @@
                 <p>Hello! I am your Floor Plan Agent. I can help you design a construction-ready residential floor plan.
                 </p>
                 <p>Just tell me what you have in mind. For example, you could say:</p>
-                <div class="message-examples">
+                <div class="flex items-center space-x-2">
+                  <button id="settingsBtn" class="p-2 text-gray-500 hover:bg-gray-100 rounded-full" title="AI Settings">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                      </path>
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                  </button>
+                  <!-- Theme Toggle -->
                   <span class="example-chip">I want a 100 sqm house</span>
                   <span class="example-chip">2 bedrooms and 1 bathroom</span>
                   <span class="example-chip">help</span>
@@ -145,6 +155,26 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- API Key Modal -->
+  <div id="apiKeyModal" class="hidden fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-2xl p-6 w-[400px]">
+      <h2 class="text-xl font-bold mb-4">Enable AI Intelligence</h2>
+      <p class="text-gray-600 mb-4 text-sm">
+        To make the agent truly intelligent (like ChatGPT), enter your free Google Gemini API key.
+      </p>
+      <input type="text" id="apiKeyInput" placeholder="Enter Gemini API Key"
+        class="w-full px-4 py-2 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <div class="flex justify-between gap-3">
+        <button id="skipApiKeyBtn" class="px-4 py-2 text-gray-500 hover:text-gray-700">Skip for now</button>
+        <button id="saveApiKeyBtn" class="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Enable AI</button>
+      </div>
+      <p class="mt-4 text-xs text-center text-gray-500">
+        Don't have a key? <a href="https://aistudio.google.com/app/apikey" target="_blank"
+          class="text-blue-500 underline">Get one for free</a>
+      </p>
+    </div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
