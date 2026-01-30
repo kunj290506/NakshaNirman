@@ -1,6 +1,7 @@
 /**
  * Geometry Agent
- * Generates room coordinates using bin-packing algorithm
+ * Generates room coordinates using adaptive bin-packing algorithm
+ * Automatically adjusts room sizes to fit available space
  */
 
 import {
@@ -10,7 +11,6 @@ import {
 } from '../utils/constants.js';
 import {
     rectanglesOverlap,
-    isWithinBounds,
     getAspectRatio,
     getSharedEdge
 } from '../utils/geometry.js';
@@ -31,9 +31,23 @@ export function generateLayout(planData) {
         height: plot.usableHeight
     };
 
-    // Use a simple row-based bin packing algorithm
-    const placedRooms = [];
-    const result = packRooms(rooms, bounds, placedRooms);
+    // Calculate total requested area vs available
+    const totalRequestedArea = rooms.reduce((sum, r) => sum + (r.suggestedWidth * r.suggestedHeight), 0);
+    const availableArea = bounds.width * bounds.height;
+
+    // If rooms need more space than available, scale them down
+    let roomsToPlace = rooms;
+    if (totalRequestedArea > availableArea * 0.85) {
+        const scaleFactor = Math.sqrt((availableArea * 0.75) / totalRequestedArea);
+        roomsToPlace = rooms.map(room => ({
+            ...room,
+            suggestedWidth: Math.max(Math.floor(room.suggestedWidth * scaleFactor), 2000),
+            suggestedHeight: Math.max(Math.floor(room.suggestedHeight * scaleFactor), 2000)
+        }));
+    }
+
+    // Use adaptive bin packing
+    const result = adaptivePackRooms(roomsToPlace, bounds);
 
     if (!result.success) {
         return {
@@ -62,90 +76,112 @@ export function generateLayout(planData) {
 }
 
 /**
- * Pack rooms into available space using row-based algorithm
- * @param {Array} rooms - Rooms to place (sorted by priority)
- * @param {Object} bounds - Available area bounds
- * @param {Array} placedRooms - Already placed rooms
- * @returns {Object} {success: boolean, rooms?: Array, error?: string}
+ * Adaptive room packing - tries multiple strategies
  */
-function packRooms(rooms, bounds, placedRooms = []) {
-    const placed = [...placedRooms];
+function adaptivePackRooms(rooms, bounds) {
+    // Strategy 1: Try with current sizes
+    let result = gridPackRooms(rooms, bounds);
+    if (result.success) return result;
 
-    // Track available rows
-    let currentRowY = bounds.y;
-    let currentRowX = bounds.x;
-    let currentRowHeight = 0;
+    // Strategy 2: Reduce all rooms by 10%
+    const scaled90 = scaleRooms(rooms, 0.9);
+    result = gridPackRooms(scaled90, bounds);
+    if (result.success) return result;
+
+    // Strategy 3: Reduce all rooms by 20%
+    const scaled80 = scaleRooms(rooms, 0.8);
+    result = gridPackRooms(scaled80, bounds);
+    if (result.success) return result;
+
+    // Strategy 4: Reduce all rooms by 30%
+    const scaled70 = scaleRooms(rooms, 0.7);
+    result = gridPackRooms(scaled70, bounds);
+    if (result.success) return result;
+
+    // Strategy 5: Use minimum viable sizes
+    const minSized = rooms.map(room => ({
+        ...room,
+        suggestedWidth: Math.max(2500, room.suggestedWidth * 0.6),
+        suggestedHeight: Math.max(2000, room.suggestedHeight * 0.6)
+    }));
+    result = gridPackRooms(minSized, bounds);
+    if (result.success) return result;
+
+    // All strategies failed
+    return { success: false, error: result.error };
+}
+
+/**
+ * Scale rooms by a factor
+ */
+function scaleRooms(rooms, factor) {
+    return rooms.map(room => ({
+        ...room,
+        suggestedWidth: Math.max(2000, Math.floor(room.suggestedWidth * factor)),
+        suggestedHeight: Math.max(2000, Math.floor(room.suggestedHeight * factor))
+    }));
+}
+
+/**
+ * Grid-based room packing - more efficient than row-based
+ */
+function gridPackRooms(rooms, bounds) {
+    const placed = [];
+    const grid = createOccupancyGrid(bounds, 250); // 250mm grid cells
 
     for (const room of rooms) {
         let roomPlaced = false;
 
-        // Try current position in row
-        const placement = {
-            ...room,
-            x: currentRowX,
-            y: currentRowY,
-            width: room.suggestedWidth,
-            height: room.suggestedHeight
-        };
+        // Try both orientations
+        const orientations = [
+            { w: room.suggestedWidth, h: room.suggestedHeight },
+            { w: room.suggestedHeight, h: room.suggestedWidth }
+        ];
 
-        // Check if room fits in current row
-        if (currentRowX + room.suggestedWidth <= bounds.x + bounds.width &&
-            currentRowY + room.suggestedHeight <= bounds.y + bounds.height) {
+        for (const orient of orientations) {
+            if (roomPlaced) break;
 
-            // Check for overlaps
-            let hasOverlap = false;
-            for (const p of placed) {
-                if (rectanglesOverlap(placement, p)) {
-                    hasOverlap = true;
-                    break;
-                }
-            }
+            // Skip if aspect ratio is too extreme
+            if (getAspectRatio(orient.w, orient.h) > MAX_ASPECT_RATIO) continue;
 
-            if (!hasOverlap) {
+            // Find first free position
+            const pos = findFreePosition(grid, bounds, orient.w, orient.h, placed);
+            if (pos) {
+                const placement = {
+                    ...room,
+                    x: pos.x,
+                    y: pos.y,
+                    width: orient.w,
+                    height: orient.h
+                };
                 placed.push(placement);
-                currentRowX += room.suggestedWidth + WALL_THICKNESS;
-                currentRowHeight = Math.max(currentRowHeight, room.suggestedHeight);
+                markOccupied(grid, placement, bounds);
                 roomPlaced = true;
             }
         }
 
-        // If not placed, try new row
+        // Try smaller sizes if still not placed
         if (!roomPlaced) {
-            currentRowY += currentRowHeight + WALL_THICKNESS;
-            currentRowX = bounds.x;
-            currentRowHeight = room.suggestedHeight;
+            const smallerSizes = [0.8, 0.7, 0.6];
+            for (const scale of smallerSizes) {
+                if (roomPlaced) break;
 
-            const newPlacement = {
-                ...room,
-                x: currentRowX,
-                y: currentRowY,
-                width: room.suggestedWidth,
-                height: room.suggestedHeight
-            };
+                const w = Math.max(2000, Math.floor(room.suggestedWidth * scale));
+                const h = Math.max(2000, Math.floor(room.suggestedHeight * scale));
 
-            // Check if new row position is valid
-            if (newPlacement.y + newPlacement.height <= bounds.y + bounds.height) {
-                placed.push(newPlacement);
-                currentRowX += room.suggestedWidth + WALL_THICKNESS;
-                roomPlaced = true;
-            }
-        }
-
-        // If still not placed, try alternative dimensions (rotate)
-        if (!roomPlaced) {
-            const rotatedPlacement = tryRotatedPlacement(room, bounds, placed, currentRowY);
-            if (rotatedPlacement) {
-                placed.push(rotatedPlacement);
-                roomPlaced = true;
-            }
-        }
-
-        // If all attempts fail, try to find any free space
-        if (!roomPlaced) {
-            const freePlacement = findFreeSpace(room, bounds, placed);
-            if (freePlacement) {
-                placed.push(freePlacement);
-                roomPlaced = true;
+                const pos = findFreePosition(grid, bounds, w, h, placed);
+                if (pos) {
+                    const placement = {
+                        ...room,
+                        x: pos.x,
+                        y: pos.y,
+                        width: w,
+                        height: h
+                    };
+                    placed.push(placement);
+                    markOccupied(grid, placement, bounds);
+                    roomPlaced = true;
+                }
             }
         }
 
@@ -157,45 +193,59 @@ function packRooms(rooms, bounds, placedRooms = []) {
         }
     }
 
+    return { success: true, rooms: placed };
+}
+
+/**
+ * Create occupancy grid for efficient placement
+ */
+function createOccupancyGrid(bounds, cellSize) {
+    const cols = Math.ceil(bounds.width / cellSize);
+    const rows = Math.ceil(bounds.height / cellSize);
     return {
-        success: true,
-        rooms: placed
+        cells: Array(rows).fill(null).map(() => Array(cols).fill(false)),
+        cellSize,
+        cols,
+        rows,
+        offsetX: bounds.x,
+        offsetY: bounds.y
     };
 }
 
 /**
- * Try placing room with rotated dimensions
+ * Find free position in grid
  */
-function tryRotatedPlacement(room, bounds, placed, startY) {
-    const rotatedWidth = room.suggestedHeight;
-    const rotatedHeight = room.suggestedWidth;
+function findFreePosition(grid, bounds, width, height, placed) {
+    const cellW = Math.ceil(width / grid.cellSize);
+    const cellH = Math.ceil(height / grid.cellSize);
 
-    // Check aspect ratio still valid after rotation
-    if (getAspectRatio(rotatedWidth, rotatedHeight) > MAX_ASPECT_RATIO) {
-        return null;
-    }
-
-    // Try at various positions
-    for (let y = bounds.y; y + rotatedHeight <= bounds.y + bounds.height; y += 500) {
-        for (let x = bounds.x; x + rotatedWidth <= bounds.x + bounds.width; x += 500) {
-            const placement = {
-                ...room,
-                x,
-                y,
-                width: rotatedWidth,
-                height: rotatedHeight
-            };
-
-            let hasOverlap = false;
-            for (const p of placed) {
-                if (rectanglesOverlap(placement, p)) {
-                    hasOverlap = true;
-                    break;
+    for (let row = 0; row <= grid.rows - cellH; row++) {
+        for (let col = 0; col <= grid.cols - cellW; col++) {
+            // Check if all cells are free
+            let allFree = true;
+            for (let r = row; r < row + cellH && allFree; r++) {
+                for (let c = col; c < col + cellW && allFree; c++) {
+                    if (grid.cells[r][c]) allFree = false;
                 }
             }
 
-            if (!hasOverlap) {
-                return placement;
+            if (allFree) {
+                const x = grid.offsetX + col * grid.cellSize;
+                const y = grid.offsetY + row * grid.cellSize;
+
+                // Verify no overlap with placed rooms
+                const rect = { x, y, width, height };
+                let hasOverlap = false;
+                for (const p of placed) {
+                    if (rectanglesOverlap(rect, p)) {
+                        hasOverlap = true;
+                        break;
+                    }
+                }
+
+                if (!hasOverlap && x + width <= bounds.x + bounds.width && y + height <= bounds.y + bounds.height) {
+                    return { x, y };
+                }
             }
         }
     }
@@ -204,46 +254,23 @@ function tryRotatedPlacement(room, bounds, placed, startY) {
 }
 
 /**
- * Find any free space for a room
+ * Mark cells as occupied
  */
-function findFreeSpace(room, bounds, placed) {
-    const stepSize = 500; // 500mm steps
+function markOccupied(grid, room, bounds) {
+    const startCol = Math.floor((room.x - grid.offsetX) / grid.cellSize);
+    const startRow = Math.floor((room.y - grid.offsetY) / grid.cellSize);
+    const endCol = Math.ceil((room.x + room.width - grid.offsetX) / grid.cellSize);
+    const endRow = Math.ceil((room.y + room.height - grid.offsetY) / grid.cellSize);
 
-    // Try original dimensions
-    for (let y = bounds.y; y + room.suggestedHeight <= bounds.y + bounds.height; y += stepSize) {
-        for (let x = bounds.x; x + room.suggestedWidth <= bounds.x + bounds.width; x += stepSize) {
-            const placement = {
-                ...room,
-                x,
-                y,
-                width: room.suggestedWidth,
-                height: room.suggestedHeight
-            };
-
-            let hasOverlap = false;
-            for (const p of placed) {
-                if (rectanglesOverlap(placement, p)) {
-                    hasOverlap = true;
-                    break;
-                }
-            }
-
-            if (!hasOverlap) {
-                return placement;
-            }
+    for (let r = Math.max(0, startRow); r < Math.min(grid.rows, endRow); r++) {
+        for (let c = Math.max(0, startCol); c < Math.min(grid.cols, endCol); c++) {
+            grid.cells[r][c] = true;
         }
     }
-
-    return null;
 }
 
 /**
  * Generate door position for a room
- * @param {Object} room - Room with placement
- * @param {Array} allRooms - All rooms
- * @param {number} roomIndex - Current room index
- * @param {Object} bounds - Plot bounds
- * @returns {Object} Door position {x, y, width, direction}
  */
 function generateDoorPosition(room, allRooms, roomIndex, bounds) {
     const doorWidth = MIN_DOOR_WIDTH;
@@ -251,8 +278,7 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
     // Find potential door positions (edges not on outer walls)
     const edges = [];
 
-    // Check each edge
-    // Bottom edge
+    // Check each edge - prefer internal edges
     if (room.y > bounds.y + 100) {
         edges.push({
             direction: 'south',
@@ -262,7 +288,6 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         });
     }
 
-    // Top edge
     if (room.y + room.height < bounds.y + bounds.height - 100) {
         edges.push({
             direction: 'north',
@@ -272,7 +297,6 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         });
     }
 
-    // Left edge
     if (room.x > bounds.x + 100) {
         edges.push({
             direction: 'west',
@@ -282,7 +306,6 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         });
     }
 
-    // Right edge
     if (room.x + room.width < bounds.x + bounds.width - 100) {
         edges.push({
             direction: 'east',
@@ -292,7 +315,7 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         });
     }
 
-    // Prefer edges that are adjacent to other rooms
+    // Prefer edges adjacent to other rooms
     for (const edge of edges) {
         for (let i = 0; i < allRooms.length; i++) {
             if (i === roomIndex) continue;
@@ -300,7 +323,6 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
             const other = allRooms[i];
             const shared = getSharedEdge(room, other);
             if (shared) {
-                // Place door on shared edge
                 if (shared.direction === 'vertical') {
                     return {
                         direction: edge.x < room.x + room.width / 2 ? 'west' : 'east',
@@ -320,7 +342,7 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
         }
     }
 
-    // Default to first available edge
+    // Default to first available edge or south
     return edges[0] || {
         direction: 'south',
         x: room.x + (room.width - doorWidth) / 2,
@@ -331,8 +353,6 @@ function generateDoorPosition(room, allRooms, roomIndex, bounds) {
 
 /**
  * Create error response
- * @param {string} reason - Error reason
- * @returns {Object} Error response JSON
  */
 export function createErrorResponse(reason) {
     return {
