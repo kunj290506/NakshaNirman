@@ -2,15 +2,13 @@
 
 A VS Code-like web application for designing construction-ready residential floor plans using an intelligent AI chat agent.
 
-![Floor Plan Generator](https://img.shields.io/badge/CAD-Floor%20Plan%20Generator-blue)
-
 ## Features
 
-- 🤖 **AI Chat Agent** - Natural language interface like ChatGPT
-- 🏠 **Smart Room Placement** - Bin-packing algorithm for optimal layouts
-- 📐 **Architectural Constraints** - 230mm walls, 900mm corridors, proper aspect ratios
-- 📥 **DXF Export** - AutoCAD-compatible floor plans
-- 🎨 **Light Theme UI** - Professional, modern design
+- **AI Chat Agent** - Natural language interface for describing requirements
+- **Smart Room Placement** - Bin-packing algorithm for optimal layouts
+- **Architectural Constraints** - 230mm walls, 900mm corridors, proper aspect ratios
+- **DXF Export** - AutoCAD-compatible floor plans
+- **Light Theme UI** - Professional, modern design
 
 ## Quick Start
 
@@ -26,13 +24,14 @@ Open http://localhost:5173 in your browser.
 
 ## Usage
 
-Simply chat with the agent:
+Simply chat with the agent naturally:
 
-- *"I need a 100 sqm house"*
-- *"2 bedrooms of 12 sqm, 1 kitchen, 1 bathroom"*
-- *"living room 20 sqm, master bedroom 16 sqm"*
+- "I want a 100 sqm house"
+- "2 bedrooms of 12 sqm, 1 kitchen, 1 bathroom"
+- "living room 20 sqm, master bedroom 16 sqm"
+- "help" - for guidance
 
-The agent will parse your requirements, show a summary, and generate the floor plan.
+The agent understands greetings, questions, and modifications too.
 
 ## Tech Stack
 
