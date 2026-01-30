@@ -1,6 +1,6 @@
 /**
- * Chat Interface Component (LLM Style)
- * Handles natural language conversation for floor plan requirements
+ * Chat Interface Component
+ * Handles conversation with the floor plan agent
  */
 
 import { ROOM_TYPES } from '../utils/constants.js';
@@ -10,19 +10,16 @@ export class ChatInterface {
     this.container = containerElement;
     this.onMessage = onMessage;
 
-    // Cache DOM elements
     this.messagesContainer = document.getElementById('chatMessages');
     this.chatContainer = document.getElementById('chatContainer');
     this.chatInput = document.getElementById('chatInput');
     this.sendBtn = document.getElementById('sendBtn');
 
-    // Bind methods
     this.sendMessage = this.sendMessage.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleInput = this.handleInput.bind(this);
     this.handleExampleClick = this.handleExampleClick.bind(this);
 
-    // Set up event listeners
     this.setupEventListeners();
   }
 
@@ -31,7 +28,6 @@ export class ChatInterface {
     this.chatInput.addEventListener('keydown', this.handleKeyDown);
     this.chatInput.addEventListener('input', this.handleInput);
 
-    // Example chip clicks
     this.messagesContainer.addEventListener('click', (e) => {
       if (e.target.classList.contains('example-chip')) {
         this.handleExampleClick(e.target.textContent);
@@ -53,13 +49,11 @@ export class ChatInterface {
   }
 
   handleInput() {
-    // Auto-resize textarea
     this.chatInput.style.height = 'auto';
     this.chatInput.style.height = Math.min(this.chatInput.scrollHeight, 150) + 'px';
   }
 
   handleExampleClick(text) {
-    // Remove quotes from example text
     const cleanText = text.replace(/^["']|["']$/g, '');
     this.chatInput.value = cleanText;
     this.chatInput.focus();
@@ -70,14 +64,10 @@ export class ChatInterface {
     const text = this.chatInput.value.trim();
     if (!text) return;
 
-    // Add user message to UI
     this.addMessage('user', text);
-
-    // Clear input
     this.chatInput.value = '';
     this.chatInput.style.height = 'auto';
 
-    // Emit message
     if (this.onMessage) {
       this.onMessage(text);
     }
@@ -121,14 +111,15 @@ export class ChatInterface {
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/`(.*?)`/g, '<code>$1</code>')
       .replace(/\n/g, '<br>')
-      .replace(/• /g, '&bull; ');
+      .replace(/• /g, '&bull; ')
+      .replace(/- /g, '&bull; ');
 
     // Add room summary if provided
     if (options.rooms && options.rooms.length > 0) {
       html += this.createRoomSummary(options.rooms, options.totalArea);
     }
 
-    // Add success message if provided
+    // Add success message
     if (options.success) {
       html += `
         <div class="message-success">
@@ -141,7 +132,7 @@ export class ChatInterface {
       `;
     }
 
-    // Add error message if provided
+    // Add error message
     if (options.error) {
       html += `
         <div class="message-error">
@@ -154,16 +145,11 @@ export class ChatInterface {
       `;
     }
 
-    // Add action buttons if provided
+    // Add action buttons
     if (options.actions && options.actions.length > 0) {
       html += '<div class="message-actions">';
       options.actions.forEach(action => {
-        html += `
-          <button class="action-btn" data-action="${action.id}">
-            ${action.icon || ''}
-            ${action.label}
-          </button>
-        `;
+        html += `<button class="action-btn" data-action="${action.id}">${action.label}</button>`;
       });
       html += '</div>';
     }
@@ -173,20 +159,23 @@ export class ChatInterface {
 
   createRoomSummary(rooms, totalArea) {
     let html = '<div class="room-summary">';
-    html += `<div class="room-summary-title">📋 Floor Plan Summary (${totalArea || '?'} m²)</div>`;
+    html += `<div class="room-summary-title">Floor Plan Summary (${totalArea || '?'} sqm)</div>`;
 
     rooms.forEach(room => {
       const color = room.color || ROOM_TYPES[room.type]?.color || '#e2e8f0';
       const label = room.label || ROOM_TYPES[room.type]?.label || room.type;
+      const qty = room.quantity || 1;
       html += `
         <div class="room-summary-item">
           <span class="room-color-dot" style="background-color: ${color}"></span>
-          <span>${room.quantity || 1}× ${label}</span>
-          <span style="margin-left: auto; color: #6b7280;">${room.minAreaSqm} m²</span>
+          <span>${qty}x ${label}</span>
+          <span style="margin-left: auto; color: #6b7280;">${room.minAreaSqm} sqm</span>
         </div>
       `;
     });
 
+    const totalRoomArea = rooms.reduce((sum, r) => sum + (r.minAreaSqm * (r.quantity || 1)), 0);
+    html += `<div class="room-summary-total">Total room area: ${totalRoomArea} sqm</div>`;
     html += '</div>';
     return html;
   }
@@ -241,7 +230,6 @@ export class ChatInterface {
   }
 
   reset() {
-    // Clear all messages except the initial greeting
     const messages = this.messagesContainer.querySelectorAll('.chat-message');
     messages.forEach((msg, index) => {
       if (index > 0) msg.remove();
