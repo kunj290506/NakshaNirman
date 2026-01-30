@@ -1,7 +1,7 @@
 /**
  * Intelligent Requirement Agent
  * Natural language understanding for floor plan requirements
- * Designed to understand human language like ChatGPT
+ * Auto-generates when complete requirements are provided
  */
 
 import { ROOM_TYPES } from '../utils/constants.js';
@@ -11,16 +11,21 @@ import { sqmToSqmm } from '../utils/geometry.js';
 let conversationHistory = [];
 
 /**
+ * Convert sq ft to sqm (1 sq ft = 0.0929 sqm)
+ */
+function sqftToSqm(sqft) {
+    return Math.round(sqft * 0.0929 * 10) / 10;
+}
+
+/**
  * Main entry point - understand and respond to user message
  */
 export function parseNaturalLanguage(input, context = {}) {
     const userMessage = input.trim();
     const lowerMessage = userMessage.toLowerCase();
 
-    // Add to conversation history
     conversationHistory.push({ role: 'user', content: userMessage });
 
-    // Initialize result
     const result = {
         understood: true,
         data: { ...context },
@@ -29,108 +34,101 @@ export function parseNaturalLanguage(input, context = {}) {
         wantsToGenerate: false
     };
 
+    // Check if this is a comprehensive request (long message with multiple requirements)
+    const isComprehensive = isComprehensiveRequest(lowerMessage);
+
     // Detect intent
     const intent = detectIntent(lowerMessage);
 
-    switch (intent.type) {
-        case 'greeting':
-            result.response = handleGreeting();
-            break;
+    if (intent.type === 'greeting') {
+        result.response = handleGreeting();
+    } else if (intent.type === 'help') {
+        result.response = handleHelp();
+    } else if (intent.type === 'thanks') {
+        result.response = handleThanks();
+    } else if (intent.type === 'confirmation') {
+        if (hasCompleteRequirements(result.data)) {
+            result.wantsToGenerate = true;
+        } else {
+            result.response = getMissingRequirementsPrompt(result.data);
+        }
+    } else if (intent.type === 'reset') {
+        result.data = {};
+        result.response = "Starting fresh. What kind of house would you like to design?";
+    } else if (intent.type === 'question') {
+        result.response = handleQuestion(lowerMessage);
+    } else {
+        // Extract requirements from the message
+        const extracted = extractRequirements(lowerMessage, result.data);
+        result.data = extracted.data;
 
-        case 'help':
-            result.response = handleHelp();
-            break;
-
-        case 'thanks':
-            result.response = handleThanks();
-            break;
-
-        case 'confirmation':
+        if (extracted.foundSomething) {
+            // Check if we have complete requirements
             if (hasCompleteRequirements(result.data)) {
-                result.wantsToGenerate = true;
-                result.response = "Generating your floor plan now...";
+                // If comprehensive request, auto-generate
+                if (isComprehensive) {
+                    result.wantsToGenerate = true;
+                    result.response = "I have all your requirements. Generating your floor plan now...";
+                } else {
+                    result.response = generateProgressResponse(result.data);
+                    result.complete = true;
+                }
             } else {
-                result.response = getMissingRequirementsPrompt(result.data);
-            }
-            break;
-
-        case 'cancel':
-        case 'reset':
-            result.data = {};
-            result.response = "I have cleared all requirements. Let us start fresh. What kind of house would you like to design?";
-            break;
-
-        case 'modify':
-            result.response = handleModifyRequest(lowerMessage, result.data);
-            break;
-
-        case 'question':
-            result.response = handleQuestion(lowerMessage);
-            break;
-
-        case 'requirements':
-        default:
-            // Extract requirements from the message
-            const extracted = extractRequirements(lowerMessage, result.data);
-            result.data = extracted.data;
-
-            if (extracted.foundSomething) {
                 result.response = generateProgressResponse(result.data);
-            } else {
-                result.response = handleUnknownInput(userMessage);
             }
-            break;
+        } else {
+            result.response = handleUnknownInput(userMessage);
+        }
     }
 
-    // Check if requirements are complete
-    result.complete = hasCompleteRequirements(result.data);
-
-    // Add response to history
     conversationHistory.push({ role: 'agent', content: result.response });
 
     return result;
 }
 
 /**
+ * Check if this is a comprehensive request with multiple requirements
+ */
+function isComprehensiveRequest(message) {
+    // Long message with area AND room mentions
+    const hasArea = /(\d+)\s*(sq\.?\s*ft|sqft|square\s*feet|sq\.?\s*m|sqm|m2)/i.test(message);
+    const hasRooms = /(bedroom|bhk|living|kitchen|bathroom|hall)/i.test(message);
+    const isLong = message.length > 100;
+
+    // Keywords that suggest "just do it"
+    const actionWords = /(build|create|design|make|suggest|generate|plan|layout|need|want)/i.test(message);
+
+    return hasArea && hasRooms && (isLong || actionWords);
+}
+
+/**
  * Detect user's intent from message
  */
 function detectIntent(message) {
-    // Greetings
-    if (/^(hi|hello|hey|good\s*(morning|afternoon|evening)|greetings|howdy)/i.test(message)) {
+    if (/^(hi|hello|hey|good\s*(morning|afternoon|evening))/i.test(message)) {
         return { type: 'greeting' };
     }
 
-    // Help requests
-    if (/^(help|how\s*(do|can|to)|what\s*(can|should)|explain|guide|instructions?)/i.test(message)) {
+    if (/^(help|how\s*(do|can|to)|what\s*(can|should)|explain)/i.test(message)) {
         return { type: 'help' };
     }
 
-    // Thanks
-    if (/^(thanks?|thank\s*you|thx|appreciate|great\s*job|good\s*job|awesome|excellent)/i.test(message)) {
+    if (/^(thanks?|thank\s*you|thx|great|awesome)/i.test(message)) {
         return { type: 'thanks' };
     }
 
-    // Confirmation
-    if (/^(yes|yeah|yep|yup|ok|okay|sure|confirm|generate|create|build|go\s*ahead|proceed|do\s*it|make\s*it|looks?\s*good|perfect|correct|right|exactly|that'?s?\s*(it|right|correct)|approved?)/i.test(message)) {
+    if (/^(yes|yeah|yep|ok|okay|sure|confirm|generate|create|go\s*ahead|proceed|do\s*it)/i.test(message)) {
         return { type: 'confirmation' };
     }
 
-    // Cancel/Reset
-    if (/^(cancel|reset|clear|start\s*over|new|fresh|forget|undo|remove\s*all)/i.test(message)) {
+    if (/^(cancel|reset|clear|start\s*over|new)/i.test(message)) {
         return { type: 'reset' };
     }
 
-    // Modify existing
-    if (/(change|modify|update|edit|adjust|make\s*it|instead|rather|actually|no\s*wait)/i.test(message)) {
-        return { type: 'modify' };
-    }
-
-    // Questions
-    if (/^(what|which|how|why|can\s*you|could\s*you|is\s*it|are\s*there|do\s*you)\s/i.test(message) || message.endsWith('?')) {
+    if (/^(what|which|how|why|can\s*you)\s/i.test(message) || (message.endsWith('?') && message.length < 50)) {
         return { type: 'question' };
     }
 
-    // Default to requirements extraction
     return { type: 'requirements' };
 }
 
@@ -138,47 +136,30 @@ function detectIntent(message) {
  * Handle greetings
  */
 function handleGreeting() {
-    const greetings = [
-        "Hello! I am here to help you design a floor plan. Tell me about your dream house - how big should it be and what rooms do you need?",
-        "Hi there! Ready to design your floor plan. What size house are you thinking of, and what rooms would you like?",
-        "Welcome! Let us create your perfect floor plan. Start by telling me the total area and what rooms you need."
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
+    return "Hello! I am here to help you design a floor plan. Tell me about your house - the total area and what rooms you need.";
 }
 
 /**
  * Handle help requests
  */
 function handleHelp() {
-    return `I can help you create a floor plan for your house. Here is how to use me:
+    return `I can help you create a floor plan. Here is how:
 
-**Step 1: Tell me the size**
-Say something like "I want a 100 square meter house" or just "100 sqm"
+**Tell me the size:** "1220 sq ft" or "100 sqm"
 
-**Step 2: Tell me the rooms**
-Say things like:
-- "I need 2 bedrooms"
-- "Add a living room and kitchen"
-- "2 bedrooms of 12 sqm each, 1 bathroom"
+**Tell me the rooms:** "2BHK with living room, kitchen, 2 bathrooms"
 
-**Step 3: Generate**
-When you are happy with the requirements, say "generate" or "create the plan"
+**Or describe everything at once:**
+"I have 1200 sq ft and need a 2BHK with living room, kitchen, 2 bathrooms, and parking"
 
-You can also ask me to modify things: "make the bedroom bigger" or "add another bathroom"
-
-What would you like to start with?`;
+I will generate the floor plan automatically when I have all the details.`;
 }
 
 /**
  * Handle thanks
  */
 function handleThanks() {
-    const responses = [
-        "You are welcome! Is there anything else you would like to adjust in the floor plan?",
-        "Happy to help! Let me know if you need any changes.",
-        "Glad I could assist! Feel free to ask if you want to modify anything."
-    ];
-    return responses[Math.floor(Math.random() * responses.length)];
+    return "You are welcome! Let me know if you need any changes to the floor plan.";
 }
 
 /**
@@ -186,83 +167,44 @@ function handleThanks() {
  */
 function handleQuestion(message) {
     if (/what\s*(rooms?|types?)/i.test(message)) {
-        return `I can add these room types to your floor plan:
+        return `Available room types:
+- Living Room / Hall
+- Bedroom
+- Master Bedroom
+- Kitchen
+- Bathroom
+- Dining Room
+- Study / Office
+- Storage
+- Balcony
+- Parking
 
-- **Living Room** - main gathering space
-- **Bedroom** - sleeping rooms
-- **Master Bedroom** - larger primary bedroom
-- **Kitchen** - cooking area
-- **Bathroom** - includes toilet and shower
-- **Dining Room** - eating area
-- **Study/Office** - work space
-- **Storage** - utility storage
-- **Balcony** - outdoor space
-
-Which rooms would you like in your house?`;
+Just tell me what you need!`;
     }
 
-    if (/how\s*(big|large|much\s*area|many\s*sqm)/i.test(message)) {
-        return `For a comfortable house, here are some guidelines:
+    if (/vastu/i.test(message)) {
+        return `For Vastu-friendly layout:
+- Main entrance: North or East
+- Kitchen: Southeast
+- Master bedroom: Southwest
+- Living room: North or East
+- Bathroom: West or Northwest
 
-- **Small house**: 50-80 sqm (1-2 bedrooms)
-- **Medium house**: 80-120 sqm (2-3 bedrooms)  
-- **Large house**: 120-200 sqm (3-4 bedrooms)
-
-Each room has minimum sizes:
-- Bedroom: at least 9 sqm
-- Living Room: at least 12 sqm
-- Kitchen: at least 6 sqm
-- Bathroom: at least 3 sqm
-
-What size are you thinking?`;
+Tell me your requirements and I will create a suitable layout.`;
     }
 
-    if (/can\s*(you|i)|possible/i.test(message)) {
-        return "Yes, I can help with that! Just tell me the total area of your house and what rooms you need, and I will create a floor plan for you.";
-    }
-
-    return "I am not sure I understand your question. I can help you design a floor plan - just tell me the size of your house and what rooms you need.";
-}
-
-/**
- * Handle modification requests
- */
-function handleModifyRequest(message, data) {
-    // Try to extract what they want to change
-    const sizeChange = message.match(/(bigger|larger|smaller|increase|decrease|more|less)\s*(bedroom|living|kitchen|bathroom|room)?/i);
-
-    if (sizeChange) {
-        return `I understand you want to make changes. Please tell me specifically what you would like, for example:
-- "Make the bedroom 15 sqm"
-- "I need 3 bedrooms instead of 2"
-- "Change total area to 120 sqm"
-
-What would you like to modify?`;
-    }
-
-    if (/remove|delete|no\s*(bedroom|living|kitchen|bathroom)/i.test(message)) {
-        return "To remove a room, please tell me which one. For example: 'Remove the study room' or 'I do not need a balcony'";
-    }
-
-    return "What would you like to change? You can adjust room sizes, add or remove rooms, or change the total area.";
+    return "Just describe your requirements - the area and rooms you need - and I will create the floor plan.";
 }
 
 /**
  * Handle unknown input
  */
 function handleUnknownInput(message) {
-    // Check if it's very short
-    if (message.length < 3) {
-        return "Could you please provide more details? Tell me about the house size and rooms you need.";
+    if (message.length < 5) {
+        return "Could you provide more details? Tell me the area and rooms you need.";
     }
 
-    // Generic fallback
-    return `I want to understand your requirements better. Could you tell me:
-
-1. What is the total area of the house you want? (e.g., "100 sqm")
-2. What rooms do you need? (e.g., "2 bedrooms, 1 kitchen, 1 bathroom")
-
-Feel free to describe it naturally, like "I want a small 80 sqm house with 2 bedrooms and a nice living room"`;
+    return "I need a bit more clarity. Please tell me:\n- Total area (in sq ft or sqm)\n- Rooms you need (bedrooms, kitchen, etc.)";
 }
 
 /**
@@ -272,17 +214,16 @@ function extractRequirements(message, existingData) {
     const data = { ...existingData };
     let foundSomething = false;
 
-    // Extract area with flexible patterns
+    // Extract area (supports sq ft and sqm)
     const area = extractArea(message);
     if (area !== null) {
         data.totalAreaSqm = area;
         foundSomething = true;
     }
 
-    // Extract rooms
+    // Extract rooms from BHK or explicit room mentions
     const rooms = extractRooms(message);
     if (rooms.length > 0) {
-        // Merge with existing rooms
         if (!data.rooms) data.rooms = [];
 
         rooms.forEach(newRoom => {
@@ -307,39 +248,39 @@ function extractRequirements(message, existingData) {
 }
 
 /**
- * Extract area from natural language
+ * Extract area from natural language (supports sq ft and sqm)
  */
 function extractArea(message) {
-    // Very flexible area patterns
-    const patterns = [
-        // Standard formats
-        /(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m(?:eters?)?|m²|m2|square\s*m(?:eters?)?)/i,
-
-        // "100 meter house", "100m flat"
-        /(\d+(?:\.\d+)?)\s*m(?:eter)?\s*(?:house|home|flat|apartment|floor|plan)/i,
-
-        // "area of/is/: 100"
-        /(?:total\s*)?(?:area|size|space)\s*(?:of|is|:|=|should\s*be|would\s*be|around|about|approximately)?\s*(\d+(?:\.\d+)?)/i,
-
-        // "100 sqm house", "house of 100"
-        /(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2)?\s*(?:house|home|flat|apartment|floor\s*plan)/i,
-        /(?:house|home|flat|apartment)\s*(?:of|with|around|about)?\s*(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2)?/i,
-
-        // "need/want/build 100 sqm"
-        /(?:need|want|looking\s*for|require|build|design|create|make)\s*(?:a\s*)?(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2)/i,
-
-        // "around 100 square meters"
-        /(?:around|about|approximately|roughly|nearly)\s*(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2|square)/i,
-
-        // Standalone number in certain contexts
-        /^(?:total\s*)?(\d+)\s*(?:sqm|sq\.?\s*m|m²|m2)$/i
+    // Square feet patterns
+    const sqftPatterns = [
+        /(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:sq\.?\s*ft|sqft|square\s*feet|sft)/i,
+        /(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:sq\.?\s*feet)/i,
+        /area\s*(?:of|is|:)?\s*(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:sq\.?\s*ft|sqft|feet)/i,
+        /(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:sq\.?\s*ft|sqft)?\s*(?:plot|area|land|site)/i
     ];
 
-    for (const pattern of patterns) {
+    for (const pattern of sqftPatterns) {
+        const match = message.match(pattern);
+        if (match) {
+            const sqft = parseFloat(match[1].replace(/,/g, ''));
+            if (sqft >= 100 && sqft <= 100000) {
+                return sqftToSqm(sqft);
+            }
+        }
+    }
+
+    // Square meter patterns
+    const sqmPatterns = [
+        /(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m(?:eters?)?|m²|m2)/i,
+        /area\s*(?:of|is|:)?\s*(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m)/i,
+        /(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m)?\s*(?:house|home|flat)/i
+    ];
+
+    for (const pattern of sqmPatterns) {
         const match = message.match(pattern);
         if (match) {
             const area = parseFloat(match[1]);
-            if (area >= 15 && area <= 50000) {
+            if (area >= 15 && area <= 10000) {
                 return area;
             }
         }
@@ -355,73 +296,110 @@ function extractRooms(message) {
     const rooms = [];
     const foundTypes = new Set();
 
-    // Room name mappings (very comprehensive)
+    // Room mappings
     const roomMappings = {
-        // Living room variations
-        'living room': 'living_room', 'living': 'living_room', 'livingroom': 'living_room',
-        'lounge': 'living_room', 'hall': 'living_room', 'drawing room': 'living_room',
-        'sitting room': 'living_room', 'family room': 'living_room', 'main hall': 'living_room',
-
-        // Bedroom variations  
+        'living room': 'living_room', 'living': 'living_room', 'hall': 'living_room',
+        'drawing room': 'living_room', 'lounge': 'living_room',
         'bedroom': 'bedroom', 'bed room': 'bedroom', 'bed': 'bedroom',
-        'sleeping room': 'bedroom', 'guest room': 'bedroom', 'guest bedroom': 'bedroom',
-
-        // Master bedroom
         'master bedroom': 'master_bedroom', 'master bed': 'master_bedroom', 'master': 'master_bedroom',
-        'main bedroom': 'master_bedroom', 'primary bedroom': 'master_bedroom', 'parents room': 'master_bedroom',
-
-        // Kitchen variations
-        'kitchen': 'kitchen', 'kitchenette': 'kitchen', 'cooking area': 'kitchen',
-        'cook room': 'kitchen', 'pantry': 'kitchen',
-
-        // Bathroom variations
-        'bathroom': 'bathroom', 'bath room': 'bathroom', 'bath': 'bathroom',
-        'toilet': 'bathroom', 'washroom': 'bathroom', 'restroom': 'bathroom',
-        'wc': 'bathroom', 'lavatory': 'bathroom', 'loo': 'bathroom', 'powder room': 'bathroom',
-
-        // Dining room
-        'dining room': 'dining_room', 'dining': 'dining_room', 'diningroom': 'dining_room',
-        'eating area': 'dining_room', 'dining area': 'dining_room',
-
-        // Study/Office
-        'study': 'study', 'study room': 'study', 'office': 'study', 'home office': 'study',
-        'work room': 'study', 'workspace': 'study', 'den': 'study', 'library': 'study',
-
-        // Storage
-        'storage': 'storage', 'store room': 'storage', 'store': 'storage',
-        'storeroom': 'storage', 'utility': 'utility', 'utility room': 'utility',
-        'laundry': 'utility', 'laundry room': 'utility',
-
-        // Balcony
-        'balcony': 'balcony', 'terrace': 'balcony', 'patio': 'balcony', 'deck': 'balcony',
-        'verandah': 'balcony', 'veranda': 'balcony', 'porch': 'balcony'
+        'kitchen': 'kitchen', 'modular kitchen': 'kitchen', 'cooking': 'kitchen',
+        'bathroom': 'bathroom', 'bath': 'bathroom', 'toilet': 'bathroom',
+        'washroom': 'bathroom', 'attached': 'bathroom', 'common bathroom': 'bathroom',
+        'attached bathroom': 'bathroom',
+        'dining': 'dining_room', 'dining room': 'dining_room', 'dining area': 'dining_room',
+        'study': 'study', 'office': 'study', 'work room': 'study',
+        'storage': 'storage', 'store': 'storage', 'utility': 'utility',
+        'balcony': 'balcony', 'terrace': 'balcony', 'patio': 'balcony',
+        'parking': 'parking', 'car parking': 'parking', 'garage': 'parking',
+        'car': 'parking', 'vehicle': 'parking', 'pooja': 'pooja_room', 'pooja room': 'pooja_room',
+        'puja': 'pooja_room', 'mandir': 'pooja_room'
     };
 
-    // Pattern: "[number] [room] of/with [size] sqm" - e.g., "2 bedrooms of 12 sqm"
-    const patternWithSize = /(\d+)\s*(living\s*rooms?|bedrooms?|master\s*bedrooms?|kitchens?|bathrooms?|toilets?|dining\s*rooms?|stud(?:y|ies)|offices?|storage|utility|balcon(?:y|ies)|halls?|lounges?)(?:\s*(?:of|with|at|,|\s)?\s*(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2))?(?:\s*each)?/gi;
+    // Default room sizes in sqm (will be adjusted based on total area)
+    const defaultSizes = {
+        'living_room': 18,
+        'bedroom': 12,
+        'master_bedroom': 15,
+        'kitchen': 9,
+        'bathroom': 4,
+        'dining_room': 10,
+        'study': 8,
+        'storage': 4,
+        'balcony': 6,
+        'parking': 12,
+        'utility': 4,
+        'pooja_room': 4
+    };
+
+    // Handle BHK format: 2BHK, 3 BHK, etc.
+    const bhkMatch = message.match(/(\d)\s*bhk/i);
+    if (bhkMatch) {
+        const numBedrooms = parseInt(bhkMatch[1]);
+
+        // Add master bedroom
+        if (!foundTypes.has('master_bedroom')) {
+            foundTypes.add('master_bedroom');
+            rooms.push({
+                type: 'master_bedroom',
+                quantity: 1,
+                minAreaSqm: defaultSizes['master_bedroom']
+            });
+        }
+
+        // Add regular bedrooms
+        if (numBedrooms > 1 && !foundTypes.has('bedroom')) {
+            foundTypes.add('bedroom');
+            rooms.push({
+                type: 'bedroom',
+                quantity: numBedrooms - 1,
+                minAreaSqm: defaultSizes['bedroom']
+            });
+        }
+
+        // BHK implies hall and kitchen
+        if (!foundTypes.has('living_room')) {
+            foundTypes.add('living_room');
+            rooms.push({
+                type: 'living_room',
+                quantity: 1,
+                minAreaSqm: defaultSizes['living_room']
+            });
+        }
+
+        if (!foundTypes.has('kitchen')) {
+            foundTypes.add('kitchen');
+            rooms.push({
+                type: 'kitchen',
+                quantity: 1,
+                minAreaSqm: defaultSizes['kitchen']
+            });
+        }
+    }
+
+    // Pattern: "[number] [room]" - e.g., "2 bedrooms", "2 bathrooms"
+    const patternWithNumber = /(\d+)\s*(bedrooms?|living\s*rooms?|kitchens?|bathrooms?|toilets?|balcon(?:y|ies)|parking|dining)/gi;
 
     let match;
-    while ((match = patternWithSize.exec(message)) !== null) {
+    while ((match = patternWithNumber.exec(message)) !== null) {
         const quantity = Math.min(parseInt(match[1], 10), 10);
-        const roomName = match[2].toLowerCase().trim();
-        const area = match[3] ? parseFloat(match[3]) : null;
-
+        const roomName = match[2].toLowerCase();
         const roomType = normalizeRoomType(roomName, roomMappings);
+
         if (roomType && !foundTypes.has(roomType)) {
             foundTypes.add(roomType);
             rooms.push({
                 type: roomType,
                 quantity: quantity,
-                minAreaSqm: area || ROOM_TYPES[roomType]?.defaultAreaSqm || 10
+                minAreaSqm: defaultSizes[roomType] || 10
             });
         }
     }
 
-    // Pattern: Single room mentions - "a living room", "the kitchen", "one bathroom"
-    const singlePattern = /(?:a|an|one|the|single|need|want|with|and|,)\s*(living\s*room|bedroom|master\s*bedroom|kitchen|bathroom|toilet|washroom|dining\s*room|study|office|storage|utility|balcony|hall|lounge)/gi;
+    // Pattern: Single room mentions
+    const singlePattern = /(living\s*room|hall|drawing\s*room|bedroom|master\s*bedroom|kitchen|bathroom|toilet|washroom|attached|common\s*bathroom|dining|balcony|terrace|parking|garage|pooja|mandir|study|office)/gi;
 
     while ((match = singlePattern.exec(message)) !== null) {
-        const roomName = match[1].toLowerCase().trim();
+        const roomName = match[1].toLowerCase();
         const roomType = normalizeRoomType(roomName, roomMappings);
 
         if (roomType && !foundTypes.has(roomType)) {
@@ -429,25 +407,7 @@ function extractRooms(message) {
             rooms.push({
                 type: roomType,
                 quantity: 1,
-                minAreaSqm: ROOM_TYPES[roomType]?.defaultAreaSqm || 10
-            });
-        }
-    }
-
-    // Pattern: "[room] of [size]" without quantity - "bedroom of 15 sqm"
-    const roomSizePattern = /(living\s*room|bedroom|master\s*bedroom|kitchen|bathroom|toilet|dining\s*room|study|office|storage|balcony|hall)\s*(?:of|with|at)?\s*(\d+(?:\.\d+)?)\s*(?:sqm|sq\.?\s*m|m²|m2)/gi;
-
-    while ((match = roomSizePattern.exec(message)) !== null) {
-        const roomName = match[1].toLowerCase().trim();
-        const area = parseFloat(match[2]);
-        const roomType = normalizeRoomType(roomName, roomMappings);
-
-        if (roomType && !foundTypes.has(roomType)) {
-            foundTypes.add(roomType);
-            rooms.push({
-                type: roomType,
-                quantity: 1,
-                minAreaSqm: Math.max(area, ROOM_TYPES[roomType]?.minAreaSqm || 3)
+                minAreaSqm: defaultSizes[roomType] || 10
             });
         }
     }
@@ -459,22 +419,17 @@ function extractRooms(message) {
  * Normalize room type names
  */
 function normalizeRoomType(name, mappings) {
-    // Clean up the name
     let cleaned = name.replace(/ies$/, 'y').replace(/s$/, '').trim();
 
-    // Try direct mapping
     if (mappings[cleaned]) return mappings[cleaned];
     if (mappings[name]) return mappings[name];
 
-    // Try with spaces removed
-    const noSpace = cleaned.replace(/\s+/g, '');
+    // Check partial matches
     for (const [key, value] of Object.entries(mappings)) {
-        if (key.replace(/\s+/g, '') === noSpace) return value;
+        if (name.includes(key) || key.includes(name)) {
+            return value;
+        }
     }
-
-    // Try with underscores
-    const underscored = cleaned.replace(/\s+/g, '_');
-    if (ROOM_TYPES[underscored]) return underscored;
 
     return null;
 }
@@ -483,17 +438,27 @@ function normalizeRoomType(name, mappings) {
  * Extract plot dimensions
  */
 function extractPlotDimensions(message) {
+    // Pattern: "30x40", "30 x 40", "30 by 40", "30ft x 40ft"
     const patterns = [
-        /(?:plot|land|site)\s*(?:of|is|:)?\s*(\d+(?:\.\d+)?)\s*(?:m|meters?)?\s*(?:x|by|×|X)\s*(\d+(?:\.\d+)?)/i,
-        /(\d+(?:\.\d+)?)\s*(?:m|meters?)?\s*(?:x|by|×|X)\s*(\d+(?:\.\d+)?)\s*(?:m|meters?)?\s*(?:plot|land|site)/i,
-        /(\d+)\s*(?:m|meters?)?\s*(?:x|by|×|X)\s*(\d+)\s*(?:m|meters?)?(?:\s|$)/i
+        /(\d+)\s*(?:ft|feet|')?\s*(?:x|by|×|X)\s*(\d+)\s*(?:ft|feet|')?/i,
+        /(\d+)\s*(?:m|meters?)?\s*(?:x|by|×|X)\s*(\d+)\s*(?:m|meters?)?/i
     ];
 
     for (const pattern of patterns) {
         const match = message.match(pattern);
         if (match) {
-            const width = parseFloat(match[1]) * 1000;
-            const length = parseFloat(match[2]) * 1000;
+            let width = parseFloat(match[1]);
+            let length = parseFloat(match[2]);
+
+            // If it looks like feet (small numbers with no unit usually means feet in India)
+            if (width < 100 && length < 100) {
+                width = width * 304.8; // Convert feet to mm
+                length = length * 304.8;
+            } else {
+                width = width * 1000; // Assume meters, convert to mm
+                length = length * 1000;
+            }
+
             if (width >= 3000 && length >= 3000) {
                 return { width, length };
             }
@@ -523,23 +488,22 @@ function getMissingRequirementsPrompt(data) {
     const hasRooms = data.rooms && data.rooms.length > 0;
 
     if (!hasArea && !hasRooms) {
-        return "I need more information. Please tell me the total area of your house and what rooms you need.";
+        return "Please tell me the total area and rooms you need.";
     }
 
     if (!hasArea) {
-        const roomArea = data.rooms.reduce((sum, r) => sum + (r.minAreaSqm * (r.quantity || 1)), 0);
-        return `I have your rooms but I need the total house area. How big should the house be? (At least ${Math.ceil(roomArea * 1.15)} sqm is needed for your rooms)`;
+        return "What is the total area of your plot/house? (e.g., 1200 sq ft or 100 sqm)";
     }
 
     if (!hasRooms) {
-        return `I have the area (${data.totalAreaSqm} sqm) but I need to know what rooms you want. How many bedrooms, bathrooms, etc.?`;
+        return "What rooms do you need? (e.g., 2BHK with kitchen, 2 bathrooms)";
     }
 
-    return "Something is missing. Please provide the total area and rooms needed.";
+    return "Something is missing. Please provide area and rooms.";
 }
 
 /**
- * Generate progress response based on current data
+ * Generate progress response
  */
 function generateProgressResponse(data) {
     const hasArea = data.totalAreaSqm && data.totalAreaSqm > 0;
@@ -548,34 +512,23 @@ function generateProgressResponse(data) {
     if (hasArea && hasRooms) {
         const totalRoomArea = data.rooms.reduce((sum, r) => sum + (r.minAreaSqm * (r.quantity || 1)), 0);
 
-        if (totalRoomArea > data.totalAreaSqm) {
-            return `There is a problem: your rooms need ${totalRoomArea} sqm total, but the house is only ${data.totalAreaSqm} sqm.
-
-Please either increase the total area or reduce room sizes.`;
+        if (totalRoomArea > data.totalAreaSqm * 0.85) {
+            return `The rooms need ${totalRoomArea} sqm but only ${data.totalAreaSqm} sqm is available.\n\nPlease reduce room requirements or increase total area.`;
         }
 
-        return `I have captured your requirements:
+        // Convert back to sq ft for Indian users
+        const areaInSqft = Math.round(data.totalAreaSqm / 0.0929);
 
-**Total Area:** ${data.totalAreaSqm} sqm
-**Rooms:** ${formatRoomList(data.rooms)}
-**Room Area:** ${totalRoomArea} sqm (${Math.round((totalRoomArea / data.totalAreaSqm) * 100)}% of total)
-
-If this looks correct, click "Generate Floor Plan" below. Or tell me if you want to make any changes.`;
+        return `**Your Requirements:**\n\nTotal Area: ${data.totalAreaSqm} sqm (${areaInSqft} sq ft)\nRooms: ${formatRoomList(data.rooms)}\n\nReady to generate. Click the button below or say "generate".`;
     }
 
     if (hasArea && !hasRooms) {
-        return `I have noted: **${data.totalAreaSqm} sqm** total area.
-
-Now, what rooms do you need? For example:
-- "2 bedrooms, 1 living room, 1 kitchen, 1 bathroom"
-- Or specify sizes: "bedroom of 12 sqm, kitchen 10 sqm"`;
+        const areaInSqft = Math.round(data.totalAreaSqm / 0.0929);
+        return `Noted: ${data.totalAreaSqm} sqm (${areaInSqft} sq ft).\n\nWhat rooms do you need? (e.g., 2BHK, 3 bedrooms, living room, kitchen)`;
     }
 
     if (!hasArea && hasRooms) {
-        const totalRoomArea = data.rooms.reduce((sum, r) => sum + (r.minAreaSqm * (r.quantity || 1)), 0);
-        return `I have your rooms (${formatRoomList(data.rooms)}).
-
-What should be the total area of the house? It needs to be at least ${Math.ceil(totalRoomArea * 1.15)} sqm to fit these rooms comfortably.`;
+        return `Rooms noted: ${formatRoomList(data.rooms)}\n\nWhat is the total area? (e.g., 1200 sq ft)`;
     }
 
     return "Please tell me about your house requirements.";
@@ -586,8 +539,22 @@ What should be the total area of the house? It needs to be at least ${Math.ceil(
  */
 function formatRoomList(rooms) {
     return rooms.map(r => {
-        const label = ROOM_TYPES[r.type]?.label || r.type.replace(/_/g, ' ');
-        return `${r.quantity}x ${label} (${r.minAreaSqm} sqm)`;
+        const labels = {
+            'living_room': 'Living Room',
+            'bedroom': 'Bedroom',
+            'master_bedroom': 'Master Bedroom',
+            'kitchen': 'Kitchen',
+            'bathroom': 'Bathroom',
+            'dining_room': 'Dining',
+            'study': 'Study',
+            'storage': 'Storage',
+            'balcony': 'Balcony',
+            'parking': 'Parking',
+            'utility': 'Utility',
+            'pooja_room': 'Pooja Room'
+        };
+        const label = labels[r.type] || r.type.replace(/_/g, ' ');
+        return r.quantity > 1 ? `${r.quantity}x ${label}` : label;
     }).join(', ');
 }
 
@@ -597,8 +564,8 @@ function formatRoomList(rooms) {
 export function validateRequirements(data) {
     const errors = [];
 
-    if (!data.totalAreaSqm || data.totalAreaSqm < 20) {
-        errors.push('Total area must be at least 20 sqm');
+    if (!data.totalAreaSqm || data.totalAreaSqm < 15) {
+        errors.push('Total area must be at least 15 sqm (160 sq ft)');
     }
 
     if (!data.rooms || data.rooms.length === 0) {
@@ -608,29 +575,37 @@ export function validateRequirements(data) {
     const normalizedRooms = [];
     if (data.rooms) {
         for (const room of data.rooms) {
-            const roomType = ROOM_TYPES[room.type];
-            if (!roomType) {
-                errors.push(`Unknown room type: ${room.type}`);
-                continue;
-            }
+            // Handle custom room types
+            const roomConfig = ROOM_TYPES[room.type] || {
+                label: room.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                color: '#e2e8f0',
+                minAreaSqm: 4,
+                defaultAreaSqm: 10,
+                priority: 5
+            };
 
             normalizedRooms.push({
                 type: room.type,
-                label: roomType.label,
+                label: roomConfig.label || room.type.replace(/_/g, ' '),
                 quantity: room.quantity || 1,
-                minAreaSqm: room.minAreaSqm,
-                minAreaMm: sqmToSqmm(room.minAreaSqm),
-                color: roomType.color,
-                priority: roomType.priority,
-                adjacentTo: roomType.adjacentTo,
-                requiresWindow: roomType.requiresWindow
+                minAreaSqm: room.minAreaSqm || roomConfig.defaultAreaSqm,
+                minAreaMm: sqmToSqmm(room.minAreaSqm || roomConfig.defaultAreaSqm),
+                color: roomConfig.color,
+                priority: roomConfig.priority || 5,
+                adjacentTo: roomConfig.adjacentTo || [],
+                requiresWindow: roomConfig.requiresWindow !== false
             });
         }
     }
 
     const totalRoomArea = normalizedRooms.reduce((sum, r) => sum + (r.minAreaSqm * r.quantity), 0);
-    if (data.totalAreaSqm && totalRoomArea > data.totalAreaSqm) {
-        errors.push(`Room area (${totalRoomArea} sqm) exceeds total area (${data.totalAreaSqm} sqm)`);
+    if (data.totalAreaSqm && totalRoomArea > data.totalAreaSqm * 0.9) {
+        // Auto-adjust room sizes to fit
+        const scaleFactor = (data.totalAreaSqm * 0.75) / totalRoomArea;
+        normalizedRooms.forEach(room => {
+            room.minAreaSqm = Math.max(room.minAreaSqm * scaleFactor, 3);
+            room.minAreaMm = sqmToSqmm(room.minAreaSqm);
+        });
     }
 
     if (errors.length > 0) {
@@ -655,7 +630,7 @@ export function resetConversation() {
     conversationHistory = [];
 }
 
-// Backward compatibility exports
+// Backward compatibility
 export function processFormInput(formData) {
     return validateRequirements({
         totalAreaSqm: parseFloat(formData.totalArea),

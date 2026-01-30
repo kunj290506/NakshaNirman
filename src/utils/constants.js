@@ -109,6 +109,24 @@ export const ROOM_TYPES = {
         priority: 6,
         adjacentTo: ['living_room', 'bedroom'],
         requiresWindow: false
+    },
+    parking: {
+        label: 'Parking',
+        defaultAreaSqm: 14,
+        minAreaSqm: 10,
+        color: '#cbd5e1',
+        priority: 7,
+        adjacentTo: [],
+        requiresWindow: false
+    },
+    pooja_room: {
+        label: 'Pooja Room',
+        defaultAreaSqm: 4,
+        minAreaSqm: 2,
+        color: '#fcd34d',
+        priority: 5,
+        adjacentTo: ['living_room'],
+        requiresWindow: false
     }
 };
 
