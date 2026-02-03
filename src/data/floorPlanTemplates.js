@@ -72,6 +72,46 @@ export const FLOOR_PLAN_TEMPLATES = [
 
             { type: 'corridor', x: 0.4, y: 0.5, w: 0.15, h: 0.15 } // Central Hub
         ]
+    },
+    {
+        id: 'l_shaped_3bhk',
+        name: 'L-Shaped 3BHK (Corner Plot)',
+        minAreaSqm: 90,
+        maxAreaSqm: 180,
+        bedroomCount: 3,
+        shape: 'l_shape',
+        structure: [
+            // Vertical Leg (Left)
+            { type: 'living_room', x: 0, y: 0.4, w: 0.4, h: 0.4 },       // Bottom Left (Entrance)
+            { type: 'dining_room', x: 0, y: 0.2, w: 0.4, h: 0.2 },       // Middle Left
+            { type: 'master_bedroom', x: 0, y: 0, w: 0.4, h: 0.2 },      // Top Left (Private)
+
+            // Horizontal Leg (Bottom)
+            { type: 'kitchen', x: 0.4, y: 0.6, w: 0.3, h: 0.2 },         // Inner Corner
+            { type: 'bedroom', x: 0.7, y: 0.6, w: 0.3, h: 0.2 },         // Bottom Right
+            { type: 'bedroom', x: 0.7, y: 0.4, w: 0.3, h: 0.2 },         // Far Right
+
+            // Services
+            { type: 'bathroom', x: 0.4, y: 0.05, w: 0.2, h: 0.15 },      // Top Bath
+            { type: 'bathroom', x: 0.7, y: 0.8, w: 0.2, h: 0.15 },       // Bottom Bath
+
+            // Corridor connecting the L
+            { type: 'corridor', x: 0.4, y: 0.4, w: 0.3, h: 0.2 }
+        ]
+    },
+    {
+        id: 'widescreen_2bhk',
+        name: 'Wide Plot 2BHK',
+        minAreaSqm: 60,
+        maxAreaSqm: 120,
+        bedroomCount: 2,
+        structure: [
+            { type: 'living_room', x: 0.3, y: 0.1, w: 0.4, h: 0.8 }, // Central Hall
+            { type: 'bedroom', x: 0, y: 0, w: 0.3, h: 0.5 },         // Left Wing
+            { type: 'kitchen', x: 0, y: 0.5, w: 0.3, h: 0.5 },       // Left Wing
+            { type: 'bedroom', x: 0.7, y: 0, w: 0.3, h: 0.5 },       // Right Wing
+            { type: 'bathroom', x: 0.7, y: 0.5, w: 0.3, h: 0.5 }     // Right Wing
+        ]
     }
 ];
 

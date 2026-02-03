@@ -4,180 +4,646 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description"
-    content="CAD Floor Plan Generator - AI-powered residential floor plan design with DXF export">
-  <title>CAD Floor Plan Generator</title>
+  <meta name="description" content="NakshaNirman - Professional AI-powered AutoCAD-level floor plan generator for Indian residential design. Generate construction-ready house maps with furniture, dimensions, and DXF export.">
+  <meta name="keywords" content="floor plan generator, AutoCAD, house design, AI architecture, DXF export, residential design, Indian house plans">
+  <title>NakshaNirman - Professional AI Floor Plan Generator | Portfolio</title>
+  
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-    rel="stylesheet">
-  <link rel="stylesheet" href="/src/styles/main.css">
-  <link rel="stylesheet" href="/src/styles/components.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #1a1a1a;
+      --bg-card: #111111;
+      --text-primary: #ffffff;
+      --text-secondary: #a0a0a0;
+      --text-muted: #666666;
+      --accent: #ffffff;
+      --border: #333333;
+      --hover: #2a2a2a;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 0;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+    }
+
+    .header-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .logo-text {
+      color: var(--text-primary);
+    }
+
+    .header-nav {
+      display: flex;
+      gap: 2rem;
+      align-items: center;
+    }
+
+    .nav-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 400;
+      transition: color 0.3s;
+      font-size: 0.95rem;
+    }
+
+    .nav-link:hover {
+      color: var(--text-primary);
+    }
+
+    .btn {
+      padding: 0.75rem 1.5rem;
+      border-radius: 6px;
+      font-weight: 500;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.3s;
+      border: 1px solid var(--border);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      white-space: nowrap;
+      background: var(--bg-card);
+      color: var(--text-primary);
+    }
+
+    .btn:hover {
+      background: var(--hover);
+      border-color: var(--text-secondary);
+    }
+
+    /* Main Content */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    /* Profile Header */
+    .profile-header {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3rem;
+      margin-bottom: 2rem;
+      text-align: center;
+    }
+
+    .profile-avatar {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: var(--bg-secondary);
+      border: 2px solid var(--border);
+      margin: 0 auto 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      color: var(--text-primary);
+    }
+
+    .profile-name {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: var(--text-primary);
+    }
+
+    .profile-title {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      margin-bottom: 1rem;
+      font-weight: 400;
+    }
+
+    .profile-location {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+
+    .profile-experience {
+      color: var(--text-secondary);
+      font-size: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .profile-actions {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+    }
+
+    /* Portfolio Sections */
+    .portfolio-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .section-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* Projects Grid */
+    .projects-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 2rem;
+    }
+
+    .project-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+
+    .project-card:hover {
+      border-color: var(--text-secondary);
+      transform: translateY(-2px);
+    }
+
+    .project-image {
+      height: 200px;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .project-content {
+      padding: 1.5rem;
+    }
+
+    .project-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .project-description {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: 1rem;
+    }
+
+    .project-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .project-tag {
+      background: var(--bg-primary);
+      color: var(--text-secondary);
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      border: 1px solid var(--border);
+    }
+
+    /* Skills & Tech */
+    .skills-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .skill-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .skill-name {
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+
+    /* About Section */
+    .about-content {
+      color: var(--text-secondary);
+      line-height: 1.8;
+      font-size: 1rem;
+    }
+
+    .about-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1.5rem;
+      margin-top: 2rem;
+    }
+
+    .stat-item {
+      text-align: center;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+    }
+
+    .stat-number {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: block;
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-label {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    /* Contact Section */
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .contact-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .contact-item:hover {
+      border-color: var(--text-secondary);
+    }
+
+    .contact-label {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .contact-value {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .contact-link {
+      color: var(--text-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .contact-link:hover {
+      text-decoration: underline;
+    }
+
+    /* Footer */
+    .footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      text-align: center;
+      margin-top: 3rem;
+    }
+
+    .footer-text {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .container {
+        padding: 1rem;
+      }
+      
+      .profile-header {
+        padding: 2rem;
+      }
+      
+      .profile-name {
+        font-size: 2rem;
+      }
+      
+      .projects-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .header-nav {
+        display: none;
+      }
+    }
+  </style>
 </head>
 
 <body>
-  <div id="app">
-    <!-- Header -->
-    <header class="header">
-      <div class="header-brand">
-        <svg class="header-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <path d="M3 9h18M9 21V9" />
-        </svg>
-        <h1 class="header-title">CAD Floor Planner</h1>
-      </div>
-      <div class="header-actions">
-        <button class="btn btn-secondary" id="resetBtn" title="Start New Design">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-            <path d="M3 3v5h5" />
-          </svg>
-          New
-        </button>
-        <button class="btn btn-primary" id="downloadBtn" disabled title="Download DXF File">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7,10 12,15 17,10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          Download DXF
-        </button>
-      </div>
-    </header>
-
-    <!-- Main Content -->
-    <main class="main-content">
-      <!-- Left Pane - Canvas -->
-      <section class="pane pane-left" id="canvasPane">
-        <div class="pane-header">
-          <h2>Floor Plan Preview</h2>
-          <div class="canvas-controls">
-            <button class="btn-icon" id="zoomInBtn" title="Zoom In">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.35-4.35M11 8v6M8 11h6" />
-              </svg>
-            </button>
-            <button class="btn-icon" id="zoomOutBtn" title="Zoom Out">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.35-4.35M8 11h6" />
-              </svg>
-            </button>
-            <button class="btn-icon" id="resetViewBtn" title="Reset View">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="canvas-container" id="canvasContainer">
-          <canvas id="floorPlanCanvas"></canvas>
-          <div class="canvas-placeholder" id="canvasPlaceholder">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <path d="M3 9h18M9 21V9M15 15h3M15 18h3" />
-            </svg>
-            <p>Your floor plan will appear here</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- Resize Handle -->
-      <div class="resize-handle" id="resizeHandle"></div>
-
-      <!-- Right Pane - AI Agent -->
-      <section class="pane pane-right" id="agentPane">
-        <div class="pane-header">
-          <div class="agent-header">
-            <div class="agent-avatar">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 8V4H8" />
-                <rect width="16" height="12" x="4" y="8" rx="2" />
-                <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
-              </svg>
-            </div>
-            <div class="agent-info">
-              <h2>Floor Plan Agent</h2>
-              <span class="agent-status">Online</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Chat Messages -->
-        <div class="chat-container" id="chatContainer">
-          <div class="chat-messages" id="chatMessages">
-            <!-- Welcome message -->
-            <div class="chat-message agent">
-              <div class="message-avatar">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 8V4H8" />
-                  <rect width="16" height="12" x="4" y="8" rx="2" />
-                  <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
-                </svg>
-              </div>
-              <div class="message-content">
-                <p>Hello! I am your Floor Plan Agent. I can help you design a construction-ready residential floor plan.
-                </p>
-                <p>Just tell me what you have in mind. For example, you could say:</p>
-                <div class="flex items-center space-x-2">
-                  <button id="settingsBtn" class="p-2 text-gray-500 hover:bg-gray-100 rounded-full" title="AI Settings">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                      </path>
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                    </svg>
-                  </button>
-                  <!-- Theme Toggle -->
-                  <span class="example-chip">I want a 100 sqm house</span>
-                  <span class="example-chip">2 bedrooms and 1 bathroom</span>
-                  <span class="example-chip">help</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Chat Input -->
-        <div class="chat-input-wrapper">
-          <div class="chat-input-container">
-            <textarea id="chatInput" class="chat-input" placeholder="Type your message..." rows="1"></textarea>
-            <button class="btn btn-primary btn-send" id="sendBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="m22 2-7 20-4-9-9-4 20-7z" />
-              </svg>
-            </button>
-          </div>
-          <div class="chat-hint">Press Enter to send, Shift+Enter for new line</div>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- API Key Modal -->
-  <div id="apiKeyModal" class="hidden fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
-    <div class="bg-white rounded-lg shadow-2xl p-6 w-[400px]">
-      <h2 class="text-xl font-bold mb-4">Enable AI Intelligence</h2>
-      <p class="text-gray-600 mb-4 text-sm">
-        To make the agent truly intelligent (like ChatGPT), enter your free Google Gemini API key.
-      </p>
-      <input type="text" id="apiKeyInput" placeholder="Enter Gemini API Key"
-        class="w-full px-4 py-2 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500">
-      <div class="flex justify-between gap-3">
-        <button id="skipApiKeyBtn" class="px-4 py-2 text-gray-500 hover:text-gray-700">Skip for now</button>
-        <button id="saveApiKeyBtn" class="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Enable AI</button>
-      </div>
-      <p class="mt-4 text-xs text-center text-gray-500">
-        Don't have a key? <a href="https://aistudio.google.com/app/apikey" target="_blank"
-          class="text-blue-500 underline">Get one for free</a>
-      </p>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-container">
+      <a href="#" class="logo">
+        <span class="logo-text">NakshaNirman</span>
+      </a>
+      <nav class="header-nav">
+        <a href="#portfolio" class="nav-link">Portfolio</a>
+        <a href="#about" class="nav-link">About</a>
+        <a href="#skills" class="nav-link">Skills</a>
+        <a href="#contact" class="nav-link">Contact</a>
+        <a href="/app.html" class="btn">Try Live Demo</a>
+      </nav>
     </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="container">
+    <!-- Profile Header -->
+    <section class="profile-header">
+      <div class="profile-avatar">N</div>
+      <h1 class="profile-name">NakshaNirman</h1>
+      <p class="profile-title">AI-Powered CAD Designer</p>
+      <div class="profile-location">
+        <span>India</span>
+      </div>
+      <p class="profile-experience">2+ Years Experience</p>
+      <div class="profile-actions">
+        <a href="/app.html" class="btn">Try Live Demo</a>
+        <a href="#contact" class="btn">Get In Touch</a>
+      </div>
+    </section>
+
+    <!-- Portfolio Section -->
+    <section id="portfolio" class="portfolio-section">
+      <h2 class="section-title">Portfolio</h2>
+      <div class="projects-grid">
+        <div class="project-card">
+          <div class="project-image">
+            <svg viewBox="0 0 350 200" style="width:100%;height:100%">
+              <!-- Floor Plan Visualization -->
+              <rect x="30" y="30" width="290" height="140" fill="none" stroke="#666" stroke-width="2"/>
+              <line x1="30" y1="100" x2="320" y2="100" stroke="#999" stroke-width="1"/>
+              <line x1="130" y1="100" x2="130" y2="170" stroke="#999" stroke-width="1"/>
+              <line x1="220" y1="100" x2="220" y2="170" stroke="#999" stroke-width="1"/>
+              
+              <!-- Room Labels -->
+              <text x="80" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Living</text>
+              <text x="175" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Kitchen</text>
+              <text x="270" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bedroom</text>
+              <text x="80" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bedroom</text>
+              <text x="175" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bath</text>
+              <text x="270" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Dining</text>
+              
+              <!-- Furniture -->
+              <rect x="50" y="110" width="60" height="20" fill="#666" opacity="0.5" rx="2"/>
+              <rect x="140" y="50" width="60" height="20" fill="#666" opacity="0.5" rx="2"/>
+              <circle cx="270" cy="80" r="12" fill="#666" opacity="0.5"/>
+            </svg>
+          </div>
+          <div class="project-content">
+            <h3 class="project-title">1220 Sq Ft Residential Design</h3>
+            <p class="project-description">
+              Complete house design with 3 bedrooms, living room, kitchen, dining area, 
+              2 bathrooms, balcony and car parking. AutoCAD-ready with furniture placement.
+            </p>
+            <div class="project-tags">
+              <span class="project-tag">AutoCAD</span>
+              <span class="project-tag">DXF Export</span>
+              <span class="project-tag">Furniture</span>
+              <span class="project-tag">Indian Standards</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="project-card">
+          <div class="project-image">
+            <svg viewBox="0 0 350 200" style="width:100%;height:100%">
+              <!-- AI Analysis Visualization -->
+              <rect x="50" y="50" width="250" height="100" fill="#111" stroke="#333" stroke-width="1" rx="8"/>
+              <circle cx="100" cy="80" r="8" fill="#666"/>
+              <circle cx="175" cy="100" r="6" fill="#666"/>
+              <circle cx="225" cy="85" r="10" fill="#666"/>
+              <path d="M100 80 L175 100 L225 85" stroke="#999" stroke-width="1" fill="none"/>
+              
+              <!-- Data points -->
+              <text x="175" y="175" font-family="Inter" font-size="11" fill="#666" text-anchor="middle">AI Vision Analysis</text>
+              <rect x="60" y="55" width="30" height="20" fill="#222" rx="3"/>
+              <rect x="100" y="55" width="30" height="20" fill="#222" rx="3"/>
+              <rect x="140" y="55" width="30" height="20" fill="#222" rx="3"/>
+            </svg>
+          </div>
+          <div class="project-content">
+            <h3 class="project-title">AI Vision Plot Analysis</h3>
+            <p class="project-description">
+              Advanced image upload and analysis system using Google Gemini Vision API 
+              for automatic plot boundary detection and dimension extraction.
+            </p>
+            <div class="project-tags">
+              <span class="project-tag">AI Vision</span>
+              <span class="project-tag">Gemini API</span>
+              <span class="project-tag">Image Upload</span>
+              <span class="project-tag">Analysis</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- About Section -->
+    <section id="about" class="portfolio-section">
+      <h2 class="section-title">About</h2>
+      <div class="about-content">
+        <p>
+          Professional AutoCAD-level floor plan generator specialized in Indian residential design. 
+          Transform ideas into construction-ready blueprints using advanced AI technology with 
+          Google Gemini integration for natural language processing and vision analysis.
+        </p>
+        <p style="margin-top: 1rem;">
+          Built with modern web technologies including Vite, Canvas API, and DXF Writer for 
+          seamless AutoCAD compatibility. Features include automatic furniture placement, 
+          Indian design standards compliance, and real-time rendering capabilities.
+        </p>
+      </div>
+      <div class="about-stats">
+        <div class="stat-item">
+          <span class="stat-number">2+</span>
+          <span class="stat-label">Years Experience</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-number">50+</span>
+          <span class="stat-label">Projects</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-number">13+</span>
+          <span class="stat-label">Room Types</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-number">100%</span>
+          <span class="stat-label">AutoCAD Ready</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Skills Section -->
+    <section id="skills" class="portfolio-section">
+      <h2 class="section-title">Skills & Technologies</h2>
+      <div class="skills-grid">
+        <div class="skill-item">
+          <div class="skill-name">JavaScript ES6+</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Google Gemini AI</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">AutoCAD Integration</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">DXF Writer</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Canvas API</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Vite Build Tool</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Vision AI</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Indian Design Standards</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Real-time Rendering</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Multi-Agent Architecture</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">Responsive Design</div>
+        </div>
+        <div class="skill-item">
+          <div class="skill-name">File API</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Contact Section -->
+    <section id="contact" class="portfolio-section">
+      <h2 class="section-title">Contact</h2>
+      <div class="contact-grid">
+        <div class="contact-item">
+          <div class="contact-label">Try Live Demo</div>
+          <div class="contact-value">
+            <a href="/app.html" class="contact-link">Start Designing</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">GitHub</div>
+          <div class="contact-value">
+            <a href="https://github.com/naksha-nirman" class="contact-link">View Source</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Email</div>
+          <div class="contact-value">
+            <a href="mailto:contact@nakshanirman.com" class="contact-link">contact@nakshanirman.com</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Documentation</div>
+          <div class="contact-value">
+            <a href="#" class="contact-link">API Reference</a>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
-  <script type="module" src="/src/main.js"></script>
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer-text">
+      <p>2026 NakshaNirman - Professional AutoCAD-Level Floor Plan Generator Portfolio</p>
+    </div>
+  </footer>
+
+  <script>
+    // Smooth scroll navigation
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const href = this.getAttribute('href');
+        if (href !== '#') {
+          e.preventDefault();
+          const target = document.querySelector(href);
+          if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+      });
+    });
+  </script>
 </body>
 
 </html>

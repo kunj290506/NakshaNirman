@@ -4,6 +4,7 @@
  */
 
 import { ROOM_TYPES } from '../utils/constants.js';
+import { analyzeFloorPlanImage, validateImageFile, createImagePreview } from '../utils/imageAnalyzer.js';
 
 export class ChatInterface {
   constructor(containerElement, onMessage) {
@@ -14,11 +15,14 @@ export class ChatInterface {
     this.chatContainer = document.getElementById('chatContainer');
     this.chatInput = document.getElementById('chatInput');
     this.sendBtn = document.getElementById('sendBtn');
+    this.uploadImageBtn = document.getElementById('uploadImageBtn');
+    this.imageUploadInput = document.getElementById('imageUploadInput');
 
     this.sendMessage = this.sendMessage.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleInput = this.handleInput.bind(this);
     this.handleExampleClick = this.handleExampleClick.bind(this);
+    this.handleImageUpload = this.handleImageUpload.bind(this);
 
     this.setupEventListeners();
   }
@@ -27,6 +31,12 @@ export class ChatInterface {
     this.sendBtn.addEventListener('click', this.sendMessage);
     this.chatInput.addEventListener('keydown', this.handleKeyDown);
     this.chatInput.addEventListener('input', this.handleInput);
+    
+    // Image upload listeners
+    this.uploadImageBtn.addEventListener('click', () => {
+      this.imageUploadInput.click();
+    });
+    this.imageUploadInput.addEventListener('change', this.handleImageUpload);
 
     this.messagesContainer.addEventListener('click', (e) => {
       if (e.target.classList.contains('example-chip')) {
@@ -39,6 +49,105 @@ export class ChatInterface {
         }
       }
     });
+  }
+
+  async handleImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Validate file
+    const validation = validateImageFile(file);
+    if (!validation.valid) {
+      this.addMessage('agent', validation.error, { error: validation.error });
+      return;
+    }
+
+    // Show image preview in chat
+    createImagePreview(file, (previewUrl) => {
+      this.addMessage('user', '', {
+        imagePreview: previewUrl,
+        imageName: file.name
+      });
+    });
+
+    // Show analyzing message
+    this.setLoading(true);
+    this.addMessage('agent', 'Analyzing your floor plan image... This may take a moment.');
+
+    // Get API key
+    const apiKey = localStorage.getItem('gemini_api_key');
+    if (!apiKey) {
+      this.setLoading(false);
+      this.addMessage('agent', 'Please configure your Gemini API key first to analyze images.', {
+        error: 'API key required',
+        actions: [{ id: 'configure_api', label: 'Configure API Key' }]
+      });
+      return;
+    }
+
+    // Analyze image
+    try {
+      const result = await analyzeFloorPlanImage(file, apiKey);
+      this.setLoading(false);
+
+      if (result.success) {
+        // Format analysis results
+        let message = `**Image Analysis Complete**\n\n`;
+        
+        if (result.plotDimensions) {
+          message += `**Plot Dimensions:**\n`;
+          message += `• Width: ${result.plotDimensions.widthFt?.toFixed(1) || '?'} feet (${(result.plotDimensions.width / 1000).toFixed(2)} meters)\n`;
+          message += `• Length: ${result.plotDimensions.lengthFt?.toFixed(1) || '?'} feet (${(result.plotDimensions.length / 1000).toFixed(2)} meters)\n`;
+          message += `• Shape: ${result.plotShape}\n\n`;
+        }
+        
+        if (result.totalAreaSqft) {
+          message += `**Total Area:** ${result.totalAreaSqft} sq ft (${(result.totalAreaSqft * 0.0929).toFixed(1)} sqm)\n\n`;
+        }
+        
+        if (result.existingRooms && result.existingRooms.length > 0) {
+          message += `**Detected Rooms:**\n`;
+          result.existingRooms.forEach(room => {
+            message += `• ${room.count}x ${room.type}\n`;
+          });
+          message += `\n`;
+        }
+        
+        if (result.notes) {
+          message += `**Notes:** ${result.notes}\n\n`;
+        }
+        
+        message += `Would you like me to generate a floor plan based on these dimensions?`;
+        
+        this.addMessage('agent', message, {
+          actions: [
+            { id: 'use_detected_dimensions', label: 'Yes, use these dimensions' },
+            { id: 'manual_adjust', label: 'Let me adjust manually' }
+          ]
+        });
+
+        // Store analysis result for later use
+        this.lastImageAnalysis = result;
+        
+        // Trigger callback with image analysis data
+        if (this.onMessage) {
+          this.onMessage(`__image_analyzed__:${JSON.stringify(result)}`);
+        }
+        
+      } else {
+        this.addMessage('agent', `Failed to analyze image: ${result.error}`, {
+          error: result.error
+        });
+      }
+    } catch (error) {
+      this.setLoading(false);
+      this.addMessage('agent', `Error analyzing image: ${error.message}`, {
+        error: error.message
+      });
+    }
+
+    // Clear input
+    event.target.value = '';
   }
 
   handleKeyDown(e) {
@@ -89,6 +198,19 @@ export class ChatInterface {
         <div class="message-content">${this.formatContent(content, options)}</div>
       `;
     } else {
+      // User message with optional image preview
+      let userContent = '';
+      if (options.imagePreview) {
+        userContent = `
+          <div class="image-preview">
+            <img src="${options.imagePreview}" alt="${options.imageName || 'Floor plan'}" />
+            <div class="image-name">${options.imageName || 'Floor plan image'}</div>
+          </div>
+        `;
+      } else {
+        userContent = this.escapeHtml(content);
+      }
+      
       message.innerHTML = `
         <div class="message-avatar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -96,7 +218,7 @@ export class ChatInterface {
             <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
           </svg>
         </div>
-        <div class="message-content">${this.escapeHtml(content)}</div>
+        <div class="message-content">${userContent}</div>
       `;
     }
 
@@ -108,11 +230,32 @@ export class ChatInterface {
 
   formatContent(content, options = {}) {
     let html = content
+      .replace(/### (.*?)\n/g, '<h4 class="font-bold text-sm mt-3 mb-1">$1</h4>')
+      .replace(/## (.*?)\n/g, '<h3 class="font-bold text-base mt-4 mb-2 text-gray-800">$1</h3>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/`(.*?)`/g, '<code>$1</code>')
       .replace(/\n/g, '<br>')
       .replace(/• /g, '&bull; ')
       .replace(/- /g, '&bull; ');
+
+    // Add Thinking Process (Architect Style)
+    if (options.thought_process && options.thought_process.length > 0) {
+      const thoughtsHtml = options.thought_process.map(t =>
+        `<div class="thought-step"><span class="thought-arrow">→</span> ${t}</div>`
+      ).join('');
+
+      html = `
+        <details class="thought-container" open>
+          <summary class="thought-summary">
+            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+            Architect's Thinking Process
+          </summary>
+          <div class="thought-content">
+            ${thoughtsHtml}
+          </div>
+        </details>
+      ` + html;
+    }
 
     // Add room summary if provided
     if (options.rooms && options.rooms.length > 0) {

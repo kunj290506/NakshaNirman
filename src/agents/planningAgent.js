@@ -79,8 +79,26 @@ export function checkFeasibility(requirements) {
         };
     }
 
-    // Sort rooms by priority (public to private)
-    expandedRooms.sort((a, b) => a.priority - b.priority);
+    // Sort rooms by priority (public to private) and privacy level
+    expandedRooms.sort((a, b) => {
+        // First by privacy level (public -> semi-private -> private)
+        const privacyOrder = { 'public': 0, 'semi-private': 1, 'private': 2 };
+        const privacyA = ROOM_TYPES[a.type]?.privacyLevel || 'public';
+        const privacyB = ROOM_TYPES[b.type]?.privacyLevel || 'public';
+        
+        if (privacyOrder[privacyA] !== privacyOrder[privacyB]) {
+            return privacyOrder[privacyA] - privacyOrder[privacyB];
+        }
+        
+        // Then by priority within same privacy level
+        return a.priority - b.priority;
+    });
+
+    // Apply adjacency validation and warnings
+    const adjacencyWarnings = validateAdjacencyRequirements(expandedRooms);
+    if (adjacencyWarnings.length > 0) {
+        console.warn('Adjacency recommendations:', adjacencyWarnings);
+    }
 
     // Validate individual room dimensions
     for (const room of expandedRooms) {
@@ -109,7 +127,6 @@ export function checkFeasibility(requirements) {
 
     // Warn if circulation space is very low
     if (circulationPercent < 10) {
-        // Not an error, just a warning we could surface later
         console.warn(`Low circulation space: ${circulationPercent.toFixed(1)}%`);
     }
 
@@ -120,7 +137,9 @@ export function checkFeasibility(requirements) {
                 width: plotWidth,
                 height: plotHeight,
                 usableWidth,
-                usableHeight
+                usableHeight,
+                shape: requirements.plotShape || 'rectangular',
+                boundary: requirements.plotBoundary || null
             },
             rooms: expandedRooms,
             stats: {
@@ -130,9 +149,43 @@ export function checkFeasibility(requirements) {
                 usableAreaSqm,
                 circulationAreaMm,
                 circulationPercent
-            }
+            },
+            adjacencyWarnings
         }
     };
+}
+
+/**
+ * Validate adjacency requirements for Indian residential design
+ */
+function validateAdjacencyRequirements(rooms) {
+    const warnings = [];
+    
+    // Check critical adjacencies
+    const hasKitchen = rooms.find(r => r.type === 'kitchen');
+    const hasDining = rooms.find(r => r.type === 'dining_room');
+    const hasBathroom = rooms.find(r => r.type === 'bathroom');
+    const hasBedrooms = rooms.filter(r => r.type === 'bedroom' || r.type === 'master_bedroom');
+    
+    // Kitchen-Dining adjacency
+    if (hasKitchen && hasDining && !hasKitchen.adjacentTo.includes('dining_room')) {
+        warnings.push('Kitchen should be adjacent to dining room for optimal flow');
+    }
+    
+    // Bathroom accessibility
+    if (hasBedrooms.length > 0 && !hasBathroom) {
+        warnings.push('Bathrooms should be accessible to bedrooms');
+    }
+    
+    // Privacy separation
+    const publicRooms = rooms.filter(r => ROOM_TYPES[r.type]?.privacyLevel === 'public');
+    const privateRooms = rooms.filter(r => ROOM_TYPES[r.type]?.privacyLevel === 'private');
+    
+    if (publicRooms.length > 0 && privateRooms.length > 0) {
+        warnings.push('Ensure clear separation between public and private zones');
+    }
+    
+    return warnings;
 }
 
 /**

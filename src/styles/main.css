@@ -1,43 +1,43 @@
 /* ===========================================
    CAD Floor Planner - Main Styles
-   Light Theme Design System
+   Dark Theme Design System
    =========================================== */
 
 /* CSS Variables - Design Tokens */
 :root {
-  /* Colors - Light Theme */
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f8fafc;
-  --color-bg-tertiary: #f1f5f9;
-  --color-bg-hover: #e2e8f0;
+  /* Colors - Dark Theme */
+  --color-bg-primary: #0a0a0a;
+  --color-bg-secondary: #1a1a1a;
+  --color-bg-tertiary: #111111;
+  --color-bg-hover: #2a2a2a;
   
-  --color-border: #e2e8f0;
-  --color-border-strong: #cbd5e1;
+  --color-border: #333333;
+  --color-border-strong: #555555;
   
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-muted: #94a3b8;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #666666;
   
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-accent-light: #dbeafe;
+  --color-accent: #ffffff;
+  --color-accent-hover: #e0e0e0;
+  --color-accent-light: #333333;
   
-  --color-success: #10b981;
-  --color-success-light: #d1fae5;
+  --color-success: #22c55e;
+  --color-success-light: #1f2937;
   --color-error: #ef4444;
-  --color-error-light: #fee2e2;
+  --color-error-light: #1f2937;
   --color-warning: #f59e0b;
-  --color-warning-light: #fef3c7;
+  --color-warning-light: #1f2937;
   
-  /* Room Colors */
-  --color-room-living: #bfdbfe;
-  --color-room-bedroom: #c7d2fe;
-  --color-room-kitchen: #fde68a;
-  --color-room-bathroom: #a5f3fc;
-  --color-room-dining: #fecaca;
-  --color-room-study: #d9f99d;
-  --color-room-storage: #e2e8f0;
-  --color-room-default: #f1f5f9;
+  /* Room Colors - Dark Theme */
+  --color-room-living: #1e3a8a;
+  --color-room-bedroom: #312e81;
+  --color-room-kitchen: #92400e;
+  --color-room-bathroom: #0e7490;
+  --color-room-dining: #dc2626;
+  --color-room-study: #365314;
+  --color-room-storage: #374151;
+  --color-room-default: #1f2937;
   
   /* Typography */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -73,10 +73,10 @@
   --radius-xl: 12px;
   --radius-full: 9999px;
   
-  /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  /* Shadows - Dark Theme */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.4);
   
   /* Transitions */
   --transition-fast: 150ms ease;
@@ -349,4 +349,22 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
+}
+
+/* Dark Theme Form Elements */
+input, textarea, select {
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
+}
+
+/* Dark Theme Modal Overlay */
+.modal-overlay {
+  background: rgba(0, 0, 0, 0.8);
 }

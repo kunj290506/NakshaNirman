@@ -135,6 +135,23 @@ class FloorPlannerApp {
     }
 
     async handleChatMessage(text) {
+        // Handle image analysis results
+        if (text.startsWith('__image_analyzed__:')) {
+            const analysisData = JSON.parse(text.replace('__image_analyzed__:', ''));
+            
+            // Update context with detected plot dimensions
+            if (analysisData.plotDimensions) {
+                this.context.plotDimensions = {
+                    width: analysisData.plotDimensions.width,
+                    length: analysisData.plotDimensions.length
+                };
+                this.context.plotShape = analysisData.plotShape;
+                this.context.totalAreaSqm = analysisData.totalAreaSqft * 0.0929; // Convert to sqm
+            }
+            
+            return;
+        }
+        
         // Handle button actions
         if (text.startsWith('__action__:')) {
             this.handleAction(text.replace('__action__:', ''));
@@ -166,13 +183,16 @@ class FloorPlannerApp {
                 this.chat.addMessage('agent', result.response, {
                     rooms: rooms,
                     totalArea: this.context.totalAreaSqm,
+                    thought_process: result.thought_process, // Pass thoughts
                     actions: [
                         { id: 'generate', label: 'Generate Floor Plan' },
                         { id: 'modify', label: 'Make Changes' }
                     ]
                 });
             } else {
-                this.chat.addMessage('agent', result.response);
+                this.chat.addMessage('agent', result.response, {
+                    thought_process: result.thought_process // Pass thoughts here too
+                });
             }
 
         } catch (error) {
@@ -192,6 +212,16 @@ class FloorPlannerApp {
                 this.chat.addMessage('agent',
                     'What would you like to change? You can:\n- Adjust room sizes\n- Add or remove rooms\n- Change total area'
                 );
+                break;
+            case 'use_detected_dimensions':
+                // Use dimensions from image analysis
+                this.chat.addMessage('agent', 'Great! Now tell me what rooms you need, or I can use a standard layout.');
+                break;
+            case 'manual_adjust':
+                this.chat.addMessage('agent', 'Please tell me the plot dimensions you want to use (e.g., "36 feet by 36 feet" or "1220 square feet")');
+                break;
+            case 'configure_api':
+                this.showAPIKeyModal();
                 break;
             case 'download':
                 this.handleDownload();
@@ -225,8 +255,8 @@ class FloorPlannerApp {
                 return;
             }
 
-            // Generate layout
-            const layoutResult = generateLayout(planResult.data);
+            // Generate layout (Async ML Inference)
+            const layoutResult = await generateLayout(planResult.data);
 
             if (!layoutResult.success) {
                 this.chat.addMessage('agent', `Layout issue: ${layoutResult.error}`);

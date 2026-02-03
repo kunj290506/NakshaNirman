@@ -1,8 +1,21 @@
 {
-  "name": "cad-floor-planner",
+  "name": "naksha-nirman",
+  "description": "Professional AutoCAD-level AI-powered CAD floor plan generator for Indian residential design",
+  "version": "2.0.0",
   "private": true,
-  "version": "1.0.0",
   "type": "module",
+  "keywords": [
+    "autocad",
+    "floor-plan",
+    "architecture",
+    "cad",
+    "dxf",
+    "ai",
+    "residential-design",
+    "indian-architecture",
+    "furniture-placement",
+    "spatial-planning"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
