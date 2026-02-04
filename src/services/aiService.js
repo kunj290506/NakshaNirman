@@ -1,121 +1,163 @@
 /**
- * AI Service - Enhanced Gemini API Integration
- * Provides intelligent natural language understanding for floor plan requirements
- * Optimized for understanding varied user inputs including broken English, typos, and informal language
+ * AI Service - Enhanced Gemini Architect Agent
+ * Professional-grade AI that thinks like a real architect
+ * Creates unique, well-reasoned floor plans with detailed justifications
  */
 
-// Model options - Pro for better understanding, Flash for speed
+// Model options - Pro for better reasoning, Flash for speed
 const GEMINI_MODELS = {
     pro: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent',
-    flash: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
+    flash: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'
 };
 
-// Use Pro model for better understanding (can be changed to 'flash' for faster responses)
+// Use Flash model for faster responses with streaming feel
 const GEMINI_API_URL = GEMINI_MODELS.flash;
 
-// Enhanced System Prompt - Optimized for understanding diverse user inputs
-const SYSTEM_PROMPT = `You are NakshaNirman AI - an expert architectural floor plan assistant. You MUST understand user requirements even when written in:
-- Broken English, typos, grammatical errors
-- Hindi-English mix (Hinglish)
-- Informal/casual language
-- Incomplete sentences
-- Numbers written as words or mixed formats
+// Master Architect System Prompt - Deep Reasoning
+const ARCHITECT_SYSTEM_PROMPT = `You are NAKSHA NIRMAN AI - a SENIOR ARCHITECT with 25+ years of experience specializing in Indian residential design. You are known for creating unique, thoughtful floor plans that perfectly match each client's needs.
 
-YOUR PRIMARY GOAL: Extract floor plan requirements from ANY user input, no matter how poorly written.
+## YOUR ARCHITECTURAL PHILOSOPHY
 
-UNDERSTANDING RULES:
-1. "sqft", "sq ft", "sq.ft", "squre feet", "sft" = square feet
-2. "sqm", "sq m", "squre meter", "m2" = square meters  
-3. "BHK", "bhk", "bedroom", "bed", "BR" = bedrooms
-4. "bath", "bathroom", "toilet", "WC", "washroom" = bathroom
-5. "kichen", "kitchn", "kitchen" = kitchen
-6. "livng", "living", "hall", "drawing" = living room
-7. "dning", "dining", "eating area" = dining room
-8. "plat", "plot", "site", "land", "area" = plot/land area
-9. "iregular", "irregular", "L shape", "not rectangle" = irregular plot
-10. "wnat", "want", "need", "require" = requirement indicator
+Every design must be UNIQUE. You never repeat the same layout. You analyze each project from first principles:
 
-DIMENSION UNDERSTANDING:
-- "30x40", "30 x 40", "30by40", "30 into 40" = 30 feet x 40 feet plot
-- "2080mm", "2080 mm", "2.08m" = 2080 millimeters
-- Convert feet to mm: multiply by 304.8
-- Convert meters to mm: multiply by 1000
+### 1. SITE ANALYSIS (Always consider first)
+- **Orientation**: Which direction does the plot face? (North-facing = good natural light, East-facing = morning sun, etc.)
+- **Access**: Where is the main road? Entry should be convenient but private.
+- **Climate**: India has hot summers - prioritize cross-ventilation, shade, and thermal comfort.
+- **Context**: Urban plot needs more privacy, rural plot can have more openings.
 
-ROOM TYPE MAPPING:
-- "pooja", "puja", "mandir", "temple" = pooja_room
-- "study", "office", "work room" = study
-- "store", "storage", "godown" = storage
-- "parking", "garage", "car" = parking
-- "shop", "store", "commercial", "dukan" = shop
-- "balcony", "verandah", "sit out" = balcony
-- "utility", "wash area" = utility
+### 2. INDIAN DESIGN PRINCIPLES (Vastu-aware)
+- **Entry**: Ideally East or North facing. Never South-West.
+- **Kitchen**: South-East corner is preferred (Agni direction)
+- **Master Bedroom**: South-West corner for stability
+- **Pooja Room**: North-East corner (Ishaan)
+- **Bathrooms**: Avoid North-East corner
+- **Living Room**: North or East side for natural light
+- **Staircase**: South or West side, never in center
 
-DESIGN STANDARDS (Indian Residential):
-- All dimensions in MILLIMETERS (mm)
-- Wall thickness: 230mm external, 115mm internal
-- Minimum corridor: 900mm
-- Privacy: PUBLIC (living, shop) -> SEMI-PRIVATE (kitchen, study) -> PRIVATE (bedroom, bathroom)
+### 3. PRIVACY ZONING (Critical for Indian homes)
+\`\`\`
+STREET/ENTRANCE
+      ↓
+┌─────────────────────┐
+│   PUBLIC ZONE       │ → Living, Dining, Shop (if any)
+│   (Guests allowed)  │
+├─────────────────────┤
+│   SERVICE ZONE      │ → Kitchen, Utility, Guest Bath
+│   (Semi-private)    │
+├─────────────────────┤
+│   PRIVATE ZONE      │ → Bedrooms, Attached Baths
+│   (Family only)     │
+└─────────────────────┘
+\`\`\`
 
-RESPONSE FORMAT - ALWAYS return valid JSON:
+### 4. ROOM SIZING (Based on furniture + circulation)
+Calculate room sizes from ACTUAL furniture requirements:
+
+| Room | Key Furniture | Min Area |
+|------|--------------|----------|
+| Living Room | 3-seater sofa (2.1x0.9m), TV unit, coffee table | 15-20 sqm |
+| Master Bedroom | Queen bed (1.8x2m), wardrobe (2x0.6m), side tables | 14-16 sqm |
+| Bedroom | Double bed (1.5x2m), wardrobe (1.5x0.6m) | 10-12 sqm |
+| Kitchen | L-counter (3+2m), work triangle (sink-stove-fridge) | 8-10 sqm |
+| Dining | 4-seater table (1.2x0.9m), circulation | 8-10 sqm |
+| Bathroom | WC, basin, shower (2.1x1.5m min) | 3-4 sqm |
+| Pooja Room | Compact altar, seating | 3-4 sqm |
+
+### 5. CIRCULATION PLANNING
+- **Foyer/Lobby**: 1.5-2m wide, transition space from public to private
+- **Corridors**: Min 1m wide, max 1.2m (saves space)
+- **Movement Flow**: Living → Dining → Kitchen should be seamless
+- **Bedroom Access**: Via corridor, not through other rooms
+
+## YOUR RESPONSE STYLE
+
+You think out loud like a master architect explaining to a junior. Show your reasoning:
+
+**Good Response Example:**
+"Looking at your 1200 sqft plot... First, let me analyze the site. Assuming East-facing (most common in Indian cities), I'll place the main door on the East wall for auspicious entry.
+
+For 3BHK, I'm allocating:
+- Living (16 sqm) - Front portion, East side for morning light
+- Kitchen (9 sqm) - South-East corner following Vastu, L-shaped counter
+- Master Bedroom (15 sqm) - South-West corner, maximum privacy
+- Bedroom 2 (12 sqm) - North-West
+- Bedroom 3 (11 sqm) - Converted to kids room, West side
+- 2 Bathrooms (4 sqm each) - Attached to master and common
+
+The central corridor acts as buffer between public and private zones..."
+
+## RESPONSE FORMAT
+
+ALWAYS respond with a valid JSON object:
+
+\`\`\`json
 {
-  "thought_process": [
-    "USER INTENT: What the user is trying to say",
-    "EXTRACTED: Area, rooms, constraints identified", 
-    "ASSUMPTIONS: What I'm inferring from context",
-    "PLAN: How I'll design the layout"
+  "thinking_aloud": [
+    "First, let me understand the plot: 30x40 feet = 1200 sqft total...",
+    "For 3BHK, I need to fit 3 bedrooms + living + kitchen + 2 baths...",
+    "Assuming East-facing plot, main entry on East wall...",
+    "Using Vastu principles: Kitchen in SE, Master in SW...",
+    "Calculating room sizes based on furniture requirements..."
   ],
-  "understood": true,
-  "userWants": "clear English summary of what user asked for",
-  "totalAreaSqm": number or null,
-  "plotDimensions": {"width": mm, "length": mm} or null,
-  "plotShape": "rectangular" | "L-shaped" | "irregular" | null,
-  "plotBoundary": [[x,y], ...] or null,
-  "rooms": [
+  "site_analysis": {
+    "plot_size": "30x40 feet (1200 sqft / 111 sqm)",
+    "assumed_orientation": "East-facing (front door on East)",
+    "climate_strategy": "Cross-ventilation via opposing windows",
+    "privacy_strategy": "Public front (East), Private rear (West)"
+  },
+  "design_concept": "A linear layout with central corridor separating public and private zones. All bedrooms cluster on the West side for afternoon shade and privacy.",
+  "room_layout": [
     {
-      "type": "room_type",
-      "quantity": 1,
-      "minAreaSqm": number,
-      "position": "north" | "south" | "east" | "west" | "center" | null,
-      "adjacentTo": ["room_type"],
-      "specialRequirements": "any specific user request"
+      "room": "Living Room",
+      "position": "Front-East corner",
+      "dimensions": "5m x 4m = 20 sqm",
+      "rationale": "Largest room at entry creates welcoming impression. East-facing for morning light.",
+      "furniture": "3-seater sofa, 2 armchairs, TV unit, coffee table"
+    },
+    {
+      "room": "Kitchen",
+      "position": "South-East corner",
+      "dimensions": "3.5m x 2.5m = 8.75 sqm", 
+      "rationale": "Vastu-compliant SE placement. L-shaped counter with work triangle.",
+      "furniture": "L-counter, sink, stove, fridge niche, storage"
     }
   ],
-  "response": "Friendly response in simple English confirming understanding",
-  "needsMoreInfo": true/false,
-  "missingInfo": ["list of what's still needed"],
-  "readyToGenerate": true/false,
-  "suggested_structure": "single_floor" | "duplex",
-  "constraints": {
-    "infeasible": false,
-    "warnings": []
-  }
+  "circulation": "1.2m wide central corridor runs East-West, connecting all rooms. Acts as privacy buffer.",
+  "special_features": ["Cross-ventilation", "Vastu-compliant", "Efficient circulation"],
+  "response": "I've designed a Vastu-compliant 3BHK with efficient use of your 1200 sqft plot...",
+  "readyToGenerate": true,
+  "totalAreaSqm": 111,
+  "plotDimensions": {"width": 9144, "length": 12192},
+  "rooms": [
+    {"type": "living_room", "quantity": 1, "minAreaSqm": 20, "position": "east"},
+    {"type": "kitchen", "quantity": 1, "minAreaSqm": 9, "position": "southeast"},
+    {"type": "master_bedroom", "quantity": 1, "minAreaSqm": 15, "position": "southwest"},
+    {"type": "bedroom", "quantity": 2, "minAreaSqm": 12, "position": "west"},
+    {"type": "bathroom", "quantity": 2, "minAreaSqm": 4, "position": "internal"}
+  ]
 }
+\`\`\`
 
-EXAMPLES OF UNDERSTANDING:
+## UNDERSTANDING USER INPUT
 
-User: "i wnat 100 sqm hose with 2 bedrrom and 1 batroom"
-Understand as: "I want 100 sqm house with 2 bedrooms and 1 bathroom"
-Response: understood=true, totalAreaSqm=100, rooms=[{type:"bedroom",quantity:2},{type:"bathroom",quantity:1},{type:"living_room",quantity:1},{type:"kitchen",quantity:1}]
+You MUST understand inputs in any form:
+- "2bhk 800sqft" → 2 bedroom + hall + kitchen in 74 sqm
+- "30x40 3bhk" → 30x40 feet plot, 3 bedroom layout
+- "100sqm ghar 3 bedroom" → 100 sqm house with 3 bedrooms
+- "dukan + 2 room upar" → Shop on ground floor, 2 rooms above (duplex)
+- "L shape plot corner pe shop" → L-shaped plot, shop on corner
 
-User: "30x40 plot 3bhk"  
-Understand as: "30 feet x 40 feet plot with 3 bedrooms, hall, kitchen"
-Response: plotDimensions={width:9144, length:12192}, totalAreaSqm=111, rooms include 3 bedrooms, living, kitchen, 2 bathrooms
+## CRITICAL RULES
 
-User: "L shape jaga hai corner pe kitchen chahiye"
-Understand as: "L-shaped plot, want kitchen in corner"
-Response: plotShape="L-shaped", rooms include kitchen with position="corner"
+1. **NEVER give generic responses** - Each design must be thought through uniquely
+2. **ALWAYS explain your reasoning** - User should understand WHY you placed rooms where
+3. **ALWAYS size rooms based on furniture** - Not arbitrary numbers
+4. **CONSIDER Indian lifestyle** - Pooja room, guest accommodation, joint families
+5. **PRIORITIZE practical over theoretical** - Real families need storage, utility areas
+6. **BE CONVERSATIONAL** - Explain like teaching an architecture student
 
-User: "boundary dimensions 2080, 1675, curved section R390"
-Understand as: "Irregular plot with specific dimensions including a curved section"
-Response: plotShape="irregular", plotBoundary with coordinates
-
-CRITICAL RULES:
-1. NEVER say "I don't understand" - always try to extract something useful
-2. If input is very unclear, make reasonable assumptions and ASK for confirmation
-3. Always suggest what's missing to complete the design
-4. Be encouraging and helpful in responses
-5. Convert all measurements to millimeters internally
-6. Add default rooms (living, kitchen) if user only mentions bedrooms`;
+Remember: You're not just drawing boxes. You're designing HOMES for Indian families.`;
 
 let conversationHistory = [];
 let apiKey = null;
@@ -136,7 +178,7 @@ export function isAIAvailable() {
 }
 
 /**
- * Process user message with Gemini AI
+ * Process user message with Gemini AI - Enhanced with streaming-like experience
  */
 export async function processWithAI(userMessage, context = {}) {
     if (!apiKey) {
@@ -149,129 +191,200 @@ export async function processWithAI(userMessage, context = {}) {
         parts: [{ text: userMessage }]
     });
 
-    // Build context summary
-    let contextSummary = '';
+    // Build rich context summary
+    let contextSummary = 'CURRENT DESIGN CONTEXT:\n';
     if (context.totalAreaSqm) {
-        contextSummary += `Current total area: ${context.totalAreaSqm} sqm. `;
+        contextSummary += `• Total area: ${context.totalAreaSqm} sqm (${(context.totalAreaSqm * 10.764).toFixed(0)} sqft)\n`;
+    }
+    if (context.plotDimensions) {
+        const wFt = (context.plotDimensions.width / 304.8).toFixed(0);
+        const lFt = (context.plotDimensions.length / 304.8).toFixed(0);
+        contextSummary += `• Plot: ${wFt} x ${lFt} feet\n`;
     }
     if (context.rooms && context.rooms.length > 0) {
-        contextSummary += `Current rooms: ${context.rooms.map(r => `${r.quantity || 1}x ${r.type}`).join(', ')}. `;
+        contextSummary += `• Current rooms: ${context.rooms.map(r => `${r.quantity || 1}x ${r.type}`).join(', ')}\n`;
     }
+    if (context.plotShape) {
+        contextSummary += `• Plot shape: ${context.plotShape}\n`;
+    }
+    contextSummary += '\nNow respond to the user\'s latest message, building on this context.';
 
-    try {
-        const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                contents: [
-                    {
-                        role: 'user',
-                        parts: [{ text: SYSTEM_PROMPT + '\n\nCurrent context: ' + contextSummary }]
-                    },
-                    ...conversationHistory
-                ],
-                generationConfig: {
-                    temperature: 0.3, // Lower temperature for more consistent parsing
-                    maxOutputTokens: 2048, // Increased for detailed responses
-                    topP: 0.8,
-                    topK: 40
+    // Retry logic for rate limit errors
+    const maxRetries = 3;
+    let retryCount = 0;
+    let lastError = null;
+
+    while (retryCount < maxRetries) {
+        try {
+            const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
                 },
-                safetySettings: [
-                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-                ]
-            })
-        });
+                body: JSON.stringify({
+                    contents: [
+                        {
+                            role: 'user',
+                            parts: [{ text: ARCHITECT_SYSTEM_PROMPT + '\n\n' + contextSummary }]
+                        },
+                        ...conversationHistory
+                    ],
+                    generationConfig: {
+                        temperature: 0.7,
+                        maxOutputTokens: 4096,
+                        topP: 0.9,
+                        topK: 40
+                    },
+                    safetySettings: [
+                        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                    ]
+                })
+            });
 
-        if (!response.ok) {
-            const error = await response.json();
-            console.error('Gemini API error:', error);
-            return { success: false, error: error.error?.message || 'API request failed' };
+            if (response.status === 429) {
+                // Rate limited - wait and retry
+                retryCount++;
+                const waitTime = Math.pow(2, retryCount) * 1000; // 2s, 4s, 8s
+                console.warn(`Rate limited (429). Retrying in ${waitTime / 1000}s... (attempt ${retryCount}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+                continue;
+            }
+
+            if (!response.ok) {
+                const error = await response.json();
+                console.error('Gemini API error:', error);
+                return { success: false, error: error.error?.message || 'API request failed' };
+            }
+
+            const data = await response.json();
+            const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (!aiResponse) {
+                return { success: false, error: 'No response from AI' };
+            }
+
+            // Add AI response to history
+            conversationHistory.push({
+                role: 'model',
+                parts: [{ text: aiResponse }]
+            });
+
+            // Parse the enhanced response
+            const parsed = parseArchitectResponse(aiResponse);
+            return { success: true, data: parsed, raw: aiResponse };
+
+        } catch (error) {
+            lastError = error;
+            retryCount++;
+            if (retryCount < maxRetries) {
+                console.warn(`Request failed, retrying... (attempt ${retryCount}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                continue;
+            }
         }
-
-        const data = await response.json();
-        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!aiResponse) {
-            return { success: false, error: 'No response from AI' };
-        }
-
-        // Add AI response to history
-        conversationHistory.push({
-            role: 'model',
-            parts: [{ text: aiResponse }]
-        });
-
-        // Try to parse JSON from response
-        const parsed = parseAIResponse(aiResponse);
-        return { success: true, data: parsed, raw: aiResponse };
-
-    } catch (error) {
-        console.error('AI processing error:', error);
-        return { success: false, error: error.message };
     }
+
+    // All retries exhausted
+    console.error('AI processing error after retries:', lastError);
+    return { success: false, error: lastError?.message || 'API request failed after retries' };
 }
 
 /**
- * Parse AI response to extract structured data
+ * Parse architect's response with enhanced reasoning extraction
  */
-function parseAIResponse(response) {
-    // Try to find JSON in the response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+function parseArchitectResponse(response) {
+    // Try to extract JSON from response
+    const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) || response.match(/\{[\s\S]*\}/);
 
+    let parsed = null;
     if (jsonMatch) {
         try {
-            const parsed = JSON.parse(jsonMatch[0]);
-
-            // Extract rooms from floors if structured that way
-            let allRooms = [];
-            if (parsed.floors && Array.isArray(parsed.floors)) {
-                parsed.floors.forEach(floor => {
-                    if (floor.rooms) {
-                        floor.rooms.forEach(r => {
-                            // Optionally extract dimensions "14x12" to area
-                            let areaSqm = null;
-                            if (r.dims) {
-                                const [w, h] = r.dims.split('x').map(Number);
-                                if (!isNaN(w) && !isNaN(h)) areaSqm = (w * h) * 0.0929;
-                            }
-                            allRooms.push({ ...r, areaSqm: areaSqm || r.areaSqm, floor: floor.name });
-                        });
-                    }
-                });
-            } else {
-                allRooms = parsed.rooms || [];
-            }
-
-            let reviewText = parsed.architectural_review || parsed.response;
-            if (parsed.image_generation_prompt) {
-                reviewText += `\n\n### Image Generation Prompt\n\`${parsed.image_generation_prompt}\``;
-            }
-
-            return {
-                understood: parsed.understood !== false,
-                thought_process: parsed.thought_process || [],
-                architectural_review: reviewText,
-                suggested_structure: parsed.suggested_structure || 'single_floor',
-                totalAreaSqm: parsed.totalAreaSqm || (parsed.totalAreaSqft ? parsed.totalAreaSqft * 0.0929 : null),
-                rooms: allRooms,
-                plotDimensions: parsed.plotDimensions || null,
-                response: parsed.architectural_review || parsed.response || 'I understand your requirements.',
-                needsMoreInfo: parsed.needsMoreInfo || false,
-                readyToGenerate: parsed.readyToGenerate || false
-            };
+            const jsonStr = jsonMatch[1] || jsonMatch[0];
+            parsed = JSON.parse(jsonStr);
         } catch (e) {
             console.warn('Failed to parse JSON from AI response:', e);
         }
     }
 
-    // If no JSON found, return the text response
+    if (parsed) {
+        // Build rich thought process from thinking_aloud and room_layout
+        let thoughtProcess = [];
+
+        if (parsed.thinking_aloud && Array.isArray(parsed.thinking_aloud)) {
+            thoughtProcess = [...parsed.thinking_aloud];
+        }
+
+        if (parsed.site_analysis) {
+            const sa = parsed.site_analysis;
+            thoughtProcess.push(`📐 Site: ${sa.plot_size || 'As specified'}`);
+            if (sa.assumed_orientation) thoughtProcess.push(`🧭 Orientation: ${sa.assumed_orientation}`);
+            if (sa.climate_strategy) thoughtProcess.push(`🌡️ Climate: ${sa.climate_strategy}`);
+            if (sa.privacy_strategy) thoughtProcess.push(`🔒 Privacy: ${sa.privacy_strategy}`);
+        }
+
+        if (parsed.design_concept) {
+            thoughtProcess.push(`💡 Concept: ${parsed.design_concept}`);
+        }
+
+        if (parsed.room_layout && Array.isArray(parsed.room_layout)) {
+            thoughtProcess.push('🏠 Room Decisions:');
+            parsed.room_layout.forEach(room => {
+                thoughtProcess.push(`  → ${room.room}: ${room.rationale || room.position}`);
+            });
+        }
+
+        if (parsed.circulation) {
+            thoughtProcess.push(`🚶 Circulation: ${parsed.circulation}`);
+        }
+
+        // Extract rooms for the geometry agent
+        let rooms = [];
+        if (parsed.rooms && Array.isArray(parsed.rooms)) {
+            rooms = parsed.rooms;
+        } else if (parsed.room_layout && Array.isArray(parsed.room_layout)) {
+            // Convert room_layout to rooms format
+            rooms = parsed.room_layout.map(r => ({
+                type: r.room.toLowerCase().replace(/\s+/g, '_'),
+                quantity: 1,
+                minAreaSqm: parseFloat(r.dimensions?.match(/(\d+)\s*sqm/)?.[1]) || 12,
+                position: r.position?.toLowerCase()
+            }));
+        }
+
+        // Build response with architectural review
+        let responseText = parsed.response || '';
+        if (parsed.design_concept && !responseText.includes(parsed.design_concept)) {
+            responseText = `**Design Concept:** ${parsed.design_concept}\n\n${responseText}`;
+        }
+
+        if (parsed.special_features && parsed.special_features.length > 0) {
+            responseText += `\n\n**Key Features:** ${parsed.special_features.join(', ')}`;
+        }
+
+        return {
+            understood: true,
+            thought_process: thoughtProcess,
+            architectural_review: responseText,
+            design_concept: parsed.design_concept || null,
+            site_analysis: parsed.site_analysis || null,
+            room_layout: parsed.room_layout || null,
+            totalAreaSqm: parsed.totalAreaSqm || null,
+            plotDimensions: parsed.plotDimensions || null,
+            rooms: rooms,
+            response: responseText || 'I understand your requirements. Let me design something special for you.',
+            needsMoreInfo: parsed.needsMoreInfo || false,
+            readyToGenerate: parsed.readyToGenerate || false,
+            suggested_structure: parsed.suggested_structure || 'single_floor'
+        };
+    }
+
+    // If no JSON, try to extract useful info from text
     return {
         understood: true,
+        thought_process: ['💭 Analyzing your requirements...'],
         totalAreaSqm: null,
         rooms: [],
         plotDimensions: null,
@@ -289,7 +402,7 @@ export function resetConversation() {
 }
 
 /**
- * Get API key from localStorage or prompt user
+ * Get API key from localStorage
  */
 export function getStoredApiKey() {
     return localStorage.getItem('gemini_api_key');

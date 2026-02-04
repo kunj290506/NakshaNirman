@@ -4,400 +4,618 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="NakshaNirman - Professional AI-powered AutoCAD-level floor plan generator for Indian residential design. Generate construction-ready house maps with furniture, dimensions, and DXF export.">
-  <meta name="keywords" content="floor plan generator, AutoCAD, house design, AI architecture, DXF export, residential design, Indian house plans">
-  <title>NakshaNirman - Professional AI Floor Plan Generator | Portfolio</title>
-  
+  <title>NakshaNirman - AI-Powered Floor Plan Generator</title>
+  <meta name="description"
+    content="Transform your ideas into professional floor plans with AI. Generate construction-ready blueprints in minutes.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-  
+  <link
+    href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap"
+    rel="stylesheet">
+
   <style>
+    :root {
+      /* Bento Light Theme */
+      --bg-primary: #FAF9F7;
+      --bg-secondary: #FFFFFF;
+      --bg-cream: #F5F3EE;
+      --bg-dark: #1A1A1A;
+
+      /* Text */
+      --text-primary: #1A1A1A;
+      --text-secondary: #666666;
+      --text-muted: #999999;
+      --text-light: #FFFFFF;
+
+      /* Accents */
+      --accent-orange: #FF5C35;
+      --accent-purple: #7C3AED;
+      --accent-blue: #3B82F6;
+      --accent-green: #10B981;
+      --accent-pink: #EC4899;
+
+      /* Gradients */
+      --gradient-hero: linear-gradient(135deg, #FF5C35 0%, #FF8F6B 100%);
+      --gradient-purple: linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%);
+
+      /* Shadows */
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.08);
+      --shadow-hover: 0 12px 48px rgba(0, 0, 0, 0.12);
+
+      /* Spacing */
+      --radius-sm: 12px;
+      --radius-md: 16px;
+      --radius-lg: 24px;
+      --radius-xl: 32px;
+    }
+
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
 
-    :root {
-      --bg-primary: #0a0a0a;
-      --bg-secondary: #1a1a1a;
-      --bg-card: #111111;
-      --text-primary: #ffffff;
-      --text-secondary: #a0a0a0;
-      --text-muted: #666666;
-      --accent: #ffffff;
-      --border: #333333;
-      --hover: #2a2a2a;
-    }
-
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', -apple-system, sans-serif;
       background: var(--bg-primary);
       color: var(--text-primary);
       line-height: 1.6;
       overflow-x: hidden;
     }
 
-    /* Header */
-    .header {
-      background: var(--bg-primary);
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 0;
-      position: sticky;
-      top: 0;
-      z-index: 1000;
+    /* Typography */
+    h1,
+    h2,
+    h3,
+    h4 {
+      font-family: 'Sora', sans-serif;
+      font-weight: 700;
+      line-height: 1.1;
     }
 
-    .header-container {
-      max-width: 1200px;
+    .headline-xl {
+      font-size: clamp(3rem, 8vw, 5.5rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .headline-lg {
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .headline-md {
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 600;
+    }
+
+    .body-lg {
+      font-size: 1.125rem;
+      color: var(--text-secondary);
+    }
+
+    .body-md {
+      font-size: 1rem;
+      color: var(--text-secondary);
+    }
+
+    /* Container */
+    .container {
+      max-width: 1400px;
       margin: 0 auto;
-      padding: 0 2rem;
+      padding: 0 24px;
+    }
+
+    /* Header */
+    .header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 20px 0;
+      background: rgba(250, 249, 247, 0.8);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    .header .container {
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
     }
 
     .logo {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      font-size: 1.5rem;
-      font-weight: 600;
-      color: var(--text-primary);
+      gap: 12px;
       text-decoration: none;
+    }
+
+    .logo-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--gradient-hero);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Sora', sans-serif;
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: white;
     }
 
     .logo-text {
+      font-family: 'Sora', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 700;
       color: var(--text-primary);
     }
 
-    .header-nav {
+    .nav-links {
       display: flex;
-      gap: 2rem;
       align-items: center;
+      gap: 32px;
     }
 
-    .nav-link {
-      color: var(--text-secondary);
+    .nav-links a {
       text-decoration: none;
-      font-weight: 400;
-      transition: color 0.3s;
-      font-size: 0.95rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+      transition: color 0.2s;
     }
 
-    .nav-link:hover {
+    .nav-links a:hover {
       color: var(--text-primary);
     }
 
     .btn {
-      padding: 0.75rem 1.5rem;
-      border-radius: 6px;
-      font-weight: 500;
-      font-size: 0.9rem;
-      cursor: pointer;
-      transition: all 0.3s;
-      border: 1px solid var(--border);
-      text-decoration: none;
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
-      white-space: nowrap;
-      background: var(--bg-card);
-      color: var(--text-primary);
-    }
-
-    .btn:hover {
-      background: var(--hover);
-      border-color: var(--text-secondary);
-    }
-
-    /* Main Content */
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 2rem;
-    }
-
-    /* Profile Header */
-    .profile-header {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 3rem;
-      margin-bottom: 2rem;
-      text-align: center;
-    }
-
-    .profile-avatar {
-      width: 120px;
-      height: 120px;
-      border-radius: 50%;
-      background: var(--bg-secondary);
-      border: 2px solid var(--border);
-      margin: 0 auto 2rem;
-      display: flex;
-      align-items: center;
       justify-content: center;
-      font-size: 3rem;
-      color: var(--text-primary);
-    }
-
-    .profile-name {
-      font-size: 2.5rem;
-      font-weight: 700;
-      margin-bottom: 0.5rem;
-      color: var(--text-primary);
-    }
-
-    .profile-title {
-      font-size: 1.25rem;
-      color: var(--text-secondary);
-      margin-bottom: 1rem;
-      font-weight: 400;
-    }
-
-    .profile-location {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      color: var(--text-muted);
+      gap: 8px;
+      padding: 14px 28px;
+      font-family: 'Sora', sans-serif;
       font-size: 0.95rem;
-      margin-bottom: 2rem;
-    }
-
-    .profile-experience {
-      color: var(--text-secondary);
-      font-size: 1rem;
-      margin-bottom: 2rem;
-    }
-
-    .profile-actions {
-      display: flex;
-      justify-content: center;
-      gap: 1rem;
-    }
-
-    /* Portfolio Sections */
-    .portfolio-section {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 2.5rem;
-      margin-bottom: 2rem;
-    }
-
-    .section-title {
-      font-size: 1.5rem;
       font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
+      text-decoration: none;
+      border-radius: var(--radius-lg);
+      border: none;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    /* Projects Grid */
-    .projects-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-      gap: 2rem;
+    .btn-primary {
+      background: var(--bg-dark);
+      color: var(--text-light);
     }
 
-    .project-card {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow: hidden;
-      transition: all 0.3s;
-    }
-
-    .project-card:hover {
-      border-color: var(--text-secondary);
+    .btn-primary:hover {
       transform: translateY(-2px);
+      box-shadow: var(--shadow-hover);
     }
 
-    .project-image {
-      height: 200px;
-      background: var(--bg-primary);
-      border-bottom: 1px solid var(--border);
+    .btn-secondary {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-cream);
+    }
+
+    .btn-accent {
+      background: var(--gradient-hero);
+      color: white;
+    }
+
+    .btn-accent:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(255, 92, 53, 0.3);
+    }
+
+    /* Hero Section - Bento Grid */
+    .hero {
+      padding: 140px 0 80px;
+      min-height: 100vh;
+    }
+
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: auto;
+      gap: 20px;
+    }
+
+    .bento-card {
+      background: var(--bg-secondary);
+      border-radius: var(--radius-xl);
+      padding: 32px;
+      box-shadow: var(--shadow-md);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      overflow: hidden;
+    }
+
+    .bento-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-hover);
+    }
+
+    /* Bento Card Sizes */
+    .bento-hero {
+      grid-column: span 2;
+      grid-row: span 2;
+      padding: 48px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .bento-wide {
+      grid-column: span 2;
+    }
+
+    .bento-tall {
+      grid-row: span 2;
+    }
+
+    /* Hero Card Content */
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-cream);
+      padding: 8px 16px;
+      border-radius: var(--radius-lg);
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--accent-orange);
+      margin-bottom: 24px;
+      width: fit-content;
+    }
+
+    .hero-title {
+      margin-bottom: 20px;
+    }
+
+    .hero-title .accent {
+      background: var(--gradient-hero);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-desc {
+      max-width: 480px;
+      margin-bottom: 32px;
+    }
+
+    .hero-cta {
+      display: flex;
+      gap: 16px;
+    }
+
+    /* Stats Card */
+    .stats-card {
+      background: var(--gradient-hero);
+      color: white;
+    }
+
+    .stats-card .stat-number {
+      font-family: 'Sora', sans-serif;
+      font-size: 3.5rem;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .stats-card .stat-label {
+      font-size: 1rem;
+      opacity: 0.9;
+    }
+
+    /* Preview Card */
+    .preview-card {
+      background: var(--bg-dark);
+      padding: 0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .preview-card img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .preview-placeholder {
+      width: 100%;
+      height: 100%;
+      min-height: 200px;
+      background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
       display: flex;
       align-items: center;
       justify-content: center;
-      position: relative;
-      overflow: hidden;
+      flex-direction: column;
+      gap: 16px;
+      color: rgba(255, 255, 255, 0.6);
     }
 
-    .project-content {
-      padding: 1.5rem;
+    .preview-placeholder svg {
+      width: 64px;
+      height: 64px;
+      opacity: 0.4;
     }
 
-    .project-title {
-      font-size: 1.1rem;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 0.5rem;
-    }
-
-    .project-description {
-      color: var(--text-secondary);
-      font-size: 0.9rem;
-      line-height: 1.6;
-      margin-bottom: 1rem;
-    }
-
-    .project-tags {
+    /* Feature Card */
+    .feature-card {
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
+      flex-direction: column;
+      gap: 16px;
     }
 
-    .project-tag {
-      background: var(--bg-primary);
+    .feature-icon {
+      width: 56px;
+      height: 56px;
+      background: var(--bg-cream);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .feature-icon svg {
+      width: 28px;
+      height: 28px;
+      color: var(--accent-orange);
+    }
+
+    .feature-icon.purple {
+      background: rgba(124, 58, 237, 0.1);
+    }
+
+    .feature-icon.purple svg {
+      color: var(--accent-purple);
+    }
+
+    .feature-icon.blue {
+      background: rgba(59, 130, 246, 0.1);
+    }
+
+    .feature-icon.blue svg {
+      color: var(--accent-blue);
+    }
+
+    .feature-icon.green {
+      background: rgba(16, 185, 129, 0.1);
+    }
+
+    .feature-icon.green svg {
+      color: var(--accent-green);
+    }
+
+    .feature-card h3 {
+      font-size: 1.25rem;
+      margin-bottom: 4px;
+    }
+
+    .feature-card p {
       color: var(--text-secondary);
-      padding: 0.25rem 0.75rem;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      border: 1px solid var(--border);
+      font-size: 0.95rem;
     }
 
-    /* Skills & Tech */
-    .skills-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 1rem;
+    /* Quote Card */
+    .quote-card {
+      background: var(--bg-cream);
     }
 
-    .skill-item {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1rem;
+    .quote-card blockquote {
+      font-family: 'Sora', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 500;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .quote-card .author {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    /* How It Works Section */
+    .section {
+      padding: 100px 0;
+    }
+
+    .section-header {
       text-align: center;
+      max-width: 600px;
+      margin: 0 auto 60px;
     }
 
-    .skill-name {
-      color: var(--text-primary);
-      font-weight: 500;
-      font-size: 0.9rem;
+    .section-header h2 {
+      margin-bottom: 16px;
     }
 
-    /* About Section */
-    .about-content {
-      color: var(--text-secondary);
-      line-height: 1.8;
-      font-size: 1rem;
-    }
-
-    .about-stats {
+    /* Steps Grid */
+    .steps-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 1.5rem;
-      margin-top: 2rem;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 32px;
     }
 
-    .stat-item {
+    .step-card {
       text-align: center;
+      padding: 40px 32px;
       background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.5rem;
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-md);
     }
 
-    .stat-number {
-      font-size: 2rem;
-      font-weight: 700;
-      color: var(--text-primary);
-      display: block;
-      margin-bottom: 0.5rem;
+    .step-number {
+      width: 64px;
+      height: 64px;
+      background: var(--gradient-hero);
+      color: white;
+      font-family: 'Sora', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 800;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
     }
 
-    .stat-label {
-      color: var(--text-secondary);
-      font-size: 0.85rem;
-      text-transform: uppercase;
-      font-weight: 500;
-      letter-spacing: 0.5px;
+    .step-card h3 {
+      margin-bottom: 12px;
     }
 
-    /* Contact Section */
-    .contact-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .contact-item {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.5rem;
+    /* CTA Section */
+    .cta-section {
+      background: var(--bg-dark);
+      border-radius: var(--radius-xl);
+      padding: 80px;
       text-align: center;
-      transition: all 0.3s;
+      color: white;
+      margin: 0 24px;
     }
 
-    .contact-item:hover {
-      border-color: var(--text-secondary);
+    .cta-section h2 {
+      margin-bottom: 16px;
     }
 
-    .contact-label {
-      color: var(--text-secondary);
-      font-size: 0.85rem;
-      margin-bottom: 0.5rem;
-      text-transform: uppercase;
-      font-weight: 500;
-      letter-spacing: 0.5px;
-    }
-
-    .contact-value {
-      color: var(--text-primary);
-      font-weight: 500;
-    }
-
-    .contact-link {
-      color: var(--text-primary);
-      text-decoration: none;
-      font-weight: 500;
-    }
-
-    .contact-link:hover {
-      text-decoration: underline;
+    .cta-section p {
+      color: rgba(255, 255, 255, 0.7);
+      max-width: 500px;
+      margin: 0 auto 32px;
     }
 
     /* Footer */
     .footer {
-      border-top: 1px solid var(--border);
-      padding: 2rem;
-      text-align: center;
-      margin-top: 3rem;
+      padding: 60px 0 40px;
+      border-top: 1px solid rgba(0, 0, 0, 0.05);
+      margin-top: 80px;
     }
 
-    .footer-text {
+    .footer-content {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 32px;
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.95rem;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--text-primary);
+    }
+
+    .footer-copy {
       color: var(--text-muted);
-      font-size: 0.9rem;
+      font-size: 0.875rem;
     }
 
     /* Responsive */
+    @media (max-width: 1024px) {
+      .bento-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .bento-hero {
+        grid-column: span 2;
+      }
+
+      .steps-grid {
+        grid-template-columns: 1fr;
+        gap: 24px;
+      }
+    }
+
     @media (max-width: 768px) {
-      .container {
-        padding: 1rem;
-      }
-      
-      .profile-header {
-        padding: 2rem;
-      }
-      
-      .profile-name {
-        font-size: 2rem;
-      }
-      
-      .projects-grid {
+      .bento-grid {
         grid-template-columns: 1fr;
       }
-      
-      .header-nav {
+
+      .bento-hero,
+      .bento-wide {
+        grid-column: span 1;
+      }
+
+      .bento-tall {
+        grid-row: span 1;
+      }
+
+      .nav-links {
         display: none;
       }
+
+      .cta-section {
+        padding: 48px 24px;
+        margin: 0 16px;
+      }
+
+      .footer-content {
+        flex-direction: column;
+        gap: 24px;
+        text-align: center;
+      }
+    }
+
+    /* Animations */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .bento-card {
+      animation: fadeInUp 0.6s ease-out forwards;
+      opacity: 0;
+    }
+
+    .bento-card:nth-child(1) {
+      animation-delay: 0.1s;
+    }
+
+    .bento-card:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .bento-card:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    .bento-card:nth-child(4) {
+      animation-delay: 0.4s;
+    }
+
+    .bento-card:nth-child(5) {
+      animation-delay: 0.5s;
+    }
+
+    .bento-card:nth-child(6) {
+      animation-delay: 0.6s;
     }
   </style>
 </head>
@@ -405,245 +623,168 @@
 <body>
   <!-- Header -->
   <header class="header">
-    <div class="header-container">
-      <a href="#" class="logo">
+    <div class="container">
+      <a href="/" class="logo">
+        <div class="logo-icon">N</div>
         <span class="logo-text">NakshaNirman</span>
       </a>
-      <nav class="header-nav">
-        <a href="#portfolio" class="nav-link">Portfolio</a>
-        <a href="#about" class="nav-link">About</a>
-        <a href="#skills" class="nav-link">Skills</a>
-        <a href="#contact" class="nav-link">Contact</a>
-        <a href="/app.html" class="btn">Try Live Demo</a>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="https://github.com/kunj290506/NakshaNirman" target="_blank">GitHub</a>
       </nav>
+      <a href="/app.html" class="btn btn-primary">Start Designing →</a>
     </div>
   </header>
 
-  <!-- Main Container -->
-  <div class="container">
-    <!-- Profile Header -->
-    <section class="profile-header">
-      <div class="profile-avatar">N</div>
-      <h1 class="profile-name">NakshaNirman</h1>
-      <p class="profile-title">AI-Powered CAD Designer</p>
-      <div class="profile-location">
-        <span>India</span>
-      </div>
-      <p class="profile-experience">2+ Years Experience</p>
-      <div class="profile-actions">
-        <a href="/app.html" class="btn">Try Live Demo</a>
-        <a href="#contact" class="btn">Get In Touch</a>
-      </div>
-    </section>
+  <!-- Hero Bento Grid -->
+  <section class="hero">
+    <div class="container">
+      <div class="bento-grid">
+        <!-- Main Hero Card -->
+        <div class="bento-card bento-hero">
+          <div>
+            <div class="hero-badge">
+              <span>✨</span> AI-Powered Architecture
+            </div>
+            <h1 class="headline-xl hero-title">
+              Design Floor Plans<br>
+              <span class="accent">Like a Pro</span>
+            </h1>
+            <p class="body-lg hero-desc">
+              Transform your ideas into construction-ready blueprints. Our AI architect creates unique, Vastu-compliant
+              floor plans in minutes.
+            </p>
+          </div>
+          <div class="hero-cta">
+            <a href="/app.html" class="btn btn-accent">Start Free →</a>
+            <a href="#how-it-works" class="btn btn-secondary">Learn More</a>
+          </div>
+        </div>
 
-    <!-- Portfolio Section -->
-    <section id="portfolio" class="portfolio-section">
-      <h2 class="section-title">Portfolio</h2>
-      <div class="projects-grid">
-        <div class="project-card">
-          <div class="project-image">
-            <svg viewBox="0 0 350 200" style="width:100%;height:100%">
-              <!-- Floor Plan Visualization -->
-              <rect x="30" y="30" width="290" height="140" fill="none" stroke="#666" stroke-width="2"/>
-              <line x1="30" y1="100" x2="320" y2="100" stroke="#999" stroke-width="1"/>
-              <line x1="130" y1="100" x2="130" y2="170" stroke="#999" stroke-width="1"/>
-              <line x1="220" y1="100" x2="220" y2="170" stroke="#999" stroke-width="1"/>
-              
-              <!-- Room Labels -->
-              <text x="80" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Living</text>
-              <text x="175" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Kitchen</text>
-              <text x="270" y="65" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bedroom</text>
-              <text x="80" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bedroom</text>
-              <text x="175" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Bath</text>
-              <text x="270" y="135" font-family="Inter" font-size="12" fill="#ccc" text-anchor="middle">Dining</text>
-              
-              <!-- Furniture -->
-              <rect x="50" y="110" width="60" height="20" fill="#666" opacity="0.5" rx="2"/>
-              <rect x="140" y="50" width="60" height="20" fill="#666" opacity="0.5" rx="2"/>
-              <circle cx="270" cy="80" r="12" fill="#666" opacity="0.5"/>
+        <!-- Stats Card -->
+        <div class="bento-card stats-card">
+          <div class="stat-number">50+</div>
+          <div class="stat-label">Floor Plans Generated</div>
+        </div>
+
+        <!-- Preview Card -->
+        <div class="bento-card preview-card bento-tall">
+          <div class="preview-placeholder">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5" />
+              <path d="M3 9h18M9 21V9M15 15h3M15 18h3" stroke-width="1.5" />
+            </svg>
+            <span>Floor Plan Preview</span>
+          </div>
+        </div>
+
+        <!-- Feature Cards -->
+        <div class="bento-card feature-card">
+          <div class="feature-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
             </svg>
           </div>
-          <div class="project-content">
-            <h3 class="project-title">1220 Sq Ft Residential Design</h3>
-            <p class="project-description">
-              Complete house design with 3 bedrooms, living room, kitchen, dining area, 
-              2 bathrooms, balcony and car parking. AutoCAD-ready with furniture placement.
-            </p>
-            <div class="project-tags">
-              <span class="project-tag">AutoCAD</span>
-              <span class="project-tag">DXF Export</span>
-              <span class="project-tag">Furniture</span>
-              <span class="project-tag">Indian Standards</span>
-            </div>
-          </div>
+          <h3>AI-Powered Design</h3>
+          <p>Gemini AI thinks like a real architect with 25+ years experience</p>
         </div>
-        
-        <div class="project-card">
-          <div class="project-image">
-            <svg viewBox="0 0 350 200" style="width:100%;height:100%">
-              <!-- AI Analysis Visualization -->
-              <rect x="50" y="50" width="250" height="100" fill="#111" stroke="#333" stroke-width="1" rx="8"/>
-              <circle cx="100" cy="80" r="8" fill="#666"/>
-              <circle cx="175" cy="100" r="6" fill="#666"/>
-              <circle cx="225" cy="85" r="10" fill="#666"/>
-              <path d="M100 80 L175 100 L225 85" stroke="#999" stroke-width="1" fill="none"/>
-              
-              <!-- Data points -->
-              <text x="175" y="175" font-family="Inter" font-size="11" fill="#666" text-anchor="middle">AI Vision Analysis</text>
-              <rect x="60" y="55" width="30" height="20" fill="#222" rx="3"/>
-              <rect x="100" y="55" width="30" height="20" fill="#222" rx="3"/>
-              <rect x="140" y="55" width="30" height="20" fill="#222" rx="3"/>
+
+        <div class="bento-card feature-card">
+          <div class="feature-icon purple">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
             </svg>
           </div>
-          <div class="project-content">
-            <h3 class="project-title">AI Vision Plot Analysis</h3>
-            <p class="project-description">
-              Advanced image upload and analysis system using Google Gemini Vision API 
-              for automatic plot boundary detection and dimension extraction.
-            </p>
-            <div class="project-tags">
-              <span class="project-tag">AI Vision</span>
-              <span class="project-tag">Gemini API</span>
-              <span class="project-tag">Image Upload</span>
-              <span class="project-tag">Analysis</span>
-            </div>
-          </div>
+          <h3>DXF Export</h3>
+          <p>Download AutoCAD-compatible files for construction</p>
         </div>
-      </div>
-    </section>
 
-    <!-- About Section -->
-    <section id="about" class="portfolio-section">
-      <h2 class="section-title">About</h2>
-      <div class="about-content">
-        <p>
-          Professional AutoCAD-level floor plan generator specialized in Indian residential design. 
-          Transform ideas into construction-ready blueprints using advanced AI technology with 
-          Google Gemini integration for natural language processing and vision analysis.
-        </p>
-        <p style="margin-top: 1rem;">
-          Built with modern web technologies including Vite, Canvas API, and DXF Writer for 
-          seamless AutoCAD compatibility. Features include automatic furniture placement, 
-          Indian design standards compliance, and real-time rendering capabilities.
-        </p>
-      </div>
-      <div class="about-stats">
-        <div class="stat-item">
-          <span class="stat-number">2+</span>
-          <span class="stat-label">Years Experience</span>
+        <div class="bento-card feature-card bento-wide">
+          <div class="feature-icon blue">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6l4 2" />
+            </svg>
+          </div>
+          <h3>Generate in Minutes</h3>
+          <p>Skip weeks of manual drafting. Get professional floor plans instantly with intelligent room placement,
+            Vastu compliance, and furniture-aware sizing.</p>
         </div>
-        <div class="stat-item">
-          <span class="stat-number">50+</span>
-          <span class="stat-label">Projects</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-number">13+</span>
-          <span class="stat-label">Room Types</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-number">100%</span>
-          <span class="stat-label">AutoCAD Ready</span>
-        </div>
-      </div>
-    </section>
 
-    <!-- Skills Section -->
-    <section id="skills" class="portfolio-section">
-      <h2 class="section-title">Skills & Technologies</h2>
-      <div class="skills-grid">
-        <div class="skill-item">
-          <div class="skill-name">JavaScript ES6+</div>
+        <div class="bento-card quote-card">
+          <blockquote>"The AI actually understands Indian home design. Vastu, privacy zones, everything!"</blockquote>
+          <div class="author">— Happy User</div>
         </div>
-        <div class="skill-item">
-          <div class="skill-name">Google Gemini AI</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">AutoCAD Integration</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">DXF Writer</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Canvas API</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Vite Build Tool</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Vision AI</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Indian Design Standards</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Real-time Rendering</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Multi-Agent Architecture</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">Responsive Design</div>
-        </div>
-        <div class="skill-item">
-          <div class="skill-name">File API</div>
-        </div>
-      </div>
-    </section>
 
-    <!-- Contact Section -->
-    <section id="contact" class="portfolio-section">
-      <h2 class="section-title">Contact</h2>
-      <div class="contact-grid">
-        <div class="contact-item">
-          <div class="contact-label">Try Live Demo</div>
-          <div class="contact-value">
-            <a href="/app.html" class="contact-link">Start Designing</a>
+        <div class="bento-card feature-card">
+          <div class="feature-icon green">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+              <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
           </div>
-        </div>
-        <div class="contact-item">
-          <div class="contact-label">GitHub</div>
-          <div class="contact-value">
-            <a href="https://github.com/naksha-nirman" class="contact-link">View Source</a>
-          </div>
-        </div>
-        <div class="contact-item">
-          <div class="contact-label">Email</div>
-          <div class="contact-value">
-            <a href="mailto:contact@nakshanirman.com" class="contact-link">contact@nakshanirman.com</a>
-          </div>
-        </div>
-        <div class="contact-item">
-          <div class="contact-label">Documentation</div>
-          <div class="contact-value">
-            <a href="#" class="contact-link">API Reference</a>
-          </div>
+          <h3>Vastu Compliant</h3>
+          <p>Rooms placed according to traditional Indian design principles</p>
         </div>
       </div>
-    </section>
-  </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="section" id="how-it-works">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="headline-lg">How It Works</h2>
+        <p class="body-lg">Three simple steps to your perfect floor plan</p>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-number">1</div>
+          <h3 class="headline-md">Describe Your Home</h3>
+          <p class="body-md">Tell the AI what you need: "3BHK on 30x40 plot, Vastu compliant"</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-number">2</div>
+          <h3 class="headline-md">AI Designs</h3>
+          <p class="body-md">Watch as the AI architect analyzes, plans, and creates your unique layout</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-number">3</div>
+          <h3 class="headline-md">Download DXF</h3>
+          <p class="body-md">Export your floor plan in AutoCAD format, ready for construction</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <h2 class="headline-lg">Ready to Design?</h2>
+    <p class="body-lg">Start creating your dream home floor plan today. It's free to try.</p>
+    <a href="/app.html" class="btn btn-accent">Start Designing →</a>
+  </section>
 
   <!-- Footer -->
   <footer class="footer">
-    <div class="footer-text">
-      <p>2026 NakshaNirman - Professional AutoCAD-Level Floor Plan Generator Portfolio</p>
+    <div class="container">
+      <div class="footer-content">
+        <a href="/" class="logo">
+          <div class="logo-icon">N</div>
+          <span class="logo-text">NakshaNirman</span>
+        </a>
+        <div class="footer-links">
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="https://github.com/kunj290506/NakshaNirman" target="_blank">GitHub</a>
+        </div>
+        <div class="footer-copy">© 2024 NakshaNirman. Built with AI.</div>
+      </div>
     </div>
   </footer>
-
-  <script>
-    // Smooth scroll navigation
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function (e) {
-        const href = this.getAttribute('href');
-        if (href !== '#') {
-          e.preventDefault();
-          const target = document.querySelector(href);
-          if (target) {
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        }
-      });
-    });
-  </script>
 </body>
 
 </html>

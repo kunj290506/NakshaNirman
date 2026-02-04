@@ -194,7 +194,12 @@ export class CanvasRenderer {
     drawRooms(ctx) {
         const { rooms, boundary } = this.geometryData;
 
+        if (!rooms || !Array.isArray(rooms)) return;
+
         rooms.forEach(room => {
+            // Safety check for required properties
+            if (!room || typeof room.x !== 'number') return;
+
             // Room fill
             ctx.fillStyle = '#f5f5f5';
             ctx.fillRect(room.x, room.y, room.width, room.height);
@@ -204,7 +209,8 @@ export class CanvasRenderer {
             ctx.lineWidth = 80;
             ctx.strokeRect(room.x, room.y, room.width, room.height);
 
-            // Room label
+            // Room label - with null safety
+            const label = room.label || room.type || 'Room';
             const fontSize = Math.min(room.width, room.height) * 0.12;
             ctx.fillStyle = '#000000';
             ctx.font = `bold ${fontSize}px Arial`;
@@ -214,7 +220,7 @@ export class CanvasRenderer {
             const cx = room.x + room.width / 2;
             const cy = room.y + room.height / 2;
 
-            ctx.fillText(room.label.toUpperCase(), cx, cy - fontSize * 0.5);
+            ctx.fillText(label.toUpperCase(), cx, cy - fontSize * 0.5);
 
             // Area label
             const areaSqm = (room.width * room.height) / 1000000;
@@ -228,10 +234,15 @@ export class CanvasRenderer {
     drawFurniture(ctx) {
         const { rooms } = this.geometryData;
 
+        if (!rooms || !Array.isArray(rooms)) return;
+
         ctx.strokeStyle = '#444444';
         ctx.lineWidth = 40;
 
         rooms.forEach(room => {
+            // Safety check
+            if (!room || !room.type) return;
+
             // Skip corridor/lobby - no furniture
             if (room.type === 'corridor') {
                 // Draw lobby pattern (subtle grid)

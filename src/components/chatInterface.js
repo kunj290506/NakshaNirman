@@ -31,7 +31,7 @@ export class ChatInterface {
     this.sendBtn.addEventListener('click', this.sendMessage);
     this.chatInput.addEventListener('keydown', this.handleKeyDown);
     this.chatInput.addEventListener('input', this.handleInput);
-    
+
     // Image upload listeners
     this.uploadImageBtn.addEventListener('click', () => {
       this.imageUploadInput.click();
@@ -93,18 +93,18 @@ export class ChatInterface {
       if (result.success) {
         // Format analysis results
         let message = `**Image Analysis Complete**\n\n`;
-        
+
         if (result.plotDimensions) {
           message += `**Plot Dimensions:**\n`;
           message += `• Width: ${result.plotDimensions.widthFt?.toFixed(1) || '?'} feet (${(result.plotDimensions.width / 1000).toFixed(2)} meters)\n`;
           message += `• Length: ${result.plotDimensions.lengthFt?.toFixed(1) || '?'} feet (${(result.plotDimensions.length / 1000).toFixed(2)} meters)\n`;
           message += `• Shape: ${result.plotShape}\n\n`;
         }
-        
+
         if (result.totalAreaSqft) {
           message += `**Total Area:** ${result.totalAreaSqft} sq ft (${(result.totalAreaSqft * 0.0929).toFixed(1)} sqm)\n\n`;
         }
-        
+
         if (result.existingRooms && result.existingRooms.length > 0) {
           message += `**Detected Rooms:**\n`;
           result.existingRooms.forEach(room => {
@@ -112,13 +112,13 @@ export class ChatInterface {
           });
           message += `\n`;
         }
-        
+
         if (result.notes) {
           message += `**Notes:** ${result.notes}\n\n`;
         }
-        
+
         message += `Would you like me to generate a floor plan based on these dimensions?`;
-        
+
         this.addMessage('agent', message, {
           actions: [
             { id: 'use_detected_dimensions', label: 'Yes, use these dimensions' },
@@ -128,12 +128,12 @@ export class ChatInterface {
 
         // Store analysis result for later use
         this.lastImageAnalysis = result;
-        
+
         // Trigger callback with image analysis data
         if (this.onMessage) {
           this.onMessage(`__image_analyzed__:${JSON.stringify(result)}`);
         }
-        
+
       } else {
         this.addMessage('agent', `Failed to analyze image: ${result.error}`, {
           error: result.error
@@ -210,7 +210,7 @@ export class ChatInterface {
       } else {
         userContent = this.escapeHtml(content);
       }
-      
+
       message.innerHTML = `
         <div class="message-avatar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -238,17 +238,20 @@ export class ChatInterface {
       .replace(/• /g, '&bull; ')
       .replace(/- /g, '&bull; ');
 
-    // Add Thinking Process (Architect Style)
+    // Add Architect's Thinking Process (Enhanced with icons)
     if (options.thought_process && options.thought_process.length > 0) {
-      const thoughtsHtml = options.thought_process.map(t =>
-        `<div class="thought-step"><span class="thought-arrow">→</span> ${t}</div>`
-      ).join('');
+      const thoughtsHtml = options.thought_process.map(t => {
+        // Check if thought has emoji prefix
+        const hasEmoji = /^[\u{1F300}-\u{1F9FF}]/u.test(t);
+        const arrow = hasEmoji ? '' : '<span class="thought-arrow">→</span> ';
+        return `<div class="thought-step">${arrow}${t}</div>`;
+      }).join('');
 
       html = `
         <details class="thought-container" open>
           <summary class="thought-summary">
             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
-            Architect's Thinking Process
+            Architect's Design Reasoning
           </summary>
           <div class="thought-content">
             ${thoughtsHtml}
