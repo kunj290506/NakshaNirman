@@ -1,0 +1,168 @@
+{
+  "boundary": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      1.58,
+      0.75
+    ],
+    [
+      0.97,
+      5.61
+    ],
+    [
+      2.52,
+      5.5
+    ],
+    [
+      3.22,
+      11.19
+    ],
+    [
+      4.51,
+      11.16
+    ],
+    [
+      4.53,
+      9.28
+    ],
+    [
+      4.72,
+      11.19
+    ],
+    [
+      7.11,
+      11.19
+    ],
+    [
+      8.53,
+      9.01
+    ],
+    [
+      10.35,
+      10.52
+    ],
+    [
+      12.15,
+      8.48
+    ],
+    [
+      13.9,
+      8.96
+    ],
+    [
+      13.12,
+      10.38
+    ],
+    [
+      14.14,
+      9.01
+    ],
+    [
+      15.59,
+      10.43
+    ],
+    [
+      18.62,
+      9.68
+    ],
+    [
+      19.74,
+      5.55
+    ],
+    [
+      18.72,
+      1.07
+    ],
+    [
+      8.18,
+      2.31
+    ],
+    [
+      5.15,
+      0.4
+    ]
+  ],
+  "rooms": [
+    {
+      "name": "Living Room",
+      "type": "living",
+      "x": 10.0,
+      "y": 5.5,
+      "width": 6.91,
+      "height": 3.99,
+      "furniture": []
+    },
+    {
+      "name": "Kitchen",
+      "type": "kitchen",
+      "x": 11.0,
+      "y": 2.0,
+      "width": 4.93,
+      "height": 3.36,
+      "furniture": []
+    },
+    {
+      "name": "Dining",
+      "type": "dining",
+      "x": 6.0,
+      "y": 5.5,
+      "width": 3.95,
+      "height": 2.8,
+      "furniture": []
+    },
+    {
+      "name": "Master\nBedroom",
+      "type": "bedroom",
+      "x": 3.5,
+      "y": 1.5,
+      "width": 3.04,
+      "height": 3.92,
+      "furniture": []
+    },
+    {
+      "name": "Bedroom 2",
+      "type": "bedroom",
+      "x": 7.0,
+      "y": 2.5,
+      "width": 3.95,
+      "height": 2.8,
+      "furniture": []
+    },
+    {
+      "name": "Bedroom 3",
+      "type": "bedroom",
+      "x": 16.0,
+      "y": 2.5,
+      "width": 2.85,
+      "height": 2.8,
+      "furniture": []
+    },
+    {
+      "name": "Master\nBath",
+      "type": "bathroom",
+      "x": 7.5,
+      "y": 8.5,
+      "width": 2.37,
+      "height": 1.68,
+      "furniture": []
+    },
+    {
+      "name": "Bath 2",
+      "type": "bathroom",
+      "x": 5.0,
+      "y": 8.5,
+      "width": 2.09,
+      "height": 1.68,
+      "furniture": []
+    }
+  ],
+  "total_area": 150.0,
+  "style": "modern",
+  "dimensions": [
+    19.74,
+    11.19
+  ]
+}
