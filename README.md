@@ -1,5 +1,8 @@
 # AutoArchitect AI
 
+Update placeholder for 2026-02-10
+# AutoArchitect AI
+
 Transform user-uploaded plot boundaries (image/DXF) into complete home designs (DXF files) and cinematic 3D animations with drone-style fly-throughs.
 
 ## 🏗️ Project Structure
