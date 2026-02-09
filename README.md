@@ -5,7 +5,7 @@ Update placeholder for 2026-02-10
 
 Transform user-uploaded plot boundaries (image/DXF) into complete home designs (DXF files) and cinematic 3D animations with drone-style fly-throughs.
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 autoarchitect-ai/
@@ -16,7 +16,7 @@ autoarchitect-ai/
 └── docker-compose.yml # Container Orchestration
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Node.js 18+
@@ -47,7 +47,7 @@ npm run dev
 docker-compose up -d
 ```
 
-## 📐 Features
+## Features
 
 - **Boundary Processing**: Upload images or DXF files to extract plot boundaries
 - **AI Design Generation**: Intelligent floor plan generation using LLMs
@@ -55,7 +55,7 @@ docker-compose up -d
 - **3D Visualization**: Interactive Three.js models
 - **Cinematic Animation**: Drone-style fly-through videos
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
@@ -65,15 +65,15 @@ docker-compose up -d
 | 3D/Render | Blender Python API |
 | Database | PostgreSQL, Redis |
 
-## 📚 Documentation
+## Documentation
 
 - [Technical Specification](./AutoArchitect_AI_Technical_Specification.md)
 - [API Documentation](http://localhost:8000/docs) (when running)
 
-## 📄 License
+## License
 
 MIT License - See LICENSE file for details
 
 ---
 
-*Built with ❤️ by AutoArchitect AI Team*
+*Built with <3 by AutoArchitect AI Team*

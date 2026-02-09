@@ -73,14 +73,14 @@ STYLES = [
 
 # Available feature options
 FEATURES = [
-    FeatureOption(id="home_office", name="Home Office", description="Dedicated work space", icon="💼"),
-    FeatureOption(id="garage", name="Garage", description="Covered vehicle parking", icon="🚗"),
-    FeatureOption(id="garden", name="Garden", description="Outdoor green space", icon="🌳"),
-    FeatureOption(id="pool", name="Swimming Pool", description="Outdoor pool area", icon="🏊"),
-    FeatureOption(id="solar", name="Solar Panels", description="Renewable energy system", icon="☀️"),
-    FeatureOption(id="gym", name="Home Gym", description="Exercise room", icon="🏋️"),
-    FeatureOption(id="theater", name="Home Theater", description="Media room", icon="🎬"),
-    FeatureOption(id="wine_cellar", name="Wine Cellar", description="Temperature controlled storage", icon="🍷"),
+    FeatureOption(id="home_office", name="Home Office", description="Dedicated work space", icon=""),
+    FeatureOption(id="garage", name="Garage", description="Covered vehicle parking", icon=""),
+    FeatureOption(id="garden", name="Garden", description="Outdoor green space", icon=""),
+    FeatureOption(id="pool", name="Swimming Pool", description="Outdoor pool area", icon=""),
+    FeatureOption(id="solar", name="Solar Panels", description="Renewable energy system", icon=""),
+    FeatureOption(id="gym", name="Home Gym", description="Exercise room", icon=""),
+    FeatureOption(id="theater", name="Home Theater", description="Media room", icon=""),
+    FeatureOption(id="wine_cellar", name="Wine Cellar", description="Temperature controlled storage", icon=""),
 ]
 
 
