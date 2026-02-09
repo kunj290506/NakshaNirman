@@ -8,6 +8,7 @@ Scans the polygon to find largest placeable rectangles.
 import json
 import os
 import math
+import time
 from typing import Dict, List, Tuple, Optional
 import structlog
 
@@ -19,32 +20,56 @@ logger = structlog.get_logger()
 
 def generate_design(job_id: str, requirements: Dict):
     """Main design generation."""
-    logger.info("Starting design generation", job_id=job_id)
+    total_start = time.time()
+    logger.info("=" * 60)
+    logger.info("STARTING DESIGN GENERATION", job_id=job_id)
+    logger.info("=" * 60)
     
     try:
+        # Step 1: Load boundary
+        step_start = time.time()
         update_job_status(job_id, JobStage.GENERATING_DESIGN, 40, "Loading plot data...")
         boundary_data = load_boundary_data(job_id)
+        logger.info("TIMING: Load boundary", duration_sec=round(time.time() - step_start, 3))
         
+        # Step 2: Create layout
+        step_start = time.time()
         update_job_status(job_id, JobStage.GENERATING_DESIGN, 50, "Designing room layout...")
         design = create_smart_layout(boundary_data, requirements)
+        logger.info("TIMING: Create layout", duration_sec=round(time.time() - step_start, 3), room_count=len(design.get('rooms', [])))
         
         output_dir = os.path.join(settings.OUTPUT_DIR, job_id)
         os.makedirs(output_dir, exist_ok=True)
         
+        # Step 3: Save design JSON
+        step_start = time.time()
         with open(os.path.join(output_dir, "design.json"), 'w') as f:
             json.dump(design, f, indent=2)
+        logger.info("TIMING: Save design JSON", duration_sec=round(time.time() - step_start, 3))
         
+        # Step 4: Render floor plan
+        step_start = time.time()
         update_job_status(job_id, JobStage.CREATING_CAD, 70, "Rendering floor plan...")
         render_floorplan(design, output_dir)
+        logger.info("TIMING: Render floor plan", duration_sec=round(time.time() - step_start, 3))
         
+        # Step 5: Generate DXF
+        step_start = time.time()
         update_job_status(job_id, JobStage.CREATING_CAD, 80, "Generating CAD files (DXF)...")
         generate_dxf_output(design, output_dir, job_id)
+        logger.info("TIMING: Generate DXF", duration_sec=round(time.time() - step_start, 3))
         
         update_job_status(job_id, JobStage.COMPLETED, 100, "Design complete!")
+        
+        total_duration = round(time.time() - total_start, 3)
+        logger.info("=" * 60)
+        logger.info("DESIGN COMPLETE", job_id=job_id, total_duration_sec=total_duration)
+        logger.info("=" * 60)
+        
         return design
         
     except Exception as e:
-        logger.error("Design failed", error=str(e))
+        logger.error("Design failed", error=str(e), duration_sec=round(time.time() - total_start, 3))
         update_job_status(job_id, JobStage.FAILED, 0, f"Error: {str(e)}")
         raise
 
@@ -110,60 +135,73 @@ def find_max_rect_at_point(x: float, y: float, polygon: List[Tuple],
     return best_w, best_h
 
 
-def rect_fits_in_polygon(x: float, y: float, w: float, h: float, polygon: List[Tuple], margin: float = 0.1) -> bool:
-    """Check if a rectangle fits inside the polygon."""
-    # Check corners and edges
-    check_points = [
+def rect_fits_in_polygon(x: float, y: float, w: float, h: float, polygon: List[Tuple], margin: float = 0.3) -> bool:
+    """Check if a rectangle fits inside the polygon - comprehensive check with dense sampling."""
+    # This is critical - check MANY points to ensure room is fully inside
+    
+    points_to_check = []
+    
+    # 4 corners with margin
+    corners = [
         (x + margin, y + margin),
         (x + w - margin, y + margin),
         (x + w - margin, y + h - margin),
-        (x + margin, y + h - margin),
-        (x + w/2, y + margin),
-        (x + w/2, y + h - margin),
-        (x + margin, y + h/2),
-        (x + w - margin, y + h/2),
-        (x + w/2, y + h/2)
+        (x + margin, y + h - margin)
     ]
-    return all(point_in_polygon(px, py, polygon) for px, py in check_points)
+    points_to_check.extend(corners)
+    
+    # Check edges with 8 points per edge (dense sampling for irregular polygons)
+    steps = 8
+    for i in range(1, steps):
+        t = i / steps
+        # Top edge
+        points_to_check.append((x + margin + t * (w - 2*margin), y + margin))
+        # Bottom edge
+        points_to_check.append((x + margin + t * (w - 2*margin), y + h - margin))
+        # Left edge
+        points_to_check.append((x + margin, y + margin + t * (h - 2*margin)))
+        # Right edge
+        points_to_check.append((x + w - margin, y + margin + t * (h - 2*margin)))
+    
+    # Check center and internal grid (3x3)
+    for i in range(3):
+        for j in range(3):
+            px = x + margin + (i + 1) * (w - 2*margin) / 4
+            py = y + margin + (j + 1) * (h - 2*margin) / 4
+            points_to_check.append((px, py))
+    
+    # All points must be inside polygon
+    return all(point_in_polygon(px, py, polygon) for px, py in points_to_check)
 
 
 def find_best_room_position(polygon: List[Tuple], min_x: float, min_y: float, 
                             max_x: float, max_y: float, target_w: float, target_h: float,
-                            placed_rooms: List[Dict], step: float = 1.0) -> Optional[Tuple[float, float, float, float]]:
-    """Find best position for a room - optimized for speed."""
+                            placed_rooms: List[Dict], step: float = 0.5) -> Optional[Tuple[float, float, float, float]]:
+    """Find best position for a room - using comprehensive polygon fit check."""
     
     best = None
     best_score = -1
     
-    # Use larger step for speed
+    # Use finer step for better placement accuracy
     x_steps = max(1, int((max_x - min_x - target_w) / step))
     y_steps = max(1, int((max_y - min_y - target_h) / step))
     
-    # Limit iterations for performance
-    max_iterations = 200
-    iteration = 0
+    # Calculate polygon center for scoring
+    cx = (min_x + max_x) / 2
+    cy = (min_y + max_y) / 2
     
+    # Iterate through grid positions
     for xi in range(x_steps + 1):
         x = min_x + xi * step
         for yi in range(y_steps + 1):
-            iteration += 1
-            if iteration > max_iterations:
-                break
-                
             y = min_y + yi * step
             
             # Quick bounds check
             if x + target_w > max_x or y + target_h > max_y:
                 continue
             
-            # Check if fits in polygon (simplified - just check corners)
-            corners = [
-                (x + 0.1, y + 0.1),
-                (x + target_w - 0.1, y + 0.1),
-                (x + target_w - 0.1, y + target_h - 0.1),
-                (x + 0.1, y + target_h - 0.1)
-            ]
-            if not all(point_in_polygon(px, py, polygon) for px, py in corners):
+            # Use comprehensive polygon fit check (with dense sampling)
+            if not rect_fits_in_polygon(x, y, target_w, target_h, polygon, margin=0.3):
                 continue
             
             # Check overlap with placed rooms
@@ -171,30 +209,35 @@ def find_best_room_position(polygon: List[Tuple], min_x: float, min_y: float,
             for room in placed_rooms:
                 rx, ry = room["x"], room["y"]
                 rw, rh = room["width"], room["height"]
-                if not (x + target_w <= rx or x >= rx + rw or y + target_h <= ry or y >= ry + rh):
+                # Add buffer between rooms
+                buffer = 0.3
+                if not (x + target_w + buffer <= rx or x >= rx + rw + buffer or 
+                        y + target_h + buffer <= ry or y >= ry + rh + buffer):
                     overlaps = True
                     break
             
             if overlaps:
                 continue
             
-            # Found a valid position - score it
-            cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
-            dist_to_center = math.sqrt((x + target_w/2 - cx)**2 + (y + target_h/2 - cy)**2)
+            # Score position: prefer positions closer to center but not overlapping
+            room_cx = x + target_w / 2
+            room_cy = y + target_h / 2
+            dist_to_center = math.sqrt((room_cx - cx)**2 + (room_cy - cy)**2)
+            
+            # Higher score = better position (closer to center is better)
             score = 1000 - dist_to_center
             
             if score > best_score:
                 best_score = score
                 best = (x, y, target_w, target_h)
-        
-        if iteration > max_iterations:
-            break
     
     return best
 
 
 def create_smart_layout(boundary: Dict, requirements: Dict) -> Dict:
     """Create layout with rooms placed inside irregular polygon boundaries."""
+    layout_start = time.time()
+    logger.info("Starting room layout generation...")
     
     points = boundary.get("points", [(0, 0), (15, 0), (15, 10), (0, 10)])
     polygon = [(p[0], p[1]) for p in points]
@@ -207,6 +250,8 @@ def create_smart_layout(boundary: Dict, requirements: Dict) -> Dict:
     
     width = max_x - min_x
     height = max_y - min_y
+    
+    logger.info("Boundary info", width=round(width, 2), height=round(height, 2), points_count=len(points))
     
     # Calculate actual polygon area using shoelace formula
     n = len(polygon)
@@ -221,49 +266,102 @@ def create_smart_layout(boundary: Dict, requirements: Dict) -> Dict:
     bathrooms = requirements.get("bathrooms", 2)
     style = requirements.get("style", "modern")
     
+    logger.info("Requirements", bedrooms=bedrooms, bathrooms=bathrooms, style=style, total_area=round(total_area, 2))
+    
     rooms = []
     placed = []
     
-    # Room size targets based on total area
-    living_area = total_area * 0.25
-    kitchen_area = total_area * 0.12
-    dining_area = total_area * 0.10
-    bedroom_area = total_area * 0.12
-    bathroom_area = total_area * 0.05
+    # TRY GEMINI AI FIRST
+    if settings.USE_GEMINI:
+        try:
+            from app.services.gemini_service import generate_layout_with_gemini
+            logger.info("Attempting Gemini AI layout generation...")
+            
+            gemini_rooms = generate_layout_with_gemini(boundary, requirements)
+            
+            if gemini_rooms and len(gemini_rooms) >= 3:
+                logger.info("Using Gemini AI generated layout", room_count=len(gemini_rooms))
+                
+                for room_data in gemini_rooms:
+                    room = create_room(
+                        room_data["name"],
+                        room_data["type"],
+                        room_data["x"],
+                        room_data["y"],
+                        room_data["width"],
+                        room_data["height"]
+                    )
+                    rooms.append(room)
+                
+                layout_duration = round(time.time() - layout_start, 3)
+                logger.info(f"Gemini layout complete with {len(rooms)} rooms", duration_sec=layout_duration)
+                
+                return {
+                    "boundary": points,
+                    "rooms": rooms,
+                    "total_area": total_area,
+                    "style": style,
+                    "dimensions": [round(width, 1), round(height, 1)],
+                    "ai_generated": True
+                }
+        except Exception as e:
+            logger.warning("Gemini AI layout failed, falling back to algorithm", error=str(e))
+    
+    # FALLBACK: Algorithmic placement
+    logger.info("Using algorithmic room placement...")
+    
+    # Room size targets based on total area - reduced sizes for complex polygons
+    living_area = total_area * 0.15  # Smaller for irregular shapes
+    kitchen_area = total_area * 0.08
+    dining_area = total_area * 0.06
+    bedroom_area = total_area * 0.08
+    bathroom_area = total_area * 0.03
     
     # Minimum dimensions
-    min_room_dim = 2.5
-    wall_gap = 0.15
+    min_room_dim = 2.0  # Smaller minimum for tight spaces
+    wall_gap = 0.5  # Larger gap to stay well inside boundary
     
     def add_room(name: str, room_type: str, target_area: float, aspect_ratio: float = 1.2):
-        """Try to place a room with target area."""
+        """Try to place a room with target area, shrinking progressively if needed."""
+        room_start = time.time()
+        
         # Calculate dimensions
         h = math.sqrt(target_area / aspect_ratio)
         w = target_area / h
-        w = max(min_room_dim, min(w, width * 0.5))
-        h = max(min_room_dim, min(h, height * 0.5))
+        w = max(min_room_dim, min(w, width * 0.4))  # Max 40% of width
+        h = max(min_room_dim, min(h, height * 0.4))  # Max 40% of height
         
-        # Try to find position with larger step for speed
-        pos = find_best_room_position(polygon, min_x + wall_gap, min_y + wall_gap,
-                                       max_x - wall_gap, max_y - wall_gap, 
-                                       w, h, placed, step=1.0)
+        pos = None
+        final_w, final_h = w, h
         
-        # Try smaller if not found (only one retry)
-        if pos is None:
-            sw, sh = w * 0.7, h * 0.7
+        # Try progressively smaller sizes until it fits
+        shrink_factors = [1.0, 0.8, 0.65, 0.5, 0.4]
+        for shrink in shrink_factors:
+            sw, sh = w * shrink, h * shrink
+            if sw < min_room_dim or sh < min_room_dim:
+                continue
+                
             pos = find_best_room_position(polygon, min_x + wall_gap, min_y + wall_gap,
-                                           max_x - wall_gap, max_y - wall_gap,
-                                           sw, sh, placed, step=1.0)
+                                          max_x - wall_gap, max_y - wall_gap,
+                                          sw, sh, placed)
+            if pos:
+                final_w, final_h = sw, sh
+                break
+        
+        room_duration = round(time.time() - room_start, 3)
         
         if pos:
             x, y, rw, rh = pos
-            room = create_room(name, room_type, x, y, rw - wall_gap, rh - wall_gap)
+            room = create_room(name, room_type, x, y, rw - wall_gap/2, rh - wall_gap/2)
             rooms.append(room)
             placed.append({"x": x, "y": y, "width": rw, "height": rh})
+            logger.info(f"  Placed: {name}", duration_sec=room_duration, x=round(x, 1), y=round(y, 1), w=round(rw, 1), h=round(rh, 1))
             return True
+        logger.info(f"  Failed to place: {name}", duration_sec=room_duration)
         return False
     
     # Place rooms in priority order
+    logger.info("Placing rooms...")
     add_room("Living Room", "living", living_area, 1.5)
     add_room("Kitchen", "kitchen", kitchen_area, 1.3)
     add_room("Dining", "dining", dining_area, 1.0)
@@ -278,7 +376,8 @@ def create_smart_layout(boundary: Dict, requirements: Dict) -> Dict:
     for i in range(bathrooms - 1):
         add_room(f"Bath {i+2}", "bathroom", bathroom_area, 0.7)
     
-    logger.info(f"Created layout with {len(rooms)} rooms for irregular polygon")
+    layout_duration = round(time.time() - layout_start, 3)
+    logger.info(f"Created layout with {len(rooms)} rooms", duration_sec=layout_duration)
     
     return {
         "boundary": points,

@@ -327,7 +327,7 @@ export default function Results() {
         <Box sx={{ bgcolor: '#f8fafc', minHeight: '100vh' }}>
             <Container maxWidth="xl" sx={{ py: 4 }}>
                 {/* Header */}
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4, flexWrap: 'wrap', gap: 2 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
                         <Box
                             sx={{
@@ -338,7 +338,8 @@ export default function Results() {
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                mr: 3
+                                mr: 3,
+                                animation: 'stepPulse 2s ease-in-out infinite'
                             }}
                         >
                             <CheckCircleIcon sx={{ fontSize: 32, color: '#fff' }} />
@@ -347,30 +348,20 @@ export default function Results() {
                             <Typography variant="h4" sx={{ fontWeight: 700, color: '#1e293b' }}>
                                 Your Design is Ready!
                             </Typography>
-                            <Typography sx={{ color: '#64748b' }}>
-                                Job ID: {jobId?.slice(0, 8)}...
-                            </Typography>
+                            <span className="uiverse-badge uiverse-badge-success">
+                                <CheckCircleIcon sx={{ fontSize: 14 }} /> Completed
+                            </span>
                         </Box>
                     </Box>
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                        <Button
-                            variant="outlined"
-                            startIcon={<ShareIcon />}
-                            sx={{ borderColor: '#e2e8f0', color: '#475569' }}
-                        >
+                        <button className="uiverse-btn uiverse-btn-secondary">
+                            <ShareIcon sx={{ fontSize: 18 }} />
                             Share
-                        </Button>
-                        <Button
-                            variant="contained"
-                            startIcon={<DownloadIcon />}
-                            onClick={() => handleDownload('png')}
-                            sx={{
-                                background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                '&:hover': { background: 'linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%)' }
-                            }}
-                        >
+                        </button>
+                        <button className="uiverse-btn" onClick={() => handleDownload('png')}>
+                            <DownloadIcon sx={{ fontSize: 18 }} />
                             Download All
-                        </Button>
+                        </button>
                     </Box>
                 </Box>
 

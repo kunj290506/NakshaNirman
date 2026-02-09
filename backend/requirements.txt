@@ -25,6 +25,7 @@ ezdxf==1.1.4
 langchain==0.1.4
 ollama==0.1.6
 httpx==0.26.0
+google-generativeai==0.4.0
 
 # Validation & Security
 pydantic==2.5.3

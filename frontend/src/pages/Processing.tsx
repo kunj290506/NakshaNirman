@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
-import { Box, Container, Typography, LinearProgress, Card, Grid, Stepper, Step, StepLabel, Button, Alert } from '@mui/material'
+import { Box, Container, Typography, Grid, Stepper, Step, StepLabel, Alert, Button } from '@mui/material'
 import DescriptionIcon from '@mui/icons-material/Description'
 import SearchIcon from '@mui/icons-material/Search'
 import ViewInArIcon from '@mui/icons-material/ViewInAr'
@@ -26,12 +26,29 @@ export default function Processing() {
     const { progress, message } = useSelector((state: RootState) => state.project)
     const [activeStep, setActiveStep] = useState(0)
     const [error, setError] = useState<string | null>(null)
+    const [elapsedTime, setElapsedTime] = useState(0)
     const wsRef = useRef<WebSocket | null>(null)
     const pollIntervalRef = useRef<number | null>(null)
+    const timerRef = useRef<number | null>(null)
+    const startTimeRef = useRef<number>(Date.now())
     const mountedRef = useRef(true)
+
+    // Format elapsed time as MM:SS
+    const formatTime = (seconds: number) => {
+        const mins = Math.floor(seconds / 60)
+        const secs = seconds % 60
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    }
 
     useEffect(() => {
         mountedRef.current = true
+        startTimeRef.current = Date.now()
+
+        // Timer for elapsed time
+        timerRef.current = window.setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000)
+            setElapsedTime(elapsed)
+        }, 1000)
 
         if (!jobId) {
             setError('No job ID provided. Please upload a file first.')
@@ -81,6 +98,10 @@ export default function Processing() {
                 clearInterval(pollIntervalRef.current)
                 pollIntervalRef.current = null
             }
+            if (timerRef.current) {
+                clearInterval(timerRef.current)
+                timerRef.current = null
+            }
         }
     }, [jobId, dispatch, navigate])
 
@@ -92,20 +113,13 @@ export default function Processing() {
         <Box sx={{ bgcolor: '#f8fafc', minHeight: '100vh' }}>
             <Container maxWidth="md" sx={{ py: 10 }}>
                 <Box textAlign="center" sx={{ mb: 6 }}>
-                    <Box
-                        sx={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: 100,
-                            height: 100,
-                            borderRadius: '50%',
-                            background: 'linear-gradient(135deg, rgba(37,99,235,0.1) 0%, rgba(124,58,237,0.1) 100%)',
-                            mb: 4
-                        }}
-                    >
-                        <AutoAwesomeIcon sx={{ fontSize: 50, color: '#7c3aed' }} />
-                    </Box>
+                    {/* Animated Loader */}
+                    <div className="uiverse-loader" style={{ marginBottom: 32 }}>
+                        <div className="uiverse-loader-ring"></div>
+                        <div className="uiverse-loader-ring"></div>
+                        <div className="uiverse-loader-ring"></div>
+                        <div className="uiverse-loader-ring"></div>
+                    </div>
 
                     <Typography variant="h3" sx={{ mb: 2, fontWeight: 700, color: '#1e293b' }}>
                         Generating Your Design
@@ -130,38 +144,55 @@ export default function Processing() {
                 )}
 
                 {/* Progress Card */}
-                <Card sx={{ p: 4, mb: 4, border: '1px solid #e2e8f0', borderRadius: 3 }}>
-                    <Box sx={{ mb: 4 }}>
+                <div className="uiverse-card" style={{ marginBottom: 24 }}>
+                    <Box sx={{ mb: 4, p: 2 }}>
+                        {/* Timer Display */}
+                        <Box sx={{ 
+                            display: 'flex', 
+                            justifyContent: 'center', 
+                            alignItems: 'center',
+                            mb: 3,
+                            gap: 2
+                        }}>
+                            <Box sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                px: 3,
+                                py: 1.5,
+                                bgcolor: 'rgba(37,99,235,0.1)',
+                                borderRadius: 3
+                            }}>
+                                <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 500 }}>
+                                    Elapsed Time
+                                </Typography>
+                                <Typography 
+                                    variant="h5" 
+                                    sx={{ 
+                                        fontWeight: 700, 
+                                        fontFamily: 'monospace',
+                                        background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                                        backgroundClip: 'text',
+                                        WebkitBackgroundClip: 'text',
+                                        WebkitTextFillColor: 'transparent'
+                                    }}
+                                >
+                                    {formatTime(elapsedTime)}
+                                </Typography>
+                            </Box>
+                        </Box>
+
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                             <Typography variant="body2" sx={{ color: '#64748b' }}>
                                 {message || 'Processing...'}
                             </Typography>
-                            <Typography
-                                variant="body2"
-                                sx={{
-                                    fontWeight: 600,
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                    backgroundClip: 'text',
-                                    WebkitBackgroundClip: 'text',
-                                    WebkitTextFillColor: 'transparent'
-                                }}
-                            >
+                            <span className="uiverse-gradient-text" style={{ fontWeight: 600 }}>
                                 {progress}%
-                            </Typography>
+                            </span>
                         </Box>
-                        <LinearProgress
-                            variant="determinate"
-                            value={progress}
-                            sx={{
-                                height: 10,
-                                borderRadius: 5,
-                                bgcolor: '#e2e8f0',
-                                '& .MuiLinearProgress-bar': {
-                                    background: 'linear-gradient(90deg, #2563eb 0%, #7c3aed 100%)',
-                                    borderRadius: 5
-                                }
-                            }}
-                        />
+                        <div className="uiverse-progress">
+                            <div className="uiverse-progress-bar" style={{ width: `${progress}%` }}></div>
+                        </div>
                     </Box>
 
                     <Stepper activeStep={activeStep} alternativeLabel>
@@ -171,87 +202,62 @@ export default function Processing() {
                             </Step>
                         ))}
                     </Stepper>
-                </Card>
+                </div>
 
                 {/* Info Cards */}
                 <Grid container spacing={3}>
                     <Grid item xs={12} md={4}>
-                        <Card sx={{ p: 3, textAlign: 'center', border: '1px solid #e2e8f0', borderRadius: 3 }}>
-                            <Box
-                                sx={{
-                                    width: 60,
-                                    height: 60,
-                                    borderRadius: '50%',
-                                    background: 'rgba(37,99,235,0.1)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    mx: 'auto',
-                                    mb: 2
-                                }}
-                            >
+                        <div className="uiverse-card" style={{ textAlign: 'center' }}>
+                            <div className="uiverse-card-icon" style={{
+                                width: 60, height: 60, borderRadius: '50%',
+                                background: 'rgba(37,99,235,0.1)', margin: '0 auto 16px',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center'
+                            }}>
                                 <DescriptionIcon sx={{ fontSize: 30, color: '#2563eb' }} />
-                            </Box>
+                            </div>
                             <Typography variant="body2" sx={{ color: '#64748b' }}>
                                 Optimizing room layout
                             </Typography>
-                        </Card>
+                        </div>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                        <Card sx={{ p: 3, textAlign: 'center', border: '1px solid #e2e8f0', borderRadius: 3 }}>
-                            <Box
-                                sx={{
-                                    width: 60,
-                                    height: 60,
-                                    borderRadius: '50%',
-                                    background: 'rgba(124,58,237,0.1)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    mx: 'auto',
-                                    mb: 2
-                                }}
-                            >
+                        <div className="uiverse-card" style={{ textAlign: 'center' }}>
+                            <div className="uiverse-card-icon" style={{
+                                width: 60, height: 60, borderRadius: '50%',
+                                background: 'rgba(124,58,237,0.1)', margin: '0 auto 16px',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center'
+                            }}>
                                 <SearchIcon sx={{ fontSize: 30, color: '#7c3aed' }} />
-                            </Box>
+                            </div>
                             <Typography variant="body2" sx={{ color: '#64748b' }}>
                                 Calculating dimensions
                             </Typography>
-                        </Card>
+                        </div>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                        <Card sx={{ p: 3, textAlign: 'center', border: '1px solid #e2e8f0', borderRadius: 3 }}>
-                            <Box
-                                sx={{
-                                    width: 60,
-                                    height: 60,
-                                    borderRadius: '50%',
-                                    background: 'rgba(34,197,94,0.1)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    mx: 'auto',
-                                    mb: 2
-                                }}
-                            >
+                        <div className="uiverse-card" style={{ textAlign: 'center' }}>
+                            <div className="uiverse-card-icon" style={{
+                                width: 60, height: 60, borderRadius: '50%',
+                                background: 'rgba(34,197,94,0.1)', margin: '0 auto 16px',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center'
+                            }}>
                                 <ViewInArIcon sx={{ fontSize: 30, color: '#22c55e' }} />
-                            </Box>
+                            </div>
                             <Typography variant="body2" sx={{ color: '#64748b' }}>
                                 Preparing 3D view
                             </Typography>
-                        </Card>
+                        </div>
                     </Grid>
                 </Grid>
 
                 {/* Back button */}
                 <Box sx={{ mt: 6, textAlign: 'center' }}>
-                    <Button
-                        variant="outlined"
+                    <button
+                        className="uiverse-btn uiverse-btn-secondary"
                         onClick={handleGoBack}
-                        sx={{ borderColor: '#e2e8f0', color: '#475569' }}
                     >
                         Cancel and Go Back
-                    </Button>
+                    </button>
                 </Box>
             </Container>
         </Box>

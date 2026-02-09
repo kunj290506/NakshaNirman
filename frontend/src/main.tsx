@@ -7,6 +7,7 @@ import { store } from './store'
 import { theme } from './theme'
 import App from './App'
 import './styles/index.css'
+import './styles/uiverse.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>

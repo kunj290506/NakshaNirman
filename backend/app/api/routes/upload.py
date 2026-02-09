@@ -2,12 +2,13 @@
 Upload API endpoints for file processing.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import uuid
 import os
+import json
 import aiofiles
 
 from app.core.config import settings
@@ -37,6 +38,7 @@ class UploadMetadata(BaseModel):
 async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    requirements: Optional[str] = Form(None),
 ):
     """
     Upload a boundary file (image or DXF) for processing.
@@ -47,6 +49,14 @@ async def upload_file(
     
     Returns a job ID for tracking processing status.
     """
+    # Parse requirements if provided
+    parsed_requirements = None
+    if requirements:
+        try:
+            parsed_requirements = json.loads(requirements)
+        except json.JSONDecodeError:
+            parsed_requirements = None
+
     # Validate file extension
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in settings.ALLOWED_EXTENSIONS:
@@ -87,7 +97,8 @@ async def upload_file(
         process_uploaded_file,
         job_id=job_id,
         file_path=file_path,
-        file_type=file_type
+        file_type=file_type,
+        requirements=parsed_requirements
     )
     
     return UploadResponse(

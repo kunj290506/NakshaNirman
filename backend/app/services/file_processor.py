@@ -8,6 +8,7 @@ Uses advanced OpenCV contour detection for accurate boundary extraction.
 import os
 import json
 import math
+import time
 from typing import Dict, List, Tuple, Optional
 import structlog
 import cv2
@@ -20,22 +21,27 @@ from app.api.routes.jobs import update_job_status, JobStage
 logger = structlog.get_logger()
 
 
-def process_uploaded_file(job_id: str, file_path: str, file_type: str):
+def process_uploaded_file(job_id: str, file_path: str, file_type: str, requirements: Dict = None):
     """
     Main file processing function.
     Extracts boundary and creates preview.
     """
-    logger.info("Processing uploaded file", job_id=job_id, file_type=file_type)
+    total_start = time.time()
+    logger.info("=" * 60)
+    logger.info("PROCESSING UPLOADED FILE", job_id=job_id, file_type=file_type)
+    logger.info("=" * 60)
     
     try:
         update_job_status(job_id, JobStage.PROCESSING_FILE, 10, "Reading uploaded file...")
         
+        step_start = time.time()
         if file_type == "image":
             boundary = process_image(file_path)
         elif file_type == "dxf":
             boundary = process_dxf(file_path)
         else:
             boundary = create_default_boundary()
+        logger.info("TIMING: Process file", duration_sec=round(time.time() - step_start, 3))
         
         update_job_status(job_id, JobStage.EXTRACTING_BOUNDARY, 20, "Extracting boundary...")
         
@@ -44,6 +50,7 @@ def process_uploaded_file(job_id: str, file_path: str, file_type: str):
         os.makedirs(output_dir, exist_ok=True)
         
         # Save boundary data as JSON
+        step_start = time.time()
         boundary_file = os.path.join(output_dir, "boundary.json")
         with open(boundary_file, 'w') as f:
             json.dump(boundary, f, indent=2)
@@ -53,18 +60,36 @@ def process_uploaded_file(job_id: str, file_path: str, file_type: str):
         geojson_file = os.path.join(output_dir, "boundary.geojson")
         with open(geojson_file, 'w') as f:
             json.dump(geojson, f, indent=2)
+        logger.info("TIMING: Save boundary files", duration_sec=round(time.time() - step_start, 3))
         
         # Create preview image
+        step_start = time.time()
         update_job_status(job_id, JobStage.EXTRACTING_BOUNDARY, 25, "Creating preview...")
         create_preview_image(file_path, boundary, output_dir)
+        logger.info("TIMING: Create preview", duration_sec=round(time.time() - step_start, 3))
         
         update_job_status(job_id, JobStage.EXTRACTING_BOUNDARY, 30, "Boundary extracted successfully")
         
-        logger.info("File processing complete", job_id=job_id, area=boundary.get('area_sqm'))
+        total_duration = round(time.time() - total_start, 3)
+        logger.info("FILE PROCESSING COMPLETE", job_id=job_id, area=boundary.get('area_sqm'), total_duration_sec=total_duration)
+        
+        # Automatically trigger design generation
+        logger.info("Auto-triggering design generation...")
+        from app.services.ai_designer import generate_design
+        
+        # Use provided requirements or defaults
+        design_requirements = requirements or {
+            "bedrooms": 3,
+            "bathrooms": 2,
+            "style": "modern"
+        }
+        
+        generate_design(job_id, design_requirements)
+        
         return boundary
         
     except Exception as e:
-        logger.error("File processing failed", job_id=job_id, error=str(e))
+        logger.error("File processing failed", job_id=job_id, error=str(e), duration_sec=round(time.time() - total_start, 3))
         update_job_status(job_id, JobStage.FAILED, 0, f"Processing failed: {str(e)}")
         raise
 

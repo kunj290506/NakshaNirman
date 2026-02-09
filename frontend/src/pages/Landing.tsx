@@ -1,4 +1,4 @@
-import { Box, Container, Typography, Button, Grid, Card } from '@mui/material'
+import { Box, Container, Typography, Grid } from '@mui/material'
 import { useNavigate } from 'react-router-dom'
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
@@ -141,46 +141,19 @@ export default function Landing() {
                         </Typography>
 
                         <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
-                            <Button
-                                variant="contained"
-                                size="large"
+                            <button
+                                className="uiverse-btn"
                                 onClick={() => navigate('/upload')}
-                                endIcon={<ArrowForwardIcon />}
-                                sx={{
-                                    px: 4,
-                                    py: 1.5,
-                                    fontSize: '1rem',
-                                    fontWeight: 600,
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                    borderRadius: 2,
-                                    boxShadow: '0 4px 20px rgba(37,99,235,0.3)',
-                                    '&:hover': {
-                                        background: 'linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%)',
-                                        boxShadow: '0 6px 30px rgba(37,99,235,0.4)'
-                                    }
-                                }}
                             >
                                 Start Designing
-                            </Button>
-                            <Button
-                                variant="outlined"
-                                size="large"
-                                sx={{
-                                    px: 4,
-                                    py: 1.5,
-                                    fontSize: '1rem',
-                                    fontWeight: 600,
-                                    borderColor: '#e2e8f0',
-                                    color: '#475569',
-                                    borderRadius: 2,
-                                    '&:hover': {
-                                        borderColor: '#2563eb',
-                                        bgcolor: 'rgba(37,99,235,0.05)'
-                                    }
-                                }}
+                                <ArrowForwardIcon className="uiverse-btn-icon" sx={{ fontSize: 20 }} />
+                            </button>
+                            <button
+                                className="uiverse-btn uiverse-btn-secondary"
+                                onClick={() => document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' })}
                             >
-                                View Examples
-                            </Button>
+                                View Features
+                            </button>
                         </Box>
 
                         {/* Stats */}
@@ -223,37 +196,23 @@ export default function Landing() {
                 <Grid container spacing={3}>
                     {steps.map((step, index) => (
                         <Grid item xs={12} sm={6} md={3} key={step.title}>
-                            <Card
-                                sx={{
-                                    p: 4,
-                                    textAlign: 'center',
-                                    height: '100%',
-                                    bgcolor: '#fff',
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: 3,
-                                    transition: 'all 0.3s ease',
-                                    '&:hover': {
-                                        transform: 'translateY(-4px)',
-                                        boxShadow: '0 12px 40px rgba(0,0,0,0.08)'
-                                    }
-                                }}
-                            >
-                                <Box
-                                    sx={{
-                                        width: 56,
-                                        height: 56,
+                            <div className="uiverse-card" style={{ textAlign: 'center', height: '100%' }}>
+                                <div
+                                    className="uiverse-card-icon"
+                                    style={{
+                                        width: 64,
+                                        height: 64,
                                         borderRadius: '50%',
-                                        background: 'linear-gradient(135deg, rgba(37,99,235,0.1) 0%, rgba(124,58,237,0.1) 100%)',
+                                        background: 'linear-gradient(135deg, rgba(37,99,235,0.15) 0%, rgba(124,58,237,0.15) 100%)',
                                         display: 'flex',
                                         alignItems: 'center',
                                         justifyContent: 'center',
-                                        mx: 'auto',
-                                        mb: 2,
+                                        margin: '0 auto 16px',
                                         color: '#2563eb'
                                     }}
                                 >
                                     {step.icon}
-                                </Box>
+                                </div>
                                 <Typography
                                     variant="caption"
                                     sx={{
@@ -270,7 +229,7 @@ export default function Landing() {
                                 <Typography variant="body2" sx={{ color: '#64748b', mt: 1 }}>
                                     {step.desc}
                                 </Typography>
-                            </Card>
+                            </div>
                         </Grid>
                     ))}
                 </Grid>
@@ -292,33 +251,33 @@ export default function Landing() {
                         Everything you need to create professional architectural floor plans
                     </Typography>
 
-                    <Grid container spacing={4}>
+                    <Grid container spacing={4} id="features">
                         {features.map((feature) => (
                             <Grid item xs={12} sm={6} md={3} key={feature.title}>
-                                <Card
-                                    sx={{
-                                        p: 3,
-                                        height: '100%',
-                                        bgcolor: '#f8fafc',
-                                        border: '1px solid #e2e8f0',
-                                        borderRadius: 3,
-                                        transition: 'all 0.3s ease',
-                                        '&:hover': {
-                                            borderColor: feature.color,
-                                            boxShadow: `0 8px 30px ${feature.color}15`
-                                        }
-                                    }}
-                                >
-                                    <Box sx={{ color: feature.color, mb: 2 }}>
+                                <div className="uiverse-card" style={{ height: '100%', background: '#f8fafc' }}>
+                                    <div
+                                        className="uiverse-card-icon"
+                                        style={{
+                                            width: 56,
+                                            height: 56,
+                                            borderRadius: 14,
+                                            background: `${feature.color}15`,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            color: feature.color,
+                                            marginBottom: 16
+                                        }}
+                                    >
                                         {feature.icon}
-                                    </Box>
+                                    </div>
                                     <Typography variant="h6" sx={{ fontWeight: 600, color: '#1e293b', mb: 1 }}>
                                         {feature.title}
                                     </Typography>
                                     <Typography variant="body2" sx={{ color: '#64748b' }}>
                                         {feature.description}
                                     </Typography>
-                                </Card>
+                                </div>
                             </Grid>
                         ))}
                     </Grid>
@@ -327,12 +286,13 @@ export default function Landing() {
 
             {/* CTA */}
             <Container maxWidth="md" sx={{ py: 12 }}>
-                <Card
-                    sx={{
-                        p: 6,
+                <div
+                    className="uiverse-glass"
+                    style={{
+                        padding: 48,
                         textAlign: 'center',
                         background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                        borderRadius: 4,
+                        borderRadius: 24,
                         boxShadow: '0 20px 60px rgba(37,99,235,0.3)'
                     }}
                 >
@@ -342,27 +302,19 @@ export default function Landing() {
                     <Typography variant="body1" sx={{ color: 'rgba(255,255,255,0.85)', mb: 4 }}>
                         Start creating professional architectural designs in seconds
                     </Typography>
-                    <Button
-                        variant="contained"
-                        size="large"
+                    <button
+                        className="uiverse-btn"
                         onClick={() => navigate('/upload')}
-                        endIcon={<ArrowForwardIcon />}
-                        sx={{
-                            px: 5,
-                            py: 1.5,
-                            fontSize: '1.1rem',
-                            fontWeight: 600,
-                            bgcolor: '#fff',
+                        style={{
+                            background: 'white',
                             color: '#2563eb',
-                            borderRadius: 2,
-                            '&:hover': {
-                                bgcolor: '#f8fafc'
-                            }
+                            boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
                         }}
                     >
                         Get Started Free
-                    </Button>
-                </Card>
+                        <ArrowForwardIcon className="uiverse-btn-icon" sx={{ fontSize: 20 }} />
+                    </button>
+                </div>
             </Container>
 
             {/* Footer */}

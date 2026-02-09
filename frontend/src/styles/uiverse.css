@@ -1,0 +1,531 @@
+/* UIverse-inspired Interactive Elements */
+/* Source: https://uiverse.io - MIT License */
+
+/* ========================================
+   ANIMATED GRADIENT BUTTON
+   ======================================== */
+.uiverse-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 40px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3);
+}
+
+.uiverse-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
+  transition: left 0.5s ease;
+}
+
+.uiverse-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 25px rgba(37, 99, 235, 0.4);
+}
+
+.uiverse-btn:hover::before {
+  left: 100%;
+}
+
+.uiverse-btn:active {
+  transform: translateY(-1px);
+}
+
+.uiverse-btn-icon {
+  transition: transform 0.3s ease;
+}
+
+.uiverse-btn:hover .uiverse-btn-icon {
+  transform: translateX(5px);
+}
+
+/* Secondary Button */
+.uiverse-btn-secondary {
+  background: white;
+  color: #1e293b;
+  border: 2px solid #e2e8f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.uiverse-btn-secondary:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.15);
+}
+
+/* ========================================
+   GLOWING UPLOAD DROPZONE
+   ======================================== */
+.uiverse-dropzone {
+  position: relative;
+  padding: 60px 40px;
+  border: 2px dashed #cbd5e1;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
+  cursor: pointer;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.uiverse-dropzone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  padding: 2px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed, #2563eb);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.uiverse-dropzone:hover,
+.uiverse-dropzone.active {
+  border-color: transparent;
+  transform: translateY(-5px);
+  box-shadow: 0 20px 40px rgba(37, 99, 235, 0.15);
+}
+
+.uiverse-dropzone:hover::before,
+.uiverse-dropzone.active::before {
+  opacity: 1;
+  animation: borderGlow 2s linear infinite;
+}
+
+@keyframes borderGlow {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.uiverse-dropzone-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+/* ========================================
+   FEATURE CARDS WITH HOVER EFFECTS
+   ======================================== */
+.uiverse-card {
+  position: relative;
+  padding: 32px;
+  background: white;
+  border-radius: 20px;
+  border: 1px solid #e2e8f0;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.uiverse-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #2563eb, #7c3aed);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s ease;
+}
+
+.uiverse-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  border-color: transparent;
+}
+
+.uiverse-card:hover::before {
+  transform: scaleX(1);
+}
+
+.uiverse-card-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.uiverse-card:hover .uiverse-card-icon {
+  transform: scale(1.1) rotate(5deg);
+}
+
+/* ========================================
+   ANIMATED LOADING SPINNER
+   ======================================== */
+.uiverse-loader {
+  width: 120px;
+  height: 120px;
+  position: relative;
+  margin: 0 auto;
+}
+
+.uiverse-loader-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 4px solid transparent;
+  animation: rotate 2s linear infinite;
+}
+
+.uiverse-loader-ring:nth-child(1) {
+  border-top-color: #2563eb;
+  animation-delay: 0s;
+}
+
+.uiverse-loader-ring:nth-child(2) {
+  inset: 10px;
+  border-right-color: #7c3aed;
+  animation-delay: 0.1s;
+  animation-direction: reverse;
+}
+
+.uiverse-loader-ring:nth-child(3) {
+  inset: 20px;
+  border-bottom-color: #059669;
+  animation-delay: 0.2s;
+}
+
+.uiverse-loader-ring:nth-child(4) {
+  inset: 30px;
+  border-left-color: #ea580c;
+  animation-delay: 0.3s;
+  animation-direction: reverse;
+}
+
+@keyframes rotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Pulsing Dot Loader */
+.uiverse-dots {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.uiverse-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.uiverse-dot:nth-child(1) { animation-delay: 0s; }
+.uiverse-dot:nth-child(2) { animation-delay: 0.2s; }
+.uiverse-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pulse {
+  0%, 80%, 100% { 
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+  40% { 
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* ========================================
+   PROGRESS BAR WITH GLOW
+   ======================================== */
+.uiverse-progress {
+  width: 100%;
+  height: 12px;
+  background: #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.uiverse-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #2563eb, #7c3aed, #2563eb);
+  background-size: 200% 100%;
+  border-radius: 10px;
+  animation: shimmer 2s linear infinite;
+  position: relative;
+  transition: width 0.5s ease;
+}
+
+.uiverse-progress-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4));
+  filter: blur(4px);
+  animation: progressGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes progressGlow {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* ========================================
+   STEP INDICATOR
+   ======================================== */
+.uiverse-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+
+.uiverse-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.uiverse-step-circle {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #64748b;
+  transition: all 0.4s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.uiverse-step.active .uiverse-step-circle {
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: white;
+  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+  animation: stepPulse 2s ease-in-out infinite;
+}
+
+.uiverse-step.completed .uiverse-step-circle {
+  background: #059669;
+  color: white;
+}
+
+@keyframes stepPulse {
+  0%, 100% { box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4); }
+  50% { box-shadow: 0 4px 25px rgba(37, 99, 235, 0.6); }
+}
+
+.uiverse-step-line {
+  width: 80px;
+  height: 3px;
+  background: #e2e8f0;
+  transition: background 0.4s ease;
+}
+
+.uiverse-step-line.completed {
+  background: linear-gradient(90deg, #059669, #059669);
+}
+
+.uiverse-step-line.active {
+  background: linear-gradient(90deg, #059669, #2563eb);
+}
+
+/* ========================================
+   TOOLTIP
+   ======================================== */
+.uiverse-tooltip {
+  position: relative;
+  display: inline-block;
+}
+
+.uiverse-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  padding: 8px 16px;
+  background: #1e293b;
+  color: white;
+  font-size: 13px;
+  border-radius: 8px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.uiverse-tooltip:hover::after {
+  transform: translateX(-50%) translateY(-8px);
+  opacity: 1;
+  visibility: visible;
+}
+
+/* ========================================
+   GLASSMORPHISM CARD
+   ======================================== */
+.uiverse-glass {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+/* ========================================
+   ANIMATED TEXT GRADIENT
+   ======================================== */
+.uiverse-gradient-text {
+  background: linear-gradient(135deg, #2563eb, #7c3aed, #2563eb);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: textGradient 3s linear infinite;
+}
+
+@keyframes textGradient {
+  0% { background-position: 0% center; }
+  100% { background-position: 200% center; }
+}
+
+/* ========================================
+   FLOATING ACTION BUTTON
+   ======================================== */
+.uiverse-fab {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  border: none;
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.uiverse-fab:hover {
+  transform: scale(1.1) rotate(90deg);
+  box-shadow: 0 6px 30px rgba(37, 99, 235, 0.5);
+}
+
+/* ========================================
+   NOTIFICATION BADGE
+   ======================================== */
+.uiverse-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.uiverse-badge-success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.uiverse-badge-processing {
+  background: #dbeafe;
+  color: #1e40af;
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ========================================
+   INPUT WITH FLOATING LABEL
+   ======================================== */
+.uiverse-input-group {
+  position: relative;
+  margin-bottom: 24px;
+}
+
+.uiverse-input {
+  width: 100%;
+  padding: 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 16px;
+  background: white;
+  transition: all 0.3s ease;
+}
+
+.uiverse-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+}
+
+.uiverse-input-label {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #64748b;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  background: white;
+  padding: 0 4px;
+}
+
+.uiverse-input:focus + .uiverse-input-label,
+.uiverse-input:not(:placeholder-shown) + .uiverse-input-label {
+  top: 0;
+  font-size: 12px;
+  color: #2563eb;
+}

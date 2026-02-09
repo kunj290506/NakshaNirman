@@ -6,7 +6,6 @@ import {
     Box,
     Container,
     Typography,
-    Button,
     Card,
     Grid,
     TextField,
@@ -14,8 +13,7 @@ import {
     Stepper,
     Step,
     StepLabel,
-    Alert,
-    CircularProgress
+    Alert
 } from '@mui/material'
 import CloudUploadIcon from '@mui/icons-material/CloudUpload'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
@@ -122,27 +120,18 @@ export default function Upload() {
                 {/* Step 0: Upload */}
                 {activeStep === 0 && (
                     <Card sx={{ p: 4, borderRadius: 3, border: '1px solid #e2e8f0' }}>
-                        <Box
+                        <div
                             {...getRootProps()}
-                            sx={{
-                                border: '2px dashed',
-                                borderColor: isDragActive ? '#2563eb' : file ? '#22c55e' : '#e2e8f0',
-                                borderRadius: 3,
-                                p: 6,
-                                textAlign: 'center',
-                                cursor: 'pointer',
-                                bgcolor: isDragActive ? 'rgba(37,99,235,0.05)' : file ? 'rgba(34,197,94,0.05)' : '#fafafa',
-                                transition: 'all 0.3s ease',
-                                '&:hover': {
-                                    borderColor: '#2563eb',
-                                    bgcolor: 'rgba(37,99,235,0.02)'
-                                }
+                            className={`uiverse-dropzone ${isDragActive ? 'active' : ''}`}
+                            style={{
+                                borderColor: file ? '#22c55e' : undefined,
+                                background: file ? 'rgba(34,197,94,0.05)' : undefined
                             }}
                         >
                             <input {...getInputProps()} />
 
                             {preview ? (
-                                <Box>
+                                <Box sx={{ textAlign: 'center' }}>
                                     <Box
                                         component="img"
                                         src={preview}
@@ -151,12 +140,13 @@ export default function Upload() {
                                             maxWidth: '100%',
                                             maxHeight: 300,
                                             borderRadius: 2,
-                                            mb: 2
+                                            mb: 2,
+                                            boxShadow: '0 8px 30px rgba(0,0,0,0.12)'
                                         }}
                                     />
                                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
                                         <CheckCircleIcon sx={{ color: '#22c55e' }} />
-                                        <Typography sx={{ color: '#22c55e', fontWeight: 500 }}>
+                                        <Typography sx={{ color: '#22c55e', fontWeight: 600 }}>
                                             {file?.name}
                                         </Typography>
                                     </Box>
@@ -165,52 +155,37 @@ export default function Upload() {
                                     </Typography>
                                 </Box>
                             ) : (
-                                <Box>
-                                    <Box
-                                        sx={{
-                                            width: 80,
-                                            height: 80,
-                                            borderRadius: '50%',
-                                            bgcolor: 'rgba(37,99,235,0.1)',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            mx: 'auto',
-                                            mb: 3
-                                        }}
-                                    >
+                                <Box sx={{ textAlign: 'center' }}>
+                                    <div className="uiverse-dropzone-icon">
                                         {isDragActive ? (
-                                            <ImageIcon sx={{ fontSize: 40, color: '#2563eb' }} />
+                                            <ImageIcon sx={{ fontSize: 36, color: 'white' }} />
                                         ) : (
-                                            <CloudUploadIcon sx={{ fontSize: 40, color: '#2563eb' }} />
+                                            <CloudUploadIcon sx={{ fontSize: 36, color: 'white' }} />
                                         )}
-                                    </Box>
-                                    <Typography variant="h6" sx={{ color: '#1e293b', mb: 1 }}>
+                                    </div>
+                                    <Typography variant="h5" sx={{ color: '#1e293b', fontWeight: 600, mb: 1 }}>
                                         {isDragActive ? 'Drop your image here' : 'Upload Plot Boundary'}
                                     </Typography>
-                                    <Typography variant="body2" sx={{ color: '#64748b' }}>
+                                    <Typography variant="body1" sx={{ color: '#64748b', mb: 2 }}>
                                         Drag and drop or click to browse
                                     </Typography>
-                                    <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mt: 1 }}>
+                                    <span className="uiverse-badge uiverse-badge-processing">
                                         PNG, JPG, WEBP up to 10MB
-                                    </Typography>
+                                    </span>
                                 </Box>
                             )}
-                        </Box>
+                        </div>
 
                         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 4 }}>
-                            <Button
-                                variant="contained"
+                            <button
+                                className="uiverse-btn"
                                 onClick={() => setActiveStep(1)}
                                 disabled={!file}
-                                endIcon={<ArrowForwardIcon />}
-                                sx={{
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                    '&:hover': { background: 'linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%)' }
-                                }}
+                                style={{ opacity: file ? 1 : 0.5 }}
                             >
                                 Continue
-                            </Button>
+                                <ArrowForwardIcon className="uiverse-btn-icon" sx={{ fontSize: 18 }} />
+                            </button>
                         </Box>
                     </Card>
                 )}
@@ -279,25 +254,20 @@ export default function Upload() {
                         </Grid>
 
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
-                            <Button
-                                variant="outlined"
+                            <button
+                                className="uiverse-btn uiverse-btn-secondary"
                                 onClick={() => setActiveStep(0)}
-                                startIcon={<ArrowBackIcon />}
-                                sx={{ borderColor: '#e2e8f0', color: '#475569' }}
                             >
+                                <ArrowBackIcon sx={{ fontSize: 18 }} />
                                 Back
-                            </Button>
-                            <Button
-                                variant="contained"
+                            </button>
+                            <button
+                                className="uiverse-btn"
                                 onClick={() => setActiveStep(2)}
-                                endIcon={<ArrowForwardIcon />}
-                                sx={{
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                    '&:hover': { background: 'linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%)' }
-                                }}
                             >
                                 Continue
-                            </Button>
+                                <ArrowForwardIcon className="uiverse-btn-icon" sx={{ fontSize: 18 }} />
+                            </button>
                         </Box>
                     </Card>
                 )}
@@ -350,27 +320,29 @@ export default function Upload() {
                         </Grid>
 
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
-                            <Button
-                                variant="outlined"
+                            <button
+                                className="uiverse-btn uiverse-btn-secondary"
                                 onClick={() => setActiveStep(1)}
-                                startIcon={<ArrowBackIcon />}
-                                sx={{ borderColor: '#e2e8f0', color: '#475569' }}
                             >
+                                <ArrowBackIcon sx={{ fontSize: 18 }} />
                                 Back
-                            </Button>
-                            <Button
-                                variant="contained"
+                            </button>
+                            <button
+                                className="uiverse-btn"
                                 onClick={handleSubmit}
                                 disabled={loading}
-                                size="large"
-                                sx={{
-                                    px: 5,
-                                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                                    '&:hover': { background: 'linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%)' }
-                                }}
+                                style={{ minWidth: 200 }}
                             >
-                                {loading ? <CircularProgress size={24} sx={{ color: '#fff' }} /> : 'Generate Floor Plan'}
-                            </Button>
+                                {loading ? (
+                                    <div className="uiverse-dots">
+                                        <span className="uiverse-dot"></span>
+                                        <span className="uiverse-dot"></span>
+                                        <span className="uiverse-dot"></span>
+                                    </div>
+                                ) : (
+                                    <>Generate Floor Plan<ArrowForwardIcon className="uiverse-btn-icon" sx={{ fontSize: 18 }} /></>
+                                )}
+                            </button>
                         </Box>
                     </Card>
                 )}

@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # AI/LLM
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     LLM_MODEL: str = "llama3.1:70b"
+    GEMINI_API_KEY: str = ""
+    USE_GEMINI: bool = True
     
     # Processing
     MAX_PROCESSING_TIME: int = 600  # 10 minutes
