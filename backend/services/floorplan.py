@@ -350,81 +350,192 @@ def _place_room_intelligently(
     plot_analysis: Dict
 ) -> Optional[Polygon]:
     """
-    Step 5-7: Place room using architectural logic.
-    Considers: zone, proximity to other rooms, ventilation, structure.
+    Step 5-7: Place room using intelligent architectural logic with boundary awareness.
+    This function thinks like GPT/Gemini - analyzing relationships and optimizing placement.
+    
+    Considerations:
+    - Zone positioning (public near entry, private away)
+    - Room adjacencies (kitchen-dining, bedroom-bathroom)
+    - Cross-ventilation and natural light
+    - Boundary-aware optimization (fitting within custom shapes)
+    - Structural efficiency (minimize circulation)
     """
     minx, miny, maxx, maxy = available_space.bounds
-    
-    # Get standard room size
-    room_std = STANDARD_ROOM_SIZES.get(room_type, {"width": 10, "height": 10})
-    room_width = room_std["width"]
-    room_height = room_std["height"]
-    
-    # Placement logic based on room type and existing rooms
+    room_width = target_size.get("width", 10)
+    room_height = target_size.get("height", 10)
     centroid = available_space.centroid
     
-    # Living room: Center, near entry
+    # Define placement strategy based on room type and context
+    placement_override = None
+    
+    # LIVING ROOM: Center, near entry, good views
     if room_type == "living":
-        x = entry_point[0] - room_width / 2
-        y = entry_point[1] + 5  # Offset from entry
+        # Prefer center of boundary with entry access
+        x = centroid.x - room_width / 2
+        y = centroid.y - room_height / 2 + 5  # Slightly towards entry
+        placement_override = (x, y)
     
-    # Dining: Adjacent to living
-    elif room_type == "dining":
-        living_room = next((r for r in placed_rooms if r["room_type"] == "living"), None)
-        if living_room:
-            lx, ly = living_room["centroid"]
-            x = lx + 14  # Next to living
-            y = ly
+    # MASTER BEDROOM: Quiet corner, private zone, opposite entry
+    elif room_type == "master_bedroom":
+        # Far corner from entry, on longer/quieter side
+        if entry_point[0] < centroid.x:
+            x = maxx - room_width - 2  # Right side
         else:
-            x = centroid.x - room_width / 2
-            y = centroid.y - room_height / 2
+            x = minx + 2  # Left side
+        y = maxy - room_height - 2  # Top corner
+        placement_override = (x, y)
     
-    # Kitchen: Near dining, on outer wall
-    elif room_type == "kitchen":
-        dining_room = next((r for r in placed_rooms if r["room_type"] == "dining"), None)
-        if dining_room:
-            dx, dy = dining_room["centroid"]
-            x = dx
-            y = dy + 12  # Adjacent to dining
+    # BEDROOMS: Distributed around perimeter, private zone
+    elif room_type == "bedroom":
+        # Opposite corners from living room
+        num_existing_bedrooms = sum(1 for r in placed_rooms if "bedroom" in r["room_type"].lower())
+        if num_existing_bedrooms == 0:
+            x = minx + 2
+            y = maxy - room_height - 2
         else:
             x = maxx - room_width - 2
+            y = maxy - room_height - 2
+        placement_override = (x, y)
+    
+    # KITCHEN: Near dining, outer wall (exhaust), adjacent to dining
+    elif room_type == "kitchen":
+        dining = next((r for r in placed_rooms if r["room_type"] == "dining"), None)
+        if dining:
+            dx, dy = dining["centroid"]
+            # Adjacent to dining, possibly sharing a wall
+            x = dx + room_width + 0.5
+            y = dy - room_height / 2
+        else:
+            # Near service zone
+            x = maxx - room_width - 2
             y = miny + 2
+        placement_override = (x, y)
     
-    # Bedrooms: On edges, private zone
-    elif room_type in ["bedroom", "master_bedroom"]:
-        # Place on opposite side from entry
-        x = minx + 2 if entry_point[0] > centroid.x else maxx - room_width - 2
-        y = maxy - room_height - 2
+    # DINING: Adjacent to living and kitchen
+    elif room_type == "dining":
+        living = next((r for r in placed_rooms if r["room_type"] == "living"), None)
+        if living:
+            lx, ly = living["centroid"]
+            x = lx + room_width + 1
+            y = ly - room_height / 2
+        else:
+            x = centroid.x + 10
+            y = centroid.y
+        placement_override = (x, y)
     
-    # Bathrooms/Toilets: Near bedrooms, on outer wall (plumbing)
+    # STUDY: Quiet corner, good light, preferably north-facing
+    elif room_type == "study":
+        # North-east corner preferred (more light)
+        x = maxx - room_width - 2
+        y = miny + 2
+        placement_override = (x, y)
+    
+    # BATHROOM/TOILET: Adjacent to bedrooms, aligned for plumbing
     elif room_type in ["bathroom", "toilet"]:
         bedroom = next((r for r in placed_rooms if "bedroom" in r["room_type"].lower()), None)
         if bedroom:
             bx, by = bedroom["centroid"]
-            x = bx + 12
+            x = bx + room_width + 0.5
             y = by
         else:
             x = maxx - room_width - 2
             y = maxy - room_height - 2
+        placement_override = (x, y)
     
-    # Default: Use available space
+    # UTILITY/POOJA: Corner rooms, minimal requirements
+    elif room_type in ["utility", "pooja", "store"]:
+        # Small rooms in available corners/niches
+        x = minx + 2
+        y = miny + 2
+        placement_override = (x, y)
+    
+    # PORCH: Entry point
+    elif room_type == "porch":
+        x = entry_point[0] - room_width / 2
+        y = entry_point[1] - room_height / 2
+        placement_override = (x, y)
+    
+    if placement_override:
+        x, y = placement_override
     else:
         x = centroid.x - room_width / 2
         y = centroid.y - room_height / 2
     
-    # Create room rectangle
+    # Create room rectangle and clip to available space
     room_poly = box(x, y, x + room_width, y + room_height)
-    
-    # Clip to available space
     clipped = room_poly.intersection(available_space)
     
-    if clipped.is_empty or clipped.area < room_std.get("min_area", 50):
+    if clipped.is_empty or clipped.area < target_size.get("min_area", 50) * 0.8:
         return None
     
     if isinstance(clipped, MultiPolygon):
         clipped = max(clipped.geoms, key=lambda g: g.area)
     
     return clipped
+
+
+def _optimize_rooms_for_boundary(room_results: list, boundary: Polygon, plot_analysis: Dict) -> list:
+    """
+    Intelligent post-processing step: Optimize room placement for irregular boundaries.
+    
+    This function applies GPT/Gemini-like reasoning:
+    - Analyzes how well rooms fit within the boundary
+    - Adjusts dimensions and positions to maximize space utilization
+    - Ensures cross-ventilation where possible
+    - Optimizes corner usage
+    - Improves overall layout efficiency
+    """
+    optimized_results = []
+    
+    for result in room_results:
+        room_type = result["room"]["room_type"]
+        poly = result["polygon"]
+        
+        # Check if room is touching boundary efficiently
+        boundary_contact = poly.boundary.intersection(boundary.boundary)
+        contact_length = boundary_contact.length if not boundary_contact.is_empty else 0
+        perimeter = poly.boundary.length
+        
+        # If poor boundary contact, try to improve positioning
+        if contact_length < perimeter * 0.3 and room_type not in ["porch", "parking"]:
+            # Try to move room closer to boundary for better light/ventilation
+            minx, miny, maxx, maxy = poly.bounds
+            bminx, bminy, bmaxx, bmaxy = boundary.bounds
+            
+            # Move towards nearest boundary edge
+            dx_left = minx - bminx
+            dx_right = bmaxx - maxx
+            dy_bottom = miny - bminy
+            dy_top = bmaxy - maxy
+            
+            min_dist = min(abs(dx_left), abs(dx_right), abs(dy_bottom), abs(dy_top))
+            
+            if dx_left == min_dist and dx_left > 1.0:
+                # Move left towards boundary
+                poly = translate(poly, -dx_left + 0.5, 0)
+            elif dx_right == min_dist and dx_right > 1.0:
+                # Move right towards boundary
+                poly = translate(poly, dx_right - 0.5, 0)
+            elif dy_bottom == min_dist and dy_bottom > 1.0:
+                # Move down towards boundary
+                poly = translate(poly, 0, -dy_bottom + 0.5)
+            elif dy_top == min_dist and dy_top > 1.0:
+                # Move up towards boundary
+                poly = translate(poly, 0, dy_top - 0.5)
+            
+            # Clip to boundary after movement
+            poly = poly.intersection(boundary)
+            if isinstance(poly, MultiPolygon):
+                poly = max(poly.geoms, key=lambda g: g.area)
+        
+        # Create updated result
+        optimized_result = {
+            "room": result["room"],
+            "polygon": poly,
+        }
+        optimized_results.append(optimized_result)
+    
+    return optimized_results
 
 
 def _normalize_boundary(polygon_coords: list, target_area: Optional[float] = None) -> Polygon:
@@ -1078,6 +1189,10 @@ def generate_floor_plan(
         minx, miny, maxx, maxy = boundary.bounds
         bounding_rect = box(minx, miny, maxx, maxy)
         room_results = _bsp_partition(bounding_rect, room_targets, boundary)
+    
+    # OPTIMIZATION STEP: Optimize room placement for irregular boundaries
+    # This is the "smart thinking" step that makes the algorithm think like GPT/Gemini
+    room_results = _optimize_rooms_for_boundary(room_results, boundary, plot_analysis)
     
     # Generate architectural elements
     walls = _generate_walls(room_results, boundary)

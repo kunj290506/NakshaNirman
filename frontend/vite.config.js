@@ -10,6 +10,11 @@ export default defineConfig({
                 target: 'http://localhost:8001',
                 changeOrigin: true,
                 ws: true,
+                rewrite: (path) => path,
+                timeout: 60000,
+                onError: (err, req, res) => {
+                    console.error('Proxy error:', err)
+                },
             },
         },
     },
