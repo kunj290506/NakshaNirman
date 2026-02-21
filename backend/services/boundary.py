@@ -5,14 +5,20 @@ Universal shape extraction supporting all boundary types worldwide:
 - CAD files (DXF)
 - Complex shapes (L-shaped, U-shaped, irregular)
 - Multiple detection methods with fallbacks
+
+Phase 1 additions:
+- Buildable footprint computation (setback offsets)
+- Preview image generation (matplotlib)
 """
 
 import cv2
 import numpy as np
 from shapely.geometry import Polygon, MultiPolygon as ShapelyMultiPolygon, Point
 from shapely.ops import unary_union
+from shapely.validation import explain_validity
 from pathlib import Path
 import json
+import math
 
 
 def extract_all_shapes_from_image(image_path: str, scale: float = 1.0, return_all: bool = False) -> dict:
@@ -576,4 +582,193 @@ def process_boundary_file(file_path: str, file_type: str, scale: float = 1.0) ->
     validated_result = validate_boundary_polygon(result)
     
     return validated_result
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Buildable Footprint & Preview
+# ---------------------------------------------------------------------------
+
+def load_region_rules(region: str = "india_mvp") -> dict:
+    """Load setback / building rules from region_rules.json."""
+    rules_path = Path(__file__).resolve().parent.parent / "region_rules.json"
+    if not rules_path.exists():
+        raise FileNotFoundError(f"Region rules file not found: {rules_path}")
+    with open(rules_path) as f:
+        all_rules = json.load(f)
+    if region not in all_rules:
+        raise ValueError(f"Unknown region '{region}'. Available: {list(all_rules.keys())}")
+    return all_rules[region]
+
+
+def validate_boundary_strict(polygon_coords: list) -> dict:
+    """
+    Strict Phase-1 validation of a boundary polygon.
+
+    Checks:
+      - closed
+      - non-self-intersecting
+      - area > 0
+
+    Returns dict with is_valid, is_closed, is_self_intersecting, shapely Polygon.
+    """
+    # Ensure closed
+    if polygon_coords[0] != polygon_coords[-1]:
+        polygon_coords = polygon_coords + [polygon_coords[0]]
+
+    poly = Polygon(polygon_coords)
+    is_closed = True  # we forced closure above
+    is_self_intersecting = not poly.is_simple
+    area = poly.area
+
+    if is_self_intersecting:
+        # Attempt to fix via buffer(0)
+        fixed = poly.buffer(0)
+        if isinstance(fixed, ShapelyMultiPolygon):
+            fixed = max(fixed.geoms, key=lambda g: g.area)
+        if fixed.is_valid and fixed.area > 0:
+            poly = fixed
+            polygon_coords = [[round(c[0], 2), round(c[1], 2)] for c in poly.exterior.coords]
+            is_self_intersecting = False
+            area = poly.area
+
+    is_valid = (not is_self_intersecting) and (area > 0)
+
+    return {
+        "is_valid": is_valid,
+        "is_closed": is_closed,
+        "is_self_intersecting": is_self_intersecting,
+        "area": round(area, 2),
+        "perimeter": round(poly.length, 2),
+        "polygon_coords": polygon_coords,
+        "shapely_polygon": poly,
+    }
+
+
+def compute_buildable_footprint(
+    boundary_polygon_coords: list,
+    setback: float | None = None,
+    region: str = "india_mvp",
+) -> dict:
+    """
+    Compute the usable (buildable) polygon by applying setback offsets inward.
+
+    Steps:
+      1. Build a Shapely Polygon from the boundary.
+      2. Load region rules (or use explicit setback).
+      3. Apply negative buffer (inward offset).
+      4. Validate the result — remove degenerate offsets.
+      5. Return usable_polygon + metadata.
+    """
+    # --- validate boundary ---
+    validation = validate_boundary_strict(boundary_polygon_coords)
+    if not validation["is_valid"]:
+        raise ValueError(
+            f"Boundary polygon invalid: self_intersecting={validation['is_self_intersecting']}, "
+            f"area={validation['area']}"
+        )
+
+    boundary_poly: Polygon = validation["shapely_polygon"]
+    boundary_area = validation["area"]
+
+    # --- determine setback distance ---
+    if setback is None:
+        rules = load_region_rules(region)
+        setback = rules.get("uniform_setback", 2.0)
+
+    if setback < 0:
+        raise ValueError("Setback distance must be non-negative.")
+
+    if setback == 0:
+        usable_poly = boundary_poly
+    else:
+        # Negative buffer = inward offset
+        usable_poly = boundary_poly.buffer(-setback, join_style=2)  # mitre join
+
+    # --- remove invalid / degenerate offsets ---
+    if usable_poly.is_empty:
+        raise ValueError(
+            f"Setback of {setback}m collapses the polygon entirely. "
+            "Plot is too small or setback too large."
+        )
+
+    if isinstance(usable_poly, ShapelyMultiPolygon):
+        # Keep only the largest piece
+        usable_poly = max(usable_poly.geoms, key=lambda g: g.area)
+
+    if not usable_poly.is_valid:
+        usable_poly = usable_poly.buffer(0)
+
+    usable_area = round(usable_poly.area, 2)
+    if usable_area <= 0:
+        raise ValueError("Usable area is zero after applying setback offset.")
+
+    usable_coords = [[round(c[0], 2), round(c[1], 2)] for c in usable_poly.exterior.coords]
+
+    coverage_ratio = round(usable_area / boundary_area, 4) if boundary_area > 0 else 0
+
+    return {
+        "boundary_polygon": validation["polygon_coords"],
+        "usable_polygon": usable_coords,
+        "boundary_area": round(boundary_area, 2),
+        "usable_area": usable_area,
+        "setback_applied": setback,
+        "coverage_ratio": coverage_ratio,
+        "is_valid": True,
+    }
+
+
+def generate_boundary_preview(
+    boundary_coords: list,
+    usable_coords: list | None = None,
+    output_path: str | Path = "preview.png",
+    title: str = "Boundary & Buildable Footprint",
+) -> str:
+    """
+    Generate a matplotlib preview image showing the boundary and the
+    buildable (usable) polygon overlaid.
+
+    Returns the absolute path to the saved PNG.
+    """
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPolygon
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    ax.set_aspect("equal")
+
+    # --- boundary polygon (blue outline, light fill) ---
+    boundary_xy = [(c[0], c[1]) for c in boundary_coords]
+    boundary_patch = MplPolygon(boundary_xy, closed=True, facecolor="#cce5ff",
+                                edgecolor="#004080", linewidth=2, label="Plot Boundary")
+    ax.add_patch(boundary_patch)
+
+    # --- usable polygon (green) ---
+    if usable_coords:
+        usable_xy = [(c[0], c[1]) for c in usable_coords]
+        usable_patch = MplPolygon(usable_xy, closed=True, facecolor="#b3ffb3",
+                                  edgecolor="#006600", linewidth=2, linestyle="--",
+                                  alpha=0.7, label="Buildable Footprint")
+        ax.add_patch(usable_patch)
+
+    # --- compute nice axis limits ---
+    all_x = [c[0] for c in boundary_coords]
+    all_y = [c[1] for c in boundary_coords]
+    margin_x = (max(all_x) - min(all_x)) * 0.15 or 1
+    margin_y = (max(all_y) - min(all_y)) * 0.15 or 1
+    ax.set_xlim(min(all_x) - margin_x, max(all_x) + margin_x)
+    ax.set_ylim(min(all_y) - margin_y, max(all_y) + margin_y)
+
+    ax.set_title(title, fontsize=14)
+    ax.set_xlabel("X (meters)")
+    ax.set_ylabel("Y (meters)")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return str(output_path.resolve())
 
