@@ -91,39 +91,76 @@ export default function Workspace() {
         }
     }
 
-    // Boundary upload handler
+    // Boundary upload handler — Phase 1 pipeline
     const handleBoundaryUpload = async (file) => {
-        setLoadingMessage('Extracting boundary...')
+        setLoadingMessage('Uploading boundary file...')
         setLoading(true)
         setError(null)
         try {
-            // Ensure project exists first
-            const pid = await ensureProject(1200)
+            // Optionally link to project
+            let pid = projectId
+            if (!pid) {
+                try { pid = await ensureProject(1200) } catch { pid = null }
+            }
 
-            const formData = new FormData()
-            formData.append('file', file)
-            formData.append('project_id', pid)
-            formData.append('scale', '1.0')
+            // Step 1: Upload file → get file_id
+            const uploadForm = new FormData()
+            uploadForm.append('file', file)
+            if (pid) uploadForm.append('project_id', pid)
+            uploadForm.append('scale', '1.0')
 
-            const res = await fetch('/api/upload-boundary', {
+            const uploadRes = await fetch('/api/upload-boundary', {
                 method: 'POST',
-                body: formData,
+                body: uploadForm,
             })
 
-            if (!res.ok) {
-                const errData = await res.json().catch(() => ({}))
+            if (!uploadRes.ok) {
+                const errData = await uploadRes.json().catch(() => ({}))
+                throw new Error(errData.detail || 'File upload failed')
+            }
+
+            const uploadData = await uploadRes.json()
+            const fileId = uploadData.file_id
+
+            // Step 2: Extract boundary polygon
+            setLoadingMessage('Extracting boundary...')
+            const extractRes = await fetch(`/api/extract-boundary/${fileId}?scale=1.0`)
+
+            if (!extractRes.ok) {
+                const errData = await extractRes.json().catch(() => ({}))
                 throw new Error(errData.detail || 'Boundary extraction failed')
             }
 
-            const data = await res.json()
-            if (data.polygon) {
-                setBoundary(data.polygon)
-                setLoading(false)
-                return { boundary: data.polygon, area: data.area, num_vertices: data.num_vertices }
+            const extractData = await extractRes.json()
+
+            // Step 3: Compute buildable footprint (India MVP setback)
+            setLoadingMessage('Computing buildable area...')
+            const footprintRes = await fetch(`/api/buildable-footprint/${fileId}?region=india_mvp`, {
+                method: 'POST',
+            })
+
+            if (!footprintRes.ok) {
+                const errData = await footprintRes.json().catch(() => ({}))
+                throw new Error(errData.detail || 'Buildable footprint computation failed')
+            }
+
+            const footprintData = await footprintRes.json()
+
+            setBoundary(footprintData.usable_polygon)
+            setLoading(false)
+            return {
+                boundary: extractData.boundary_polygon,
+                usable_polygon: footprintData.usable_polygon,
+                area: footprintData.boundary_area,
+                usable_area: footprintData.usable_area,
+                setback: footprintData.setback_applied,
+                coverage_ratio: footprintData.coverage_ratio,
+                preview_url: footprintData.preview_url,
+                num_vertices: extractData.num_vertices,
             }
         } catch (err) {
-            console.error('Boundary extraction failed:', err)
-            setError(err.message || 'Boundary extraction failed.')
+            console.error('Boundary processing failed:', err)
+            setError(err.message || 'Boundary processing failed.')
         }
         setLoading(false)
         return null
