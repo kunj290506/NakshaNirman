@@ -114,3 +114,35 @@ class BuildableFootprintResponse(BaseModel):
 class SetbackRequest(BaseModel):
     setback: Optional[float] = None
     region: str = "india_mvp"
+
+
+# ---------- Requirements ----------
+class RequirementsIn(BaseModel):
+    # Hard constraints
+    floors: int
+    bedrooms: int
+    bathrooms: int
+    kitchen: int
+    max_area: float
+
+    # Soft constraints (optional)
+    balcony: bool = False
+    parking: bool = False
+    pooja_room: bool = False
+    project_id: Optional[str] = None
+
+
+class RequirementsOut(BaseModel):
+    id: str
+    project_id: Optional[str]
+    floors: int
+    bedrooms: int
+    bathrooms: int
+    kitchen: int
+    max_area: float
+    balcony: bool = False
+    parking: bool = False
+    pooja_room: bool = False
+
+    class Config:
+        from_attributes = True
