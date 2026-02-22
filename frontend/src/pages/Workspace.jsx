@@ -97,13 +97,26 @@ export default function Workspace() {
     }
 
     // Unified generate function shared by both Chat and Form
-    const handleGenerate = async (rooms, totalArea) => {
+    const handleGenerate = async (rooms, totalArea, requirements = null) => {
         setLoading(true)
         setLoadingMessage('Creating project...')
         setError(null)
         try {
             // Ensure project exists
             const pid = await ensureProject(totalArea)
+
+            // If requirements provided, store them linked to project
+            if (requirements) {
+                try {
+                    await fetch('/api/requirements', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ...requirements, project_id: pid }),
+                    })
+                } catch (err) {
+                    console.warn('Storing requirements failed:', err)
+                }
+            }
 
             setLoadingMessage('Generating your floor plan...')
 
