@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import RequirementsForm from './RequirementsForm'
 
 const ROOM_TYPES = [
     { key: 'master_bedroom', label: 'Master Bedroom', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1h-2z' },
@@ -28,6 +29,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
         dining: { selected: true, qty: 1 },
     })
     const fileInputRef = useRef(null)
+    const [requirements, setRequirements] = useState(null)
 
     const toggleRoom = (key) => {
         setSelectedRooms(prev => ({
@@ -60,7 +62,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                 room_type: key,
                 quantity: v.qty || 1,
             }))
-        onGenerate(rooms, totalArea)
+        onGenerate(rooms, totalArea, requirements)
     }
 
     const selectedCount = Object.values(selectedRooms).filter(v => v.selected).length
@@ -135,6 +137,11 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                             </svg>
                             Upload DXF
                         </button>
+                    </div>
+
+                    <div style={{ marginBottom: '0.8rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.45rem', fontWeight: 600 }}>Requirements</div>
+                        <RequirementsForm value={requirements} onChange={(v) => setRequirements(v)} />
                     </div>
 
                     {/* Plot mode: manual area entry */}
