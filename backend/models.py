@@ -51,6 +51,7 @@ class Project(Base):
 
     rooms = relationship("Room", back_populates="project", cascade="all, delete-orphan")
     boundary_uploads = relationship("BoundaryUpload", back_populates="project", cascade="all, delete-orphan")
+    requirements = relationship("Requirements", back_populates="project", cascade="all, delete-orphan")
 
 
 class Room(Base):
@@ -81,3 +82,26 @@ class BoundaryUpload(Base):
     preview_path = Column(String, nullable=True)  # path to preview image
 
     project = relationship("Project", back_populates="boundary_uploads")
+
+
+class Requirements(Base):
+    __tablename__ = "requirements"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=True)
+
+    # Hard constraints
+    floors = Column(Integer, nullable=False)
+    bedrooms = Column(Integer, nullable=False)
+    bathrooms = Column(Integer, nullable=False)
+    kitchen = Column(Integer, nullable=False)
+    max_area = Column(Float, nullable=False)
+
+    # Soft constraints
+    balcony = Column(Integer, nullable=False, default=0)
+    parking = Column(Integer, nullable=False, default=0)
+    pooja_room = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project", back_populates="requirements")
