@@ -11,9 +11,14 @@ BASE_DIR = Path(__file__).resolve().parent
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'floorplan.db'}")
 
-# Groq API
+# Groq API (fallback)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")
+
+# Grok (xAI) API — Primary AI provider
+GROK_API_KEY = os.getenv("GROK_API_KEY", "")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini")
+GROK_BASE_URL = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
 
 # File Storage
 UPLOAD_DIR = BASE_DIR / "uploads"

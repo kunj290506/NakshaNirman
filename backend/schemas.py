@@ -146,3 +146,32 @@ class RequirementsOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------- AI Design (Grok) ----------
+class AIDesignRequest(BaseModel):
+    message: str = Field(..., description="Natural language design requirements")
+    project_id: Optional[str] = None
+    total_area: Optional[float] = None
+
+
+class AIDesignResponse(BaseModel):
+    reasoning: str = ""
+    rooms: list = []
+    vastu_recommendations: list = []
+    compliance_notes: list = []
+    design_score: int = 0
+    ready_to_generate: bool = False
+    provider: str = "unknown"
+    extracted_data: Optional[dict] = None
+
+
+class AIReviewRequest(BaseModel):
+    floor_plan: Optional[dict] = None
+    project_id: Optional[str] = None
+
+
+class AIReviewResponse(BaseModel):
+    review_text: str = ""
+    scores: dict = {}
+    provider: str = "unknown"

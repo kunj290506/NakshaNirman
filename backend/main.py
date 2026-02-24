@@ -18,6 +18,7 @@ from routes.floorplan import router as floorplan_router
 from routes.model3d import router as model3d_router
 from routes.chat import router as chat_router
 from routes.requirements import router as requirements_router
+from routes.ai_design import router as ai_design_router
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ app.include_router(floorplan_router)
 app.include_router(model3d_router)
 app.include_router(chat_router)
 app.include_router(requirements_router)
+app.include_router(ai_design_router)
 
 
 @app.get("/api/health")

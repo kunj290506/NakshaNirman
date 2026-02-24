@@ -6,6 +6,7 @@ aiosqlite
 pydantic
 pydantic-settings
 groq
+openai
 opencv-python-headless
 numpy
 shapely
