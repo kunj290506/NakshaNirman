@@ -951,14 +951,79 @@ def _generate_layout(
     circulation_area = usable_area - total_used
     circulation_pct = round(circulation_area / max(total_area, 1) * 100, 1)
 
+    # ── Build PlanPreview-compatible boundary + room polygons ──
+    boundary = [
+        [0, 0], [plot_w, 0], [plot_w, plot_l], [0, plot_l], [0, 0]
+    ]
+
+    doors_list = []
+    for room in placed_rooms:
+        rx = room["position"]["x"]
+        ry = room["position"]["y"]
+        rw = room["width"]
+        rl = room["length"]
+        # Polygon: 5-point closed rectangle
+        room["polygon"] = [
+            [rx, ry], [rx + rw, ry], [rx + rw, ry + rl], [rx, ry + rl], [rx, ry]
+        ]
+        room["centroid"] = [round(rx + rw / 2, 1), round(ry + rl / 2, 1)]
+        # Room label for preview
+        room["label"] = room.get("name", room.get("room_type", "Room"))
+        # PlanPreview expects actual_area
+        room["actual_area"] = round(room.get("area", rw * rl), 1)
+
+        # Build doors for PlanPreview (quarter-arc door icons)
+        for door in room.get("doors", []):
+            wall = door.get("wall", "S")
+            dw = door.get("width", 2.5)
+            if wall in ("S", "bottom"):
+                hx, hy = round(rx + rw * 0.3, 1), ry
+                doors_list.append({
+                    "position": [hx, hy],
+                    "width": dw,
+                    "hinge": [hx, hy],
+                    "door_end": [round(hx + dw, 1), hy],
+                    "swing_dir": [0, 1],
+                })
+            elif wall in ("N", "top"):
+                hx, hy = round(rx + rw * 0.3, 1), round(ry + rl, 1)
+                doors_list.append({
+                    "position": [hx, hy],
+                    "width": dw,
+                    "hinge": [hx, hy],
+                    "door_end": [round(hx + dw, 1), hy],
+                    "swing_dir": [0, -1],
+                })
+            elif wall in ("W", "left"):
+                hx, hy = rx, round(ry + rl * 0.3, 1)
+                doors_list.append({
+                    "position": [hx, hy],
+                    "width": dw,
+                    "hinge": [hx, hy],
+                    "door_end": [hx, round(hy + dw, 1)],
+                    "swing_dir": [1, 0],
+                })
+            elif wall in ("E", "right"):
+                hx, hy = round(rx + rw, 1), round(ry + rl * 0.3, 1)
+                doors_list.append({
+                    "position": [hx, hy],
+                    "width": dw,
+                    "hinge": [hx, hy],
+                    "door_end": [hx, round(hy + dw, 1)],
+                    "swing_dir": [-1, 0],
+                })
+
     return {
+        "boundary": boundary,
+        "rooms": placed_rooms,
+        "doors": doors_list,
+        "total_area": round(total_area, 1),
         "plot": {
             "width": plot_w,
             "length": plot_l,
             "unit": "ft",
         },
         "floors": floors,
-        "rooms": placed_rooms,
         "circulation": {
             "type": "central" if plot_w >= 25 else "side" if plot_w >= 15 else "minimal",
             "width": max(MIN_PASSAGE_WIDTH_FT, 3.5),
@@ -1084,194 +1149,151 @@ def _place_rooms(
     usable_w: float, usable_l: float,
 ) -> List[Dict]:
     """
-    Place rooms within the plot using a zone-based strip-packing algorithm.
+    Wall-to-wall architectural room placement.
 
-    Strategy:
-      1. Split rooms into public-row (Living, Kitchen, Dining) and
-         private-row (Bedrooms, Bathrooms) to avoid forbidden adjacencies.
-      2. Each zone-group gets horizontal strip(s). Rooms in a strip are
-         scaled to FILL the available width, then each strip gets a height
-         proportional to the tallest room's target.
-      3. A 3.5 ft corridor separates zone-group strips.
+    Rooms tile the ENTIRE usable area with zero gaps. Follows Indian
+    residential conventions:
+
+        ┌──────────┬──────────┬──────────┐
+        │ Living   │ Kitchen  │ Dining   │  ← public / semi-private
+        ├──────────┴──────────┴──────────┤
+        │           CORRIDOR             │  ← 3.5 ft passage
+        ├────────┬─────┬─────────┬───────┤
+        │ Master │Bath │ Bedroom │ Study  │  ← private / service
+        └────────┴─────┴─────────┴───────┘
+
+    Rules applied:
+      • Every row fills the FULL usable width — no side gaps.
+      • Room widths within a row are proportional to target area.
+      • The last room in each row absorbs rounding residual.
+      • The last row extends to the plot's back boundary.
+      • Kitchen stays adjacent to Dining (cooking-serving flow).
+      • Bedrooms interleave with Bathrooms (attached-bath pattern).
+      • Corridor inserted between public and private zone groups.
     """
     placed = []
-    wall_offset = WALL_EXTERNAL_FT  # 0.75 ft
-    corridor_width = 3.5
-    internal_wall = WALL_INTERNAL_FT  # 0.375 ft
+    WALL = WALL_EXTERNAL_FT
+    IWALL = WALL_INTERNAL_FT
+    CORRIDOR_H = 3.5
 
-    def zone_of(room):
-        return ZONE_MAP.get(room["room_type"], "private")
+    def zone_of(r):
+        return ZONE_MAP.get(r["room_type"], "private")
 
-    # ── 1. Split into zone groups ───────────────────────────────────────
-    public_group = []   # public + semi_private + circulation
-    private_group = []  # private + service
-    for room in room_specs:
-        z = zone_of(room)
-        if z in ("public", "semi_private", "circulation"):
-            public_group.append(room)
+    # ── 1. Classify rooms into zone groups ──────────────────────────────
+    public_rooms = []   # public + semi_private (Living, Kitchen, Dining …)
+    private_rooms = []  # private + service (Bedrooms, Bathrooms, Study …)
+
+    for r in room_specs:
+        z = zone_of(r)
+        if z in ("public", "semi_private"):
+            public_rooms.append(r)
         else:
-            private_group.append(room)
+            private_rooms.append(r)
 
-    # Sort public group: bigger rooms first
-    public_group.sort(key=lambda r: r["target_area"], reverse=True)
+    # ── 2. Smart ordering within each group ─────────────────────────────
+    # Public: Living first (entrance), then Kitchen → Dining (adjacent!)
+    pub_order = {
+        "living": 0, "foyer": 1, "kitchen": 2, "dining": 3,
+        "balcony": 4, "garage": 5, "porch": 6,
+    }
+    public_rooms.sort(key=lambda r: pub_order.get(r["room_type"], 99))
 
-    # Private group: interleave bedrooms and bathrooms (Bed1, Bath1, Bed2, Bath2, Bed3...)
-    # so they share strips and avoid all-bathroom strips with bad aspect ratios
-    beds = [r for r in private_group if r["room_type"] in ("master_bedroom", "bedroom")]
-    baths = [r for r in private_group if r["room_type"] == "bathroom"]
-    others_priv = [r for r in private_group if r not in beds and r not in baths]
-    beds.sort(key=lambda r: r["target_area"], reverse=True)
-    baths.sort(key=lambda r: r["target_area"], reverse=True)
-    # Interleave: bed, bath, bed, bath, ...
-    interleaved = []
-    bi, bai = 0, 0
-    while bi < len(beds) or bai < len(baths):
-        if bi < len(beds):
-            interleaved.append(beds[bi]); bi += 1
-        if bai < len(baths):
-            interleaved.append(baths[bai]); bai += 1
-    interleaved.extend(others_priv)
-    private_group = interleaved
+    # Private: interleave Bed-Bath pairs, extras at end
+    beds = sorted(
+        [r for r in private_rooms if r["room_type"] in ("master_bedroom", "bedroom")],
+        key=lambda r: r["target_area"], reverse=True,
+    )
+    baths = sorted(
+        [r for r in private_rooms if r["room_type"] in ("bathroom", "toilet")],
+        key=lambda r: r["target_area"], reverse=True,
+    )
+    extras = [r for r in private_rooms if r not in beds and r not in baths]
 
-    zone_groups = [g for g in [public_group, private_group] if g]
+    interleaved: List[Dict] = []
+    for i in range(max(len(beds), len(baths))):
+        if i < len(beds):
+            interleaved.append(beds[i])
+        if i < len(baths):
+            interleaved.append(baths[i])
+    interleaved.extend(extras)
+    private_rooms = interleaved
 
-    avail_w = plot_w - 2 * wall_offset  # width available inside external walls
-    avail_h = plot_l - 2 * wall_offset  # total height available
+    # ── 3. Build rows (split groups with >4 rooms) ─────────────────────
+    MAX_PER_ROW = 4
 
-    # ── 2. Build strip rows per zone-group ──────────────────────────────
-    #   Each strip is a list of rooms that should share a horizontal row.
-    #   We split a zone-group into multiple strips if needed so each strip
-    #   fits within avail_w.
-    strip_groups = []  # list of list-of-strips per zone-group
-    for group in zone_groups:
-        strips = []
-        cur_strip = []
-        cur_w = 0.0
-        for room in group:
-            rw = room["width"]
-            gap = internal_wall if cur_strip else 0
-            if cur_w + gap + rw > avail_w and cur_strip:
-                strips.append(cur_strip)
-                cur_strip = []
-                cur_w = 0.0
-                gap = 0
-            cur_strip.append(room)
-            cur_w += gap + rw
-        if cur_strip:
-            strips.append(cur_strip)
-        strip_groups.append(strips)
+    def _split_rows(rooms: List[Dict]) -> List[List[Dict]]:
+        if not rooms:
+            return []
+        if len(rooms) <= MAX_PER_ROW:
+            return [rooms]
+        n_rows = math.ceil(len(rooms) / MAX_PER_ROW)
+        per_row = math.ceil(len(rooms) / n_rows)
+        return [rooms[i:i + per_row] for i in range(0, len(rooms), per_row)]
 
-    # Flatten strips for height budgeting, but remember zone-group boundaries
-    all_strips = []
-    for sg in strip_groups:
-        all_strips.extend(sg)
+    public_rows = _split_rows(public_rooms)
+    private_rows = _split_rows(private_rooms)
 
-    n_corridors = max(0, len(strip_groups) - 1)
-    corridor_gap = min(corridor_width, 3.5)
-    # If tight on space, reduce corridor
-    remaining_h = avail_h - n_corridors * corridor_gap
+    zone_groups = []  # list of (zone_label, [rows])
+    if public_rows:
+        zone_groups.append(("public", public_rows))
+    if private_rows:
+        zone_groups.append(("private", private_rows))
+    if not zone_groups:
+        return placed
 
-    # Compute minimum acceptable height per strip:
-    # Each room must meet MIN_ROOM_SIZES. Account for 2.8:1 aspect ratio cap.
-    MAX_ASPECT = 2.8
-    min_heights = []
-    desired_heights = []
-    for strip in all_strips:
-        n_rooms = len(strip)
-        gaps = internal_wall * max(0, n_rooms - 1)
-        per_room_w = (avail_w - gaps) / max(n_rooms, 1)
-        strip_min_h = 4.0
-        for r in strip:
-            min_a = MIN_ROOM_SIZES.get(r["room_type"], 25)
-            # With aspect cap, effective max width = h * MAX_ASPECT
-            # So min area = h * min(per_room_w, h * MAX_ASPECT)
-            # Solve for h: if per_room_w > h * MAX_ASPECT, area = h^2 * MAX_ASPECT
-            #   h = sqrt(min_a / MAX_ASPECT)
-            # Otherwise: area = h * per_room_w, h = min_a / per_room_w
-            h_uncapped = min_a / max(per_room_w, 4.0)
-            h_capped = math.sqrt(min_a / MAX_ASPECT)
-            needed_h = max(h_uncapped, h_capped)
-            strip_min_h = max(strip_min_h, needed_h)
-        min_heights.append(round(strip_min_h + 0.5, 1))  # +0.5 safety margin
-        desired_heights.append(max(r["length"] for r in strip))
+    # ── 4. Compute row heights ──────────────────────────────────────────
+    n_corridors = max(0, len(zone_groups) - 1)
+    avail_h = usable_l - n_corridors * CORRIDOR_H
 
-    total_min = sum(min_heights)
-    total_desired = sum(desired_heights)
+    all_rows: List[List[Dict]] = []
+    for _, rows in zone_groups:
+        all_rows.extend(rows)
 
-    # Budget: if desired fits, use desired; if not, blend toward minimums
-    if total_desired <= remaining_h:
-        final_heights = desired_heights[:]
-    elif total_min <= remaining_h:
-        # Distribute remaining space beyond minimums proportionally
-        surplus = remaining_h - total_min
-        desired_surplus = [d - m for d, m in zip(desired_heights, min_heights)]
-        total_ds = sum(max(0, s) for s in desired_surplus) or 1.0
-        final_heights = [
-            m + max(0, ds) / total_ds * surplus
-            for m, ds in zip(min_heights, desired_surplus)
-        ]
-    else:
-        # Very tight: reduce corridor, distribute proportionally from minimums
-        corridor_gap = max(2.5, corridor_gap - 0.5)
-        remaining_h = avail_h - n_corridors * corridor_gap
-        scale = remaining_h / max(total_min, 1.0)
-        final_heights = [h * scale for h in min_heights]
+    row_areas = [sum(r["target_area"] for r in row) for row in all_rows]
+    total_area = sum(row_areas) or 1.0
 
-    # ── 3. Place rooms ──────────────────────────────────────────────────
-    current_y = wall_offset
-    strip_idx = 0
-    for gi, strips in enumerate(strip_groups):
-        for si, strip in enumerate(strips):
-            strip_h = round(final_heights[strip_idx], 1)
-            strip_h = max(strip_h, 4.0)
-            strip_idx += 1
+    # Proportional heights, minimum 8 ft per row
+    MIN_ROW_H = 8.0
+    heights = [max(MIN_ROW_H, (a / total_area) * avail_h) for a in row_areas]
 
-            # Compute ideal width for each room: target_area / strip_h
-            # Then scale so they fill available width
-            ideal_widths = []
-            for room in strip:
-                min_area = MIN_ROOM_SIZES.get(room["room_type"], 25)
-                target = max(room.get("target_area", min_area), min_area)
-                ideal_w = target / max(strip_h, 4.0)
-                ideal_w = max(ideal_w, 4.0)
-                ideal_widths.append(ideal_w)
+    # Re-scale so total == avail_h
+    ht_sum = sum(heights)
+    if abs(ht_sum - avail_h) > 0.05:
+        factor = avail_h / max(ht_sum, 1.0)
+        heights = [h * factor for h in heights]
 
-            total_ideal_w = sum(ideal_widths)
-            total_gaps = internal_wall * max(0, len(strip) - 1)
-            w_scale = (avail_w - total_gaps) / max(total_ideal_w, 1)
-            # Cap width scaling to avoid extreme stretching
-            w_scale = min(w_scale, 2.0)
+    # ── 5. Place rooms row by row (wall-to-wall) ───────────────────────
+    current_y = WALL
+    row_idx = 0
 
-            current_x = wall_offset
-            for i, room in enumerate(strip):
-                rw = round(ideal_widths[i] * w_scale, 1)
-                rl = strip_h
+    for gi, (zone_label, rows) in enumerate(zone_groups):
+        for ri, row in enumerate(rows):
+            is_last_row = (gi == len(zone_groups) - 1 and ri == len(rows) - 1)
+            row_h = round(WALL + usable_l - current_y, 1) if is_last_row \
+                else round(heights[row_idx], 1)
+            row_h = max(row_h, MIN_ROW_H)
+            row_idx += 1
 
-                # Enforce minima
+            n = len(row)
+            areas = [r["target_area"] for r in row]
+            total_row_area = sum(areas) or 1.0
+            total_gaps = IWALL * max(0, n - 1)
+            net_w = usable_w - total_gaps
+
+            current_x = WALL
+            for i, room in enumerate(row):
+                # Last room in row absorbs rounding residual
+                if i == n - 1:
+                    rw = round(WALL + usable_w - current_x, 1)
+                else:
+                    rw = round(net_w * (areas[i] / total_row_area), 1)
                 rw = max(rw, 4.0)
-                rl = max(rl, 4.0)
+                rl = row_h
 
-                # Enforce max 2.8:1 aspect ratio (leave margin under 3:1 limit)
-                if rw > rl * 2.8:
-                    rw = round(rl * 2.8, 1)
-                elif rl > rw * 2.8:
-                    rl = round(rw * 2.8, 1)
-
-                # Clamp to plot boundaries
-                if current_x + rw > plot_w - wall_offset:
-                    rw = round(plot_w - wall_offset - current_x, 1)
-                if current_y + rl > plot_l - wall_offset:
-                    rl = round(plot_l - wall_offset - current_y, 1)
-
-                if rw < 3.5 or rl < 3.5:
-                    current_x += rw + internal_wall
-                    continue
-
-                zone = zone_of(room)
                 placed.append({
                     "name": room["name"],
                     "room_type": room["room_type"],
-                    "zone": zone,
+                    "zone": zone_of(room),
                     "width": round(rw, 1),
                     "length": round(rl, 1),
                     "area": round(rw * rl, 1),
@@ -1279,70 +1301,137 @@ def _place_rooms(
                     "doors": [],
                     "windows": [],
                 })
-                current_x += rw + internal_wall
+                current_x += rw + IWALL
 
-            current_y += strip_h
-            # Don't add corridor between strips of the same zone-group
+            current_y += row_h
 
-        # Add corridor gap between zone-groups (not after the last one)
-        if gi < len(strip_groups) - 1:
-            current_y += corridor_width
+        # Corridor gap between zone groups
+        if gi < len(zone_groups) - 1:
+            current_y += CORRIDOR_H
 
     return placed
 
 
 def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
-    """Assign door and window positions based on room placement and zoning."""
+    """
+    Assign doors and windows based on room position & zoning.
+
+    Door logic:
+      • Public-zone rooms  → door on N wall (toward corridor / interior)
+      • Private-zone rooms → door on S wall (toward corridor / interior)
+      • Bathrooms prefer door toward adjacent bedroom (shared E/W wall)
+      • Living room gets an additional entrance on S wall (front boundary)
+
+    Window logic:
+      • Windows on every external wall (touching plot boundary)
+      • Habitable rooms guaranteed at least one window
+      • Bathrooms get small (2 ft) windows only
+    """
+    # Detect corridor Y-midpoint to decide which wall faces "inward"
+    public_bottom = 0.0
+    private_top = plot_l
+    for room in rooms:
+        z = room.get("zone", "private")
+        ry = room["position"]["y"]
+        rl = room["length"]
+        if z in ("public", "semi_private"):
+            public_bottom = max(public_bottom, ry + rl)
+        elif z in ("private", "service"):
+            private_top = min(private_top, ry)
+    corridor_mid = (public_bottom + private_top) / 2
+
     for room in rooms:
         pos = room["position"]
         rw = room["width"]
         rl = room["length"]
         zone = room.get("zone", "private")
-        rx = pos["x"]
-        ry = pos["y"]
+        rtype = room["room_type"]
+        rx, ry = pos["x"], pos["y"]
 
-        doors = []
-        windows = []
+        doors: List[Dict] = []
+        windows: List[Dict] = []
 
-        # Door placement — towards corridor/adjacent zone
-        if zone == "public":
-            # Door on south wall (entrance side)
-            doors.append({"wall": "S", "width": 3})
-        elif zone == "semi_private":
-            # Door on wall facing public zone
-            doors.append({"wall": "W", "width": 3})
-        elif zone == "private":
-            # Door on south wall (facing corridor)
-            doors.append({"wall": "S", "width": 3})
-        elif zone == "service":
-            # Door on nearest wall to private zone
-            doors.append({"wall": "W", "width": 2.5})
+        # ── Door placement ──────────────────────────────────────────────
+        room_center_y = ry + rl / 2.0
+        faces_corridor_on_bottom = room_center_y < corridor_mid  # public row
+        faces_corridor_on_top = room_center_y > corridor_mid     # private row
+
+        if rtype in ("bathroom", "toilet"):
+            # Bathroom door toward adjacent bedroom (shared wall)
+            door_placed = False
+            for other in rooms:
+                if other["room_type"] not in ("master_bedroom", "bedroom"):
+                    continue
+                ox = other["position"]["x"]
+                ow = other["width"]
+                oy = other["position"]["y"]
+                ol = other["length"]
+                # Bedroom to the left?
+                if abs((ox + ow) - rx) < 1.0 and abs(oy - ry) < 1.0:
+                    doors.append({"wall": "W", "width": 2.5})
+                    door_placed = True
+                    break
+                # Bedroom to the right?
+                if abs((rx + rw) - ox) < 1.0 and abs(oy - ry) < 1.0:
+                    doors.append({"wall": "E", "width": 2.5})
+                    door_placed = True
+                    break
+            if not door_placed:
+                # No adjacent bedroom — door toward corridor
+                if faces_corridor_on_bottom:
+                    doors.append({"wall": "N", "width": 2.5})
+                else:
+                    doors.append({"wall": "S", "width": 2.5})
+        elif zone in ("public", "semi_private"):
+            # Door toward corridor (N wall = bottom edge of room)
+            doors.append({"wall": "N", "width": 3})
+            # Living room also gets the main entrance on S wall (front)
+            if rtype == "living":
+                doors.append({"wall": "S", "width": 3})
         else:
-            doors.append({"wall": "S", "width": 3})
+            # Private rooms — door toward corridor (S wall = top edge)
+            if faces_corridor_on_top:
+                doors.append({"wall": "S", "width": 3})
+            else:
+                doors.append({"wall": "N", "width": 3})
 
-        # Window placement — prefer external walls
-        # Check which walls are on or near plot boundary
+        # ── Window placement — external walls only ──────────────────────
         is_south = ry <= WALL_EXTERNAL_FT + 1
         is_north = ry + rl >= plot_l - WALL_EXTERNAL_FT - 1
         is_west = rx <= WALL_EXTERNAL_FT + 1
         is_east = rx + rw >= plot_w - WALL_EXTERNAL_FT - 1
 
-        if is_north:
-            windows.append({"wall": "N", "width": 4})
-        if is_south and zone != "service":
-            windows.append({"wall": "S", "width": 4})
-        if is_east:
-            windows.append({"wall": "E", "width": 4})
-        if is_west and zone != "service":
-            windows.append({"wall": "W", "width": 4})
+        if rtype in ("bathroom", "toilet"):
+            # Small window on one external wall only
+            if is_east:
+                windows.append({"wall": "E", "width": 2})
+            elif is_north:
+                windows.append({"wall": "N", "width": 2})
+            elif is_west:
+                windows.append({"wall": "W", "width": 2})
+            elif is_south:
+                windows.append({"wall": "S", "width": 2})
+        else:
+            if is_north:
+                windows.append({"wall": "N", "width": 4})
+            if is_south:
+                windows.append({"wall": "S", "width": 4})
+            if is_east:
+                windows.append({"wall": "E", "width": 4})
+            if is_west:
+                windows.append({"wall": "W", "width": 4})
 
-        # Ensure at least one window for habitable rooms
-        if not windows and room["room_type"] not in ("bathroom", "toilet", "store", "utility", "hallway", "staircase"):
-            windows.append({"wall": "N", "width": 4})
-
-        # Bathrooms get smaller windows
-        if room["room_type"] in ("bathroom", "toilet"):
-            windows = [{"wall": "E" if is_east else "N", "width": 2}]
+        # Habitable rooms must have at least one window
+        if not windows and rtype not in (
+            "bathroom", "toilet", "store", "utility", "hallway", "staircase",
+        ):
+            # Pick the external-most wall
+            if is_north:
+                windows.append({"wall": "N", "width": 4})
+            elif is_south:
+                windows.append({"wall": "S", "width": 4})
+            else:
+                windows.append({"wall": "N", "width": 4})
 
         room["doors"] = doors
         room["windows"] = windows

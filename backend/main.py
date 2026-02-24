@@ -20,6 +20,7 @@ from routes.chat import router as chat_router
 from routes.requirements import router as requirements_router
 from routes.ai_design import router as ai_design_router
 from routes.engine import router as engine_router
+from routes.gnn_design import router as gnn_router
 
 
 @asynccontextmanager
@@ -57,6 +58,7 @@ app.include_router(chat_router)
 app.include_router(requirements_router)
 app.include_router(ai_design_router)
 app.include_router(engine_router)
+app.include_router(gnn_router)
 
 
 @app.get("/api/health")

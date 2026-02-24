@@ -24,6 +24,7 @@ export default function Workspace() {
     const [sessionId] = useState(() => generateSessionId())
     const [error, setError] = useState(null)
 
+    const [engine, setEngine] = useState('gnn')  // 'gnn' or 'arch'
     const [backendHealthy, setBackendHealthy] = useState(true)
     const backendUrl = '/api'
 
@@ -120,52 +121,43 @@ export default function Workspace() {
 
             setLoadingMessage('Generating your floor plan...')
 
-            // Try the new engine endpoint first, fall back to legacy
-            let data
-            try {
-                const engineRes = await fetch('/api/engine/design', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        project_id: pid,
-                        total_area: totalArea,
-                        rooms: rooms,
-                        bedrooms: rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
-                        bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
-                        floors: 1,
-                        extras: rooms.filter(r => !['master_bedroom', 'bedroom', 'bathroom', 'kitchen', 'living'].includes(r.room_type)).map(r => r.room_type),
-                        boundary_polygon: boundary || null,
-                    }),
-                })
-                if (engineRes.ok) {
-                    const engineData = await engineRes.json()
-                    if (engineData.layout) {
-                        data = { plan: engineData.layout, project_id: engineData.project_id || pid }
-                    }
-                }
-            } catch (engineErr) {
-                console.warn('Engine endpoint unavailable, falling back:', engineErr)
+            const roomPayload = {
+                project_id: pid,
+                total_area: totalArea,
+                rooms: rooms,
+                bedrooms: rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
+                bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
+                floors: 1,
+                extras: rooms.filter(r => !['master_bedroom', 'bedroom', 'bathroom', 'kitchen', 'living'].includes(r.room_type)).map(r => r.room_type),
+                boundary_polygon: boundary || null,
             }
 
-            // Fallback to legacy endpoint
-            if (!data) {
-                const res = await fetch('/api/generate-floorplan', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        project_id: pid,
-                        rooms: rooms,
-                        total_area: totalArea,
-                        boundary_polygon: boundary || null,
-                    }),
-                })
+            // Select endpoint based on engine choice
+            const endpoints = engine === 'gnn'
+                ? ['/api/gnn/design', '/api/engine/design', '/api/generate-floorplan']
+                : ['/api/engine/design', '/api/gnn/design', '/api/generate-floorplan']
 
-                if (!res.ok) {
-                    const errData = await res.json().catch(() => ({}))
-                    throw new Error(errData.detail || `Server error ${res.status}`)
+            let data
+            for (const endpoint of endpoints) {
+                if (data) break
+                try {
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(roomPayload),
+                    })
+                    if (res.ok) {
+                        const json = await res.json()
+                        // Both engine and gnn routes return { layout: {...} }
+                        if (json.layout) {
+                            data = { plan: json.layout, project_id: json.project_id || pid }
+                        } else if (json.plan) {
+                            data = json
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`${endpoint} failed, trying next:`, err)
                 }
-
-                data = await res.json()
             }
             if (data.plan) {
                 setPlan(data.plan)
@@ -318,6 +310,37 @@ export default function Workspace() {
             <div className="sidebar">
                 <div className="sidebar-header">
                     <span className="sidebar-title">Input</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.72rem' }}>
+                        <span style={{ color: '#666', fontWeight: 500 }}>Engine:</span>
+                        <button
+                            onClick={() => setEngine('gnn')}
+                            style={{
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                border: engine === 'gnn' ? '1.5px solid #000' : '1px solid #ccc',
+                                background: engine === 'gnn' ? '#000' : '#fff',
+                                color: engine === 'gnn' ? '#fff' : '#555',
+                                fontWeight: engine === 'gnn' ? 700 : 500,
+                                fontSize: '0.68rem',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s',
+                            }}
+                        >GNN</button>
+                        <button
+                            onClick={() => setEngine('arch')}
+                            style={{
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                border: engine === 'arch' ? '1.5px solid #000' : '1px solid #ccc',
+                                background: engine === 'arch' ? '#000' : '#fff',
+                                color: engine === 'arch' ? '#fff' : '#555',
+                                fontWeight: engine === 'arch' ? 700 : 500,
+                                fontSize: '0.68rem',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s',
+                            }}
+                        >Arch</button>
+                    </div>
                 </div>
                 <div className="tab-switcher">
                     <button
