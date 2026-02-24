@@ -15,12 +15,13 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
 from .adjacency import build_adjacency_graph, is_connected
+from .doors import Door, place_doors
 from .entrance import place_entrance
 from .geometry_utils import clip_to_boundary, has_overlaps
 from .loaders import load_usable_polygon, load_min_areas
 from .placement import compute_room_specs, place_all_rooms
 from .room_model import Room
-from .scoring import score_layout
+from .scoring import score_layout, corridor_penalty
 from .subdivision import SubdivisionGrid
 from .treemap import treemap_subdivide
 
@@ -217,6 +218,26 @@ class LayoutGenerator:
         return True
 
     # ------------------------------------------------------------------
+    # Corridor metric (Step 12)
+    # ------------------------------------------------------------------
+
+    def _compute_corridor(self, rooms: List[Room]) -> Dict[str, float]:
+        """
+        Compute corridor / wasted space as:
+            usable_area − sum(room_areas)
+
+        Returns a dict with 'area' and 'fraction'.
+        """
+        boundary_area = self.boundary.area
+        room_area_sum = sum(r.area for r in rooms)
+        corridor_area = max(0.0, boundary_area - room_area_sum)
+        fraction = corridor_area / boundary_area if boundary_area > 0 else 0.0
+        return {
+            "area": round(corridor_area, 4),
+            "fraction": round(fraction, 4),
+        }
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -241,7 +262,7 @@ class LayoutGenerator:
             ``best_layout`` (list of Room dicts), ``score`` (dict),
             ``candidates_generated``, ``candidates_valid``.
         """
-        candidates: List[Tuple[List[Room], Dict]] = []
+        candidates: List[Tuple[List[Room], Dict, List[Door], Dict]] = []
 
         for i in range(n_candidates):
             seed = i * 17 + 42  # deterministic but varied
@@ -268,26 +289,38 @@ class LayoutGenerator:
             if not self._validate(rooms):
                 continue
 
+            # Step 11 — Door placement
+            doors = place_doors(rooms)
+
+            # Step 12 — Corridor detection
+            corridor_info = self._compute_corridor(rooms)
+
             scores = score_layout(
                 rooms,
                 self.boundary,
                 self.desired_adjacencies,
             )
-            candidates.append((rooms, scores))
+            candidates.append((rooms, scores, doors, corridor_info))
 
         if not candidates:
             return {
                 "best_layout": [],
+                "doors": [],
+                "corridor": {"area": 0, "fraction": 0},
                 "score": {"total": 0, "area": 0, "adjacency": 0, "corridor": 0},
                 "candidates_generated": n_candidates,
                 "candidates_valid": 0,
             }
 
-        # Select highest scoring candidate
-        best_rooms, best_score = max(candidates, key=lambda c: c[1]["total"])
+        # Step 15 — Select highest scoring candidate
+        best_rooms, best_score, best_doors, best_corridor = max(
+            candidates, key=lambda c: c[1]["total"]
+        )
 
         return {
             "best_layout": [r.to_dict() for r in best_rooms],
+            "doors": [d.to_dict() for d in best_doors],
+            "corridor": best_corridor,
             "score": best_score,
             "candidates_generated": n_candidates,
             "candidates_valid": len(candidates),
@@ -327,9 +360,17 @@ class LayoutGenerator:
             if not self._validate(rooms):
                 continue
 
+            # Step 11 — Door placement
+            doors = place_doors(rooms)
+
+            # Step 12 — Corridor detection
+            corridor_info = self._compute_corridor(rooms)
+
             scores = score_layout(rooms, self.boundary, self.desired_adjacencies)
             candidates.append({
                 "layout": [r.to_dict() for r in rooms],
+                "doors": [d.to_dict() for d in doors],
+                "corridor": corridor_info,
                 "score": scores,
             })
 
