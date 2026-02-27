@@ -2451,6 +2451,11 @@ def generate_gnn_floor_plan(
     rooms_config['bathroom'] = max(bathrooms, attached_bath_count, 1)
     rooms_config['kitchen'] = max(kitchens, 1)
 
+    # Auto-add dining for 2BHK+ plans with enough area
+    total_beds = master_bed_count + regular_bed_count
+    if 'dining' not in rooms_config and total_beds >= 2 and effective_area >= 900:
+        rooms_config['dining'] = 1
+
     # Only add extras the user explicitly selected
     for extra in extras:
         extra_lower = extra.lower().replace(' ', '_')

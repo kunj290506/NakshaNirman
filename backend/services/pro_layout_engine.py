@@ -85,7 +85,7 @@ MAX_ASPECT = {
     'living':         2.0,
     'master_bedroom': 1.8,
     'bedroom':        1.8,
-    'kitchen':        1.8,
+    'kitchen':        2.0,
     'bathroom':       2.5,
     'toilet':         2.5,
     'dining':         2.0,
@@ -116,6 +116,22 @@ AREA_FRACTIONS = {
     'garage':         (0.08, 0.12, 0.16),
     'staircase':      (0.03, 0.045, 0.06),
 }
+
+# BHK-aware scaling: reduce per-room fractions when many rooms compete for space
+def _get_scaled_fraction(rtype: str, total_area: float, n_rooms: int) -> float:
+    """Get ideal area fraction scaled by total room count."""
+    frac = AREA_FRACTIONS.get(rtype, (0.04, 0.06, 0.08))
+    ideal = frac[1]
+    # For larger homes (more rooms), reduce each room's share to avoid overflow
+    if n_rooms > 6:
+        ideal *= max(0.75, 6.0 / n_rooms)
+    # For very small plots, bump up living/kitchen slightly for usability
+    if total_area < 600:
+        if rtype == 'living':
+            ideal = max(ideal, 0.18)
+        elif rtype == 'kitchen':
+            ideal = max(ideal, 0.10)
+    return ideal
 
 # Hard minimum areas in sqft
 MIN_AREAS = {
@@ -288,9 +304,11 @@ def _build_room_program(
     """
     rooms = []
 
+    n_total_rooms = sum(rooms_config.values()) + 1  # +1 for living
+
     def _make_room(rtype, name, count_label=''):
-        frac = AREA_FRACTIONS.get(rtype, (0.04, 0.06, 0.08))
-        target = frac[1] * total_area  # Use ideal fraction
+        ideal = _get_scaled_fraction(rtype, total_area, n_total_rooms)
+        target = ideal * total_area
         target = max(target, MIN_AREAS.get(rtype, 20))
         mx = MAX_AREAS.get(rtype)
         if mx:
@@ -504,6 +522,20 @@ def _allocate_band_heights(
     # --- CAP private band height ---
     # Small plots: max 22ft.  Large plots: scale up to accommodate more rooms.
     PRIV_MAX_H = min(22.0 + max(0, (total_area - 1500) * 0.005), 32.0)
+
+    # Also cap based on bedroom count to prevent AR violations.
+    # Private band = bedroom_sub + service_sub (7ft).
+    # Each bedroom gets width ≈ usable_w / n_beds (with 0.85 safety for unequal sizes).
+    # Ensure bedroom AR ≤ 1.8 → bedroom_h ≤ min_bed_w * 1.8
+    n_beds_priv = len([r for r in private_rooms
+                       if r['room_type'] in ('master_bedroom', 'bedroom')])
+    if n_beds_priv >= 2:
+        svc_sub_h = 7.0  # service sub-band depth
+        min_bed_w = (usable_w / n_beds_priv) * 0.85  # safety margin
+        max_bedroom_sub_h = min_bed_w * 1.8  # AR limit
+        ar_cap = max_bedroom_sub_h + svc_sub_h
+        PRIV_MAX_H = min(PRIV_MAX_H, ar_cap)
+
     if private_h > PRIV_MAX_H:
         private_h = PRIV_MAX_H
 
@@ -902,6 +934,21 @@ def _place_private_band_smart(
     service_h = 7.0  # Standard bathroom depth
     bedroom_h = band_h - service_h
 
+    # Ensure bedroom AR stays within limits for all bedrooms
+    n_beds = max(1, len(bedrooms))
+    min_bed_w = (band_w / n_beds) * 0.85  # safety for unequal widths
+    max_bed_ar = MAX_ASPECT.get('bedroom', 1.8)
+    max_bedroom_h_for_ar = min_bed_w * max_bed_ar
+    if bedroom_h > max_bedroom_h_for_ar and bedroom_h > 10.0:
+        # Reduce bedroom_h; give extra to service sub-band (taller baths)
+        bedroom_h = _snap(max(10.0, max_bedroom_h_for_ar))
+        service_h = _snap(band_h - bedroom_h)
+
+    # Ensure service sub-band has usable height (min 5ft for bathrooms)
+    if service_h < 5.0 and band_h >= 14.0:
+        service_h = 5.0
+        bedroom_h = _snap(band_h - service_h)
+
     if bedroom_h < 9.0:
         # Not enough space — fall back to side-by-side placement
         ordered = _order_private_rooms(
@@ -936,24 +983,82 @@ def _place_private_band_smart(
     bed_placed = _place_rooms_in_band(
         bedroom_band_rooms, band_x, band_y, band_w, bedroom_h)
 
-    # --- Step 2: Place service rooms at NATURAL widths (no full-band scaling) ---
-    # Service rooms (bathrooms, etc.) get their natural width based on
-    # target_area / service_h, capped at MAX_SERVICE_W. No filler expansion.
+    # --- Step 2: Place service rooms ALIGNED above their parent bedrooms ---
+    # Service rooms (bathrooms, etc.) get positioned to align with bedrooms
+    # when possible (attached bath above its master bedroom).
     service_y = band_y + bedroom_h
-    service_band_rooms = _order_service_for_plumbing(
-        service_band_rooms, bedrooms, other_private, band_w)
+
+    # Sort service rooms: attached baths first, then common service
+    attached_svc = [sr for sr in service_band_rooms if sr.get('_is_attached_bath')]
+    common_svc = [sr for sr in service_band_rooms if not sr.get('_is_attached_bath')]
 
     svc_placed = []
+    svc_occupied = []  # Track (x_start, x_end) for each placed service room
+    matched_parents = set()  # Track which bedrooms have been matched
+
+    # Place attached baths ABOVE their parent bedrooms
+    for sr in attached_svc:
+        parent_idx = sr.get('_attached_to')
+        # Find an UNMATCHED parent bedroom (master_bedroom preferred)
+        parent_bp = None
+        for bi, br in enumerate(bed_placed):
+            if bi in matched_parents:
+                continue
+            if br['room_type'] == 'master_bedroom':
+                parent_bp = br['_placed']
+                matched_parents.add(bi)
+                break
+        # Fallback: any unmatched bedroom
+        if parent_bp is None:
+            for bi, br in enumerate(bed_placed):
+                if bi not in matched_parents and br['room_type'] in ('master_bedroom', 'bedroom'):
+                    parent_bp = br['_placed']
+                    matched_parents.add(bi)
+                    break
+
+        natural_w = sr['target_area'] / service_h if service_h > 0 else 7.0
+        min_w = MIN_DIMS.get(sr['room_type'], (5, 5))[0]
+        max_w = 8.0
+        w = _snap(max(min_w, min(natural_w, max_w)))
+
+        # Try to align with parent bedroom
+        if parent_bp:
+            sx = parent_bp['x']
+            w = min(w, parent_bp['w'])  # Don't exceed parent width
+        else:
+            # Place at first available X
+            sx = band_x
+            for (occ_start, occ_end) in svc_occupied:
+                if sx < occ_end:
+                    sx = occ_end
+
+        w = min(w, _snap((band_x + band_w) - sx))
+        if w < 3.0:
+            continue
+
+        entry = dict(sr)
+        entry['_placed'] = {
+            'x': round(sx, 2),
+            'y': round(service_y, 2),
+            'w': round(w, 2),
+            'h': round(service_h, 2),
+        }
+        svc_placed.append(entry)
+        svc_occupied.append((sx, sx + w))
+
+    # Place common service rooms after attached baths
     svc_x = band_x
-    for sr in service_band_rooms:
+    for (occ_start, occ_end) in sorted(svc_occupied):
+        svc_x = max(svc_x, occ_end)
+
+    for sr in common_svc:
         natural_w = sr['target_area'] / service_h if service_h > 0 else 7.0
         min_w = MIN_DIMS.get(sr['room_type'], (5, 5))[0]
         max_w = 8.0 if sr['room_type'] in ('bathroom', 'toilet') else 7.0
         w = _snap(max(min_w, min(natural_w, max_w)))
-        # Don't exceed remaining band width
         w = min(w, _snap((band_x + band_w) - svc_x))
         if w < 3.0:
-            break  # No space left
+            break
 
         entry = dict(sr)
         entry['_placed'] = {
@@ -963,6 +1068,7 @@ def _place_private_band_smart(
             'h': round(service_h, 2),
         }
         svc_placed.append(entry)
+        svc_occupied.append((svc_x, svc_x + w))
         svc_x += w
 
     # --- Step 3: Extend bedrooms upward OR fill gaps ---
@@ -995,29 +1101,61 @@ def _place_private_band_smart(
             if new_ar <= max_ar:
                 bp['h'] = round(new_h, 2)
 
-    # --- Step 4: Fill remaining gaps in service sub-band ---
-    # If service rooms don't fill the full band width above the bedroom
-    # that has the bath, add a utility/common WC to fill the gap.
-    gap_left = svc_covered_end
-    gap_right = band_x + band_w
-    # Only fill up to where extended bedrooms start (don't overlap)
+    # --- Step 4: Fill ALL remaining gaps in service sub-band ---
+    # Scan the entire service sub-band for uncovered horizontal stretches
+    # and fill them with utility/wash rooms.
+    # Build list of covered X intervals from service rooms AND extended bedrooms
+    covered_intervals = []
+    for sr in svc_placed:
+        sp = sr['_placed']
+        covered_intervals.append((sp['x'], sp['x'] + sp['w']))
     for br in bed_placed:
         bp = br['_placed']
-        # If this bedroom was extended (h > bedroom_h), it covers the gap
-        if bp['h'] > bedroom_h + 1:
-            gap_right = min(gap_right, bp['x'])
+        if bp['h'] > bedroom_h + 0.5:
+            # This bedroom was extended upward — it covers the service band
+            covered_intervals.append((bp['x'], bp['x'] + bp['w']))
 
-    gap_w = _snap(gap_right - gap_left)
-    MAX_FILLER_W = 8.0  # Cap utility/wash filler width
-    if gap_w >= 4.0:
-        filler_w = min(gap_w, MAX_FILLER_W)
+    # Merge overlapping intervals
+    covered_intervals.sort()
+    merged_coverage = []
+    for start, end in covered_intervals:
+        if merged_coverage and start <= merged_coverage[-1][1] + 0.3:
+            merged_coverage[-1] = (merged_coverage[-1][0], max(merged_coverage[-1][1], end))
+        else:
+            merged_coverage.append((start, end))
+
+    # Find gaps in coverage
+    prev_end = band_x
+    MAX_FILLER_W = 8.0
+    for start, end in merged_coverage:
+        gap_w = _snap(start - prev_end)
+        if gap_w >= 3.5:
+            filler_w = min(gap_w, MAX_FILLER_W)
+            placed.append({
+                'room_type': 'utility',
+                'name': 'Wash Area',
+                'zone': 'service',
+                'target_area': filler_w * service_h,
+                '_placed': {
+                    'x': round(prev_end, 2),
+                    'y': round(service_y, 2),
+                    'w': round(filler_w, 2),
+                    'h': round(service_h, 2),
+                },
+            })
+        prev_end = max(prev_end, end)
+
+    # Rightmost gap
+    final_gap = _snap((band_x + band_w) - prev_end)
+    if final_gap >= 3.5:
+        filler_w = min(final_gap, MAX_FILLER_W)
         placed.append({
             'room_type': 'utility',
-            'name': 'Wash Area',
+            'name': 'Utility',
             'zone': 'service',
             'target_area': filler_w * service_h,
             '_placed': {
-                'x': round(gap_left, 2),
+                'x': round(prev_end, 2),
                 'y': round(service_y, 2),
                 'w': round(filler_w, 2),
                 'h': round(service_h, 2),
@@ -1190,14 +1328,298 @@ def _score_layout(
     else:
         plumb_score = 0.5
 
+    # --- 6. Coverage Score (bonus) ---
+    # Penalize layouts that waste usable area (large gaps)
+    total_room_area = sum(r['w'] * r['h'] for r in room_rects)
+    usable_area = plot_w * plot_h
+    coverage = min(total_room_area / usable_area, 1.0) if usable_area > 0 else 0
+    coverage_score = coverage  # 1.0 = perfect coverage
+
+    # --- 7. Area Accuracy Score (bonus) ---
+    # Rooms should be close to their target areas
+    area_acc = 0.0
+    area_checks = 0
+    for r in placed_rooms:
+        target = r.get('target_area', 0)
+        if target <= 0:
+            continue
+        p = r.get('_placed', {})
+        actual = p.get('w', 0) * p.get('h', 0)
+        ratio = actual / target if target > 0 else 0
+        # Score: 1.0 for within ±20%, 0.5 for ±40%, 0 otherwise
+        if 0.8 <= ratio <= 1.3:
+            area_acc += 1.0
+        elif 0.6 <= ratio <= 1.6:
+            area_acc += 0.5
+        area_checks += 1
+    area_acc_score = area_acc / area_checks if area_checks > 0 else 0.5
+
     # --- Weighted total ---
-    total = (adj_score * 0.30 +
-             prop_score * 0.25 +
-             vastu_score * 0.15 +
-             light_score * 0.15 +
-             plumb_score * 0.15)
+    total = (adj_score * 0.25 +
+             prop_score * 0.20 +
+             vastu_score * 0.10 +
+             light_score * 0.10 +
+             plumb_score * 0.10 +
+             coverage_score * 0.15 +
+             area_acc_score * 0.10)
 
     return round(total, 4)
+
+
+# =============================================================================
+# POST-PLACEMENT OPTIMIZER
+# =============================================================================
+
+def _optimize_layout(placed: List[Dict], ux: float, uy: float,
+                     uw: float, ul: float) -> List[Dict]:
+    """
+    Post-placement optimization pass that fixes common issues:
+    1. Detect and fill gaps between rooms
+    2. Fix overlapping rooms (nudge apart)
+    3. Adjust rooms with extreme aspect ratios
+    4. Align walls where nearly aligned (within 1ft)
+
+    This runs AFTER candidate generation to polish the layout.
+    """
+    if not placed:
+        return placed
+
+    # --- Pass 1: Fix overlaps ---
+    for i in range(len(placed)):
+        pi = placed[i].get('_placed')
+        if not pi:
+            continue
+        for j in range(i + 1, len(placed)):
+            pj = placed[j].get('_placed')
+            if not pj:
+                continue
+            # Check overlap
+            x_overlap = min(pi['x'] + pi['w'], pj['x'] + pj['w']) - max(pi['x'], pj['x'])
+            y_overlap = min(pi['y'] + pi['h'], pj['y'] + pj['h']) - max(pi['y'], pj['y'])
+            if x_overlap > 0.5 and y_overlap > 0.5:
+                # Rooms overlap — shrink the smaller one
+                area_i = pi['w'] * pi['h']
+                area_j = pj['w'] * pj['h']
+                if area_i >= area_j:
+                    # Shrink j
+                    if x_overlap < y_overlap:
+                        pj['x'] = round(pi['x'] + pi['w'], 2)
+                        pj['w'] = round(max(3, pj['w'] - x_overlap), 2)
+                    else:
+                        pj['y'] = round(pi['y'] + pi['h'], 2)
+                        pj['h'] = round(max(3, pj['h'] - y_overlap), 2)
+                else:
+                    if x_overlap < y_overlap:
+                        pi['x'] = round(pj['x'] + pj['w'], 2)
+                        pi['w'] = round(max(3, pi['w'] - x_overlap), 2)
+                    else:
+                        pi['y'] = round(pj['y'] + pj['h'], 2)
+                        pi['h'] = round(max(3, pi['h'] - y_overlap), 2)
+
+    # --- Pass 2: Wall alignment (snap nearly-aligned walls) ---
+    ALIGN_THRESHOLD = 1.0  # If two walls are within 1ft, align them
+    all_x_edges = []
+    all_y_edges = []
+    for r in placed:
+        p = r.get('_placed')
+        if not p:
+            continue
+        all_x_edges.append(p['x'])
+        all_x_edges.append(p['x'] + p['w'])
+        all_y_edges.append(p['y'])
+        all_y_edges.append(p['y'] + p['h'])
+
+    # Group nearby X edges
+    all_x_edges.sort()
+    x_groups = []
+    for x in all_x_edges:
+        merged = False
+        for grp in x_groups:
+            if abs(x - grp[0]) < ALIGN_THRESHOLD:
+                grp.append(x)
+                merged = True
+                break
+        if not merged:
+            x_groups.append([x])
+
+    # Snap X edges to group median
+    x_snap_map = {}
+    for grp in x_groups:
+        if len(grp) > 1:
+            median = _snap(sum(grp) / len(grp))
+            for x in grp:
+                x_snap_map[x] = median
+
+    for r in placed:
+        p = r.get('_placed')
+        if not p:
+            continue
+        old_x = p['x']
+        old_right = p['x'] + p['w']
+        new_x = x_snap_map.get(old_x, old_x)
+        new_right = x_snap_map.get(old_right, old_right)
+        if new_x != old_x or new_right != old_right:
+            p['x'] = round(new_x, 2)
+            p['w'] = round(max(3.0, new_right - new_x), 2)
+
+    # --- Pass 3: Fill gaps in usable area ---
+    # Find horizontal gaps at each Y-band
+    placed = _fill_coverage_gaps(placed, ux, uy, uw, ul)
+
+    return placed
+
+
+def _fill_coverage_gaps(placed: List[Dict], ux: float, uy: float,
+                        uw: float, ul: float) -> List[Dict]:
+    """
+    Scan the placed rooms and fill any gaps > 3ft wide with utility rooms.
+    Uses a sweep-line approach to find uncovered rectangles.
+    Only fills within the Y-extent of existing rooms (not empty garden space).
+    """
+    # Find the actual Y-extent of placed rooms
+    room_y_min = uy + ul
+    room_y_max = uy
+    for r in placed:
+        p = r.get('_placed')
+        if not p:
+            continue
+        room_y_min = min(room_y_min, p['y'])
+        room_y_max = max(room_y_max, p['y'] + p['h'])
+
+    if room_y_max <= room_y_min:
+        return placed
+
+    # Collect all Y-boundaries within the room extent
+    y_bounds = set()
+    y_bounds.add(round(room_y_min, 2))
+    y_bounds.add(round(room_y_max, 2))
+    for r in placed:
+        p = r.get('_placed')
+        if not p:
+            continue
+        y_bounds.add(round(p['y'], 2))
+        y_bounds.add(round(p['y'] + p['h'], 2))
+
+    y_sorted = sorted(y_bounds)
+    new_fillers = []
+
+    for yi in range(len(y_sorted) - 1):
+        band_y = y_sorted[yi]
+        band_top = y_sorted[yi + 1]
+        band_h = round(band_top - band_y, 2)
+        if band_h < 3.0:
+            continue
+
+        # Find all rooms that occupy this Y band
+        x_occupied = []
+        for r in placed:
+            p = r.get('_placed')
+            if not p:
+                continue
+            ry_bot = p['y']
+            ry_top = p['y'] + p['h']
+            # Room overlaps this band if it spans into it
+            if ry_bot < band_top - 0.3 and ry_top > band_y + 0.3:
+                x_occupied.append((p['x'], p['x'] + p['w']))
+
+        # Merge overlapping X intervals
+        x_occupied.sort()
+        merged = []
+        for start, end in x_occupied:
+            if merged and start <= merged[-1][1] + 0.3:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        # Find gaps
+        prev_end = ux
+        for start, end in merged:
+            gap_w = _snap(start - prev_end)
+            if gap_w >= 3.0:
+                new_fillers.append({
+                    'room_type': 'utility',
+                    'name': 'Utility',
+                    'zone': 'service',
+                    'target_area': gap_w * band_h,
+                    '_placed': {
+                        'x': round(prev_end, 2),
+                        'y': round(band_y, 2),
+                        'w': round(gap_w, 2),
+                        'h': round(band_h, 2),
+                    },
+                })
+            prev_end = max(prev_end, end)
+
+        # Check gap at the right edge
+        gap_w = _snap((ux + uw) - prev_end)
+        if gap_w >= 3.0:
+            new_fillers.append({
+                'room_type': 'utility',
+                'name': 'Utility',
+                'zone': 'service',
+                'target_area': gap_w * band_h,
+                '_placed': {
+                    'x': round(prev_end, 2),
+                    'y': round(band_y, 2),
+                    'w': round(gap_w, 2),
+                    'h': round(band_h, 2),
+                },
+            })
+
+    # --- Post-process fillers: split extreme-AR rooms, skip tiny strips ---
+    final_fillers = []
+    MAX_FILLER_AR = 2.5
+    MAX_CHUNK_W = 8.0
+    for filler in new_fillers:
+        fp = filler['_placed']
+        ar = _aspect(fp['w'], fp['h'])
+        if ar <= MAX_FILLER_AR:
+            final_fillers.append(filler)
+        elif fp['h'] < 3.0:
+            # Very thin horizontal strip — skip entirely
+            continue
+        else:
+            # Wide strip — split into chunks with acceptable AR
+            chunk_w = min(MAX_CHUNK_W, fp['h'] * MAX_FILLER_AR)
+            chunk_w = _snap(max(3.0, chunk_w))
+            cx = fp['x']
+            remaining = fp['w']
+            while remaining >= 3.0:
+                cw = min(chunk_w, remaining)
+                if cw < 3.0:
+                    break
+                final_fillers.append({
+                    'room_type': 'utility',
+                    'name': 'Utility',
+                    'zone': 'service',
+                    'target_area': cw * fp['h'],
+                    '_placed': {
+                        'x': round(cx, 2),
+                        'y': round(fp['y'], 2),
+                        'w': round(cw, 2),
+                        'h': round(fp['h'], 2),
+                    },
+                })
+                cx += cw
+                remaining -= cw
+
+    # De-duplicate fillers (don't overlap with existing rooms)
+    for filler in final_fillers:
+        fp = filler['_placed']
+        overlaps = False
+        for r in placed:
+            rp = r.get('_placed')
+            if not rp:
+                continue
+            x_ov = min(fp['x'] + fp['w'], rp['x'] + rp['w']) - max(fp['x'], rp['x'])
+            y_ov = min(fp['y'] + fp['h'], rp['y'] + rp['h']) - max(fp['y'], rp['y'])
+            if x_ov > 1.0 and y_ov > 1.0:
+                overlaps = True
+                break
+        if not overlaps:
+            placed.append(filler)
+
+    return placed
 
 
 # =============================================================================
@@ -1222,40 +1644,55 @@ def _generate_candidate(
     Generate one candidate layout with a specific room ordering variant.
 
     Variants:
-      0: Standard order (Kitchen-Dining-Living, Master-BR-Bath)
-      1: Reversed public (Living-Dining-Kitchen)
-      2: Mirrored private (Bath-BR-Master)
-      3: Combined reversal
-      4+: Random shuffles within constraints
+      0: Standard order (Living→Kitchen→Dining, Master→BR→Bath)
+      1: Private rooms reversed
+      2: Wider corridor (5ft instead of 3.5-4ft)
+      3: Swapped bedroom positions
+      4: Compact corridor (3ft)
+      5+: Additional shuffles
     """
     pub = list(public_rooms)
     priv = list(private_rooms)
     serv = list(service_rooms)
 
+    # Corridor height variation for richer candidates
+    corr_h_used = corridor_h
+
     # Apply variant transformations
     # RULE: Living Room ALWAYS stays first (leftmost) so it shares walls
     # with Kitchen AND (via extension through corridor) with bedrooms.
     # Kitchen ALWAYS stays next to Living (direct access required).
-    if variant == 1:
+    if variant == 0:
+        pass  # Standard order
+    elif variant == 1:
         # Reverse private only
         priv = list(reversed(priv))
     elif variant == 2:
-        priv = list(reversed(priv))
+        # Wider corridor for better circulation
+        if corridor_h > 0:
+            corr_h_used = min(corridor_h + 1.0, 5.0)
     elif variant == 3:
-        priv = list(reversed(priv))
-    elif variant >= 4:
-        # Shuffle private rooms only — public order is fixed
+        # Swap first two bedrooms/masters in private
+        beds_in_priv = [r for r in priv if r['room_type'] in ('master_bedroom', 'bedroom')]
+        if len(beds_in_priv) >= 2:
+            priv = list(reversed(priv))
+    elif variant == 4:
+        # Compact corridor
+        if corridor_h > 0:
+            corr_h_used = max(corridor_h - 0.5, 3.0)
+    elif variant >= 5:
+        # Shuffle private rooms, keep public fixed
         priv = list(reversed(priv)) if variant % 2 == 0 else priv
 
     # Order rooms within bands
-    pub_ordered = _order_public_rooms(pub, uw) if variant < 4 else pub
+    pub_ordered = _order_public_rooms(pub, uw) if variant < 5 else pub
     priv_ordered = _order_private_rooms(
-        priv, attached_pairs, rooms, uw) if variant < 4 else priv
+        priv, attached_pairs, rooms, uw) if variant < 5 else priv
 
     # Calculate band heights
     public_h, private_h = _allocate_band_heights(
         pub_ordered, priv_ordered, serv,
-        corridor_h, ul, uw, total_area)
+        corr_h_used, ul, uw, total_area)
 
     placed = []
 
@@ -1275,16 +1712,16 @@ def _generate_candidate(
             break
 
     corridor_y = pub_y + public_h
-    priv_y = corridor_y + corridor_h
+    priv_y = corridor_y + corr_h_used
     raw_priv_h = _snap((uy + ul) - priv_y)
     # Use the capped private_h from band height allocation (prevents overly tall rooms)
     priv_h_actual = min(raw_priv_h, private_h) if private_h > 0 else raw_priv_h
 
-    if living_idx is not None and corridor_h > 0:
+    if living_idx is not None and corr_h_used > 0:
         # Extend living room upward through corridor zone
         living_p = placed[living_idx]['_placed']
         old_h = living_p['h']
-        living_p['h'] = round(old_h + corridor_h, 2)
+        living_p['h'] = round(old_h + corr_h_used, 2)
 
         # Place corridor only in the remaining width (not under living room)
         corr_start_x = living_p['x'] + living_p['w']
@@ -1294,29 +1731,29 @@ def _generate_candidate(
                 'room_type': 'corridor',
                 'name': 'Passage',
                 'zone': 'circulation',
-                'target_area': corr_w * corridor_h,
+                'target_area': corr_w * corr_h_used,
                 'priority': 10,
                 '_placed': {
                     'x': round(corr_start_x, 2),
                     'y': round(corridor_y, 2),
                     'w': corr_w,
-                    'h': round(corridor_h, 2),
+                    'h': round(corr_h_used, 2),
                 },
             }
             placed.append(corridor_room)
-    elif corridor_h > 0:
+    elif corr_h_used > 0:
         # Fallback: full-width corridor
         corridor_room = {
             'room_type': 'corridor',
             'name': 'Passage',
             'zone': 'circulation',
-            'target_area': uw * corridor_h,
+            'target_area': uw * corr_h_used,
             'priority': 10,
             '_placed': {
                 'x': round(ux, 2),
                 'y': round(corridor_y, 2),
                 'w': round(uw, 2),
-                'h': round(corridor_h, 2),
+                'h': round(corr_h_used, 2),
             },
         }
         placed.append(corridor_room)
@@ -1325,6 +1762,9 @@ def _generate_candidate(
     placed.extend(_place_private_band_smart(
         priv_ordered, attached_pairs, rooms, serv,
         ux, priv_y, uw, priv_h_actual, total_area))
+
+    # --- Post-placement optimization ---
+    placed = _optimize_layout(placed, ux, uy, uw, ul)
 
     return placed
 
@@ -1341,13 +1781,16 @@ def _generate_and_score_candidates(
     uw: float,
     ul: float,
     total_area: float,
-    n_candidates: int = 6,
+    n_candidates: int = 8,
 ) -> List[Dict]:
     """
     Generate multiple candidate layouts and return the best one.
+    Generates 8 candidates with diverse ordering/corridor variations,
+    scores each, and returns the highest-scoring layout.
     """
     best_score = -1
     best_layout = None
+    all_scores = []
 
     for variant in range(n_candidates):
         try:
@@ -1359,6 +1802,7 @@ def _generate_and_score_candidates(
             score = _score_layout(
                 candidate, rooms, attached_pairs,
                 uw, ul, ux, uy)
+            all_scores.append((variant, score))
 
             if score > best_score:
                 best_score = score
@@ -1373,7 +1817,8 @@ def _generate_and_score_candidates(
         all_rooms = public_rooms + private_rooms + service_rooms
         best_layout = _place_rooms_in_band(all_rooms, ux, uy, uw, ul)
 
-    logger.info(f"Best candidate score: {best_score:.3f}")
+    logger.info(f"Best candidate: variant={all_scores[0][0] if all_scores else '?'}, "
+                f"score={best_score:.3f} (of {len(all_scores)} candidates)")
     return best_layout
 
 
@@ -1678,6 +2123,14 @@ def generate_professional_plan(
     ul = plot_l - 2 * WALL_EXT
     aspect = uw / ul if ul > 0 else 1.0
 
+    # --- Smart defaults: auto-add dining for 2BHK+ with enough area ---
+    total_beds = rooms_config.get('master_bedroom', 0) + rooms_config.get('bedroom', 0)
+    if rooms_config.get('dining', 0) == 0 and total_beds >= 2 and total_area >= 900:
+        rooms_config['dining'] = 1
+    # Auto-add utility for 3BHK+ if not specified
+    if rooms_config.get('utility', 0) == 0 and total_beds >= 3 and total_area >= 1200:
+        rooms_config['utility'] = 1
+
     # --- Phase 1: Room Programming ---
     rooms, attached_pairs = _build_room_program(rooms_config, total_area)
 
@@ -1690,18 +2143,18 @@ def generate_professional_plan(
         public_rooms = [rooms[0]] if rooms else []
 
     # --- Phase 3-4: Generate candidates and pick best ---
-    if aspect < 0.55:
-        # Narrow plot (width/height < 0.55) — use stacked horizontal bands
+    if aspect < 0.6:
+        # Narrow plot (width/height < 0.6) — use stacked horizontal bands
         best_layout = _generate_tall_layout(
             rooms, attached_pairs,
             public_rooms, private_rooms, service_rooms, corridor_h,
             ux, uy, uw, ul, total_area)
     else:
-        # Wide or square plot — use horizontal bands
+        # Wide or square plot — use horizontal bands with 8 candidates
         best_layout = _generate_and_score_candidates(
             rooms, attached_pairs,
             public_rooms, private_rooms, service_rooms, corridor_h,
-            ux, uy, uw, ul, total_area, n_candidates=6)
+            ux, uy, uw, ul, total_area, n_candidates=8)
 
     # --- Build output format ---
     centroids = defaultdict(list)
