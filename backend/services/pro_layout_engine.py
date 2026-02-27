@@ -66,7 +66,7 @@ MIN_DIMS = {
     'living':         (10, 12),
     'master_bedroom': (10, 12),
     'bedroom':        (9, 10),
-    'kitchen':        (7, 8),
+    'kitchen':        (8, 8),
     'bathroom':       (5, 7),
     'toilet':         (3.5, 4),
     'dining':         (8, 9),
@@ -85,7 +85,7 @@ MAX_ASPECT = {
     'living':         2.0,
     'master_bedroom': 1.8,
     'bedroom':        1.8,
-    'kitchen':        2.5,
+    'kitchen':        1.8,
     'bathroom':       2.5,
     'toilet':         2.5,
     'dining':         2.0,
@@ -101,10 +101,10 @@ MAX_ASPECT = {
 
 # Room area as fraction of total plot area (min, ideal, max)
 AREA_FRACTIONS = {
-    'living':         (0.14, 0.18, 0.25),
-    'master_bedroom': (0.10, 0.13, 0.17),
-    'bedroom':        (0.08, 0.11, 0.14),
-    'kitchen':        (0.06, 0.08, 0.12),
+    'living':         (0.12, 0.15, 0.20),
+    'master_bedroom': (0.10, 0.14, 0.18),
+    'bedroom':        (0.08, 0.12, 0.15),
+    'kitchen':        (0.06, 0.09, 0.12),
     'bathroom':       (0.03, 0.04, 0.06),
     'toilet':         (0.015, 0.025, 0.035),
     'dining':         (0.06, 0.09, 0.12),
@@ -182,10 +182,12 @@ VASTU_PREFS = {
 DESIRED_ADJ = [
     ('master_bedroom', 'bathroom', 'required'),
     ('kitchen',        'dining',   'required'),
+    ('living',         'kitchen',  'required'),    # Kitchen must be accessible from Living
     ('living',         'dining',   'preferred'),
-    ('living',         'kitchen',  'preferred'),
     ('kitchen',        'utility',  'preferred'),
     ('bedroom',        'bathroom', 'preferred'),
+    ('living',         'master_bedroom', 'preferred'),  # Via corridor extension
+    ('living',         'bedroom',  'preferred'),         # Via corridor extension
 ]
 
 # Forbidden adjacencies — these rooms should NOT share walls
@@ -416,8 +418,12 @@ def _assign_to_bands(
         rtype = room['room_type']
         zone = room['zone']
 
-        if rtype in ('living', 'kitchen', 'dining', 'garage'):
+        if rtype in ('living', 'kitchen', 'dining'):
             public_rooms.append(room)
+        elif rtype == 'garage':
+            # Garage goes to service band — NOT in the main public band
+            # This prevents it from squeezing living/kitchen/dining
+            service_rooms.append(room)
         elif rtype in ('master_bedroom', 'bedroom', 'study'):
             private_rooms.append(room)
         elif idx in attached_bath_indices:
@@ -486,13 +492,28 @@ def _allocate_band_heights(
     public_h = available_h * pub_ratio
     private_h = available_h * priv_ratio
 
+    # --- CAP public band height ---
+    # Indian residential: public band should be proportional but capped.
+    # Small plots (≤1200sqft): max 14ft.  Large plots (3000sqft): max 20ft.
+    PUB_MAX_H = min(14.0 + max(0, (total_area - 1200) * 0.004), 20.0)
+    if public_h > PUB_MAX_H:
+        excess = public_h - PUB_MAX_H
+        public_h = PUB_MAX_H
+        private_h += excess
+
+    # --- CAP private band height ---
+    # Small plots: max 22ft.  Large plots: scale up to accommodate more rooms.
+    PRIV_MAX_H = min(22.0 + max(0, (total_area - 1500) * 0.005), 32.0)
+    if private_h > PRIV_MAX_H:
+        private_h = PRIV_MAX_H
+
     # Enforce minimum heights based on room dimension requirements
     pub_min_h = 10.0  # Living room needs at least 10ft depth
     for r in public_rooms:
         min_d = MIN_DIMS.get(r['room_type'], (7, 7))
-        pub_min_h = max(pub_min_h, min_d[1])
+        pub_min_h = max(pub_min_h, min(min_d[1], PUB_MAX_H))
 
-    priv_min_h = 9.0  # Bedrooms need at least 9ft depth
+    priv_min_h = 10.0  # Bedrooms need at least 10ft depth
     for r in private_rooms:
         if r['room_type'] in ('master_bedroom', 'bedroom'):
             min_d = MIN_DIMS.get(r['room_type'], (9, 9))
@@ -514,21 +535,26 @@ def _allocate_band_heights(
     public_h = max(public_h, pub_min_h)
     private_h = max(private_h, priv_min_h)
 
-    # Scale to fit available height
+    # Scale to fit available height — but RESPECT the caps
     total_needed = public_h + private_h
     if total_needed > available_h:
         scale = available_h / total_needed
         public_h *= scale
         private_h *= scale
     elif total_needed < available_h:
-        # Distribute extra space proportionally
+        # Distribute extra space proportionally BUT respect caps
         extra = available_h - total_needed
-        public_h += extra * pub_ratio
-        private_h += extra * priv_ratio
+        pub_extra = min(extra * pub_ratio, PUB_MAX_H - public_h)
+        pub_extra = max(pub_extra, 0)
+        priv_extra = min(extra * priv_ratio, PRIV_MAX_H - private_h)
+        priv_extra = max(priv_extra, 0)
+        public_h += pub_extra
+        private_h += priv_extra
+        # Any remaining space stays as unused back of plot (garden/setback)
 
     # Final snap
     public_h = _snap(public_h)
-    private_h = _snap(available_h - public_h)  # Absorb rounding
+    private_h = _snap(private_h)
 
     return public_h, private_h
 
@@ -538,12 +564,12 @@ def _order_public_rooms(rooms: List[Dict], plot_w: float) -> List[Dict]:
     Order public rooms for the front band.
 
     Professional ordering (left to right for Indian homes):
-      Kitchen → Dining → Living Room → (Balcony/Garage if any)
+      Living Room → Kitchen → Dining → (Balcony if any)
 
-    Kitchen goes to the LEFT side (shares wall with bathroom above for plumbing).
-    Living room goes to the RIGHT side (near entrance, which is typically
-    center or center-right in Indian homes).
-    Dining goes BETWEEN kitchen and living (cooking→serving→eating flow).
+    Living room is the HUB — placed FIRST (leftmost, near entrance).
+    Kitchen is adjacent to Living (direct access from living room).
+    Dining goes after Kitchen (cooking→serving flow, accessed from kitchen).
+    This ensures: Living ↔ Kitchen ↔ Dining adjacency chain.
     """
     kitchen = [r for r in rooms if r['room_type'] == 'kitchen']
     dining = [r for r in rooms if r['room_type'] == 'dining']
@@ -553,8 +579,17 @@ def _order_public_rooms(rooms: List[Dict], plot_w: float) -> List[Dict]:
     other = [r for r in rooms if r['room_type'] not in
              ('kitchen', 'dining', 'living', 'balcony', 'garage')]
 
-    # Professional ordering: Kitchen | Dining | Living | (extras)
-    ordered = kitchen + dining + other + living + balcony + garage
+    # Check if total minimum widths exceed available band width — drop optional rooms
+    all_rooms = living + kitchen + dining + other + balcony + garage
+    total_min_w = sum(MIN_DIMS.get(r['room_type'], (5, 5))[0] for r in all_rooms)
+    if total_min_w > plot_w and dining:
+        # Not enough width for all rooms — merge dining into living
+        # (Dining becomes part of the living/drawing room, common in small plans)
+        dining = []
+
+    # Living FIRST → then Kitchen → then Dining → extras
+    # This guarantees Kitchen shares a wall with Living Room
+    ordered = living + kitchen + dining + other + balcony + garage
     return ordered
 
 
@@ -767,15 +802,40 @@ def _place_rooms_in_band(
         cx += w
 
     # If there's leftover space (> 3ft), add a utility/wash filler room
+    # But CAP filler width to prevent huge unused utility rooms
     leftover = _snap((band_x + band_w) - cx)
+    MAX_FILLER_W = 6.0  # Max 6ft wide for filler room
     if leftover >= 3.0:
+        if leftover > MAX_FILLER_W:
+            # Redistribute excess to expandable rooms in this band
+            excess = leftover - MAX_FILLER_W
+            # First try major rooms, then service rooms
+            expand_indices = [j for j in range(len(placed))
+                              if placed[j]['room_type'] not in
+                              ('bathroom', 'toilet', 'pooja', 'store', 'utility')]
+            if not expand_indices:
+                # Service-only band: expand all rooms proportionally
+                expand_indices = list(range(len(placed)))
+            if expand_indices:
+                share = excess / len(expand_indices)
+                # Shift rooms and widen them
+                shift = 0
+                for j in range(len(placed)):
+                    placed[j]['_placed']['x'] = round(
+                        placed[j]['_placed']['x'] + shift, 2)
+                    if j in expand_indices:
+                        placed[j]['_placed']['w'] = round(
+                            placed[j]['_placed']['w'] + share, 2)
+                        shift += share
+            leftover = MAX_FILLER_W
+
         placed.append({
             'room_type': 'utility',
             'name': 'Wash Area',
             'zone': 'service',
             'target_area': leftover * band_h,
             '_placed': {
-                'x': round(cx, 2),
+                'x': round((band_x + band_w) - leftover, 2),
                 'y': round(band_y, 2),
                 'w': round(leftover, 2),
                 'h': round(band_h, 2),
@@ -799,14 +859,20 @@ def _place_private_band_smart(
     """
     Place private band rooms with intelligent sub-layout.
 
-    Uses a sub-band split when bathrooms are present:
-      - Bedroom sub-band (bottom, larger): All bedrooms + study rooms
-      - Service sub-band (top, smaller): Bathrooms + utility + store
+    Uses a sub-band split with service rooms on top and bedrooms on bottom.
+    Bedrooms EXTEND UPWARD into any service sub-band gaps so there are no
+    empty areas. This produces layouts like:
 
-    The service sub-band is sized to give bathrooms proper proportions
-    (5-8ft wide, 7ft deep). Major rooms (study, pooja with poor aspect
-    ratios in the deep bedroom band) are moved to the service sub-band
-    to get better proportions.
+      ┌──────┬───────────┬──────────────┐
+      │ Bath │           │              │  ← service sub-band (7ft)
+      │ 8×7  │ (Master extends up)      │
+      ├──────┤           │              │
+      │      │ Master BR │  Bed Room 1  │  ← bedroom sub-band
+      │      │           │              │
+      └──────┴───────────┴──────────────┘
+
+    This avoids half-empty service bands while giving bathrooms proper
+    proportions (7ft deep instead of 20ft deep).
     """
     attached_baths = [r for r in rooms if r.get('_is_attached_bath')]
     common_baths = [r for r in rooms
@@ -824,63 +890,142 @@ def _place_private_band_smart(
     all_service = attached_baths + common_baths + service_rooms
 
     if not all_service:
-        # No service rooms — simple placement, include study/pooja with beds
         ordered = bedrooms + studies + poojas + other_private
         ordered.sort(key=lambda r: PRIORITY.get(r['room_type'], 30), reverse=True)
         return _place_rooms_in_band(ordered, band_x, band_y, band_w, band_h)
 
     if not bedrooms:
-        # No bedrooms — just place service rooms
         ordered = all_service + studies + poojas + other_private
         return _place_rooms_in_band(ordered, band_x, band_y, band_w, band_h)
 
-    # --- Smart sub-band layout ---
-    # Service sub-band height: 7ft is ideal for Indian bathrooms
-    service_h = 7.0
-
-    # Bedroom sub-band gets remaining height
+    # --- Sub-band layout with bedroom extension ---
+    service_h = 7.0  # Standard bathroom depth
     bedroom_h = band_h - service_h
+
     if bedroom_h < 9.0:
-        # Not enough space for separate sub-bands — fall back to side-by-side
+        # Not enough space — fall back to side-by-side placement
         ordered = _order_private_rooms(
             rooms + service_rooms, attached_pairs, all_rooms_ref, band_w)
         return _place_rooms_in_band(ordered, band_x, band_y, band_w, band_h)
 
     bedroom_h = _snap(bedroom_h)
-    service_h = _snap(band_h - bedroom_h)  # Absorb rounding
+    service_h = _snap(band_h - bedroom_h)
 
-    placed = []
-
-    # --- Decide which rooms go in service vs bedroom sub-band ---
-    # Study and Pooja: check if they'd have bad aspect ratio in bedroom band.
-    # If bedroom_h / expected_study_width > max_AR, move to service band.
-    service_band_rooms = list(all_service)  # bathrooms always in service band
-
+    # Classify rooms for each sub-band
+    service_band_rooms = list(all_service)
     bedroom_band_rooms = list(bedrooms)
+
     for rm in studies + poojas:
         ideal_w = rm['target_area'] / bedroom_h
         ar = bedroom_h / ideal_w if ideal_w > 0 else 99
         max_ar = MAX_ASPECT.get(rm['room_type'], 2.0)
-        if ar > max_ar * 1.1:
-            # Would be too elongated in bedroom band → move to service band
+        # Move to service band if the room would be close to AR limit
+        # Use 0.85 multiplier — better to have study in service band
+        # at 7ft depth (good proportions) than in bedroom band at 15ft depth
+        if ar > max_ar * 0.85:
             service_band_rooms.append(rm)
         else:
             bedroom_band_rooms.append(rm)
-
     bedroom_band_rooms.extend(other_private)
 
-    # --- Service sub-band (TOP of private band) ---
+    placed = []
+
+    # --- Step 1: Place bedroom sub-band (BOTTOM, full width) ---
+    bedroom_band_rooms.sort(
+        key=lambda r: PRIORITY.get(r['room_type'], 30), reverse=True)
+    bed_placed = _place_rooms_in_band(
+        bedroom_band_rooms, band_x, band_y, band_w, bedroom_h)
+
+    # --- Step 2: Place service rooms at NATURAL widths (no full-band scaling) ---
+    # Service rooms (bathrooms, etc.) get their natural width based on
+    # target_area / service_h, capped at MAX_SERVICE_W. No filler expansion.
     service_y = band_y + bedroom_h
     service_band_rooms = _order_service_for_plumbing(
         service_band_rooms, bedrooms, other_private, band_w)
-    placed.extend(_place_rooms_in_band(
-        service_band_rooms, band_x, service_y, band_w, service_h))
 
-    # --- Bedroom sub-band (BOTTOM of private band) ---
-    bedroom_band_rooms.sort(
-        key=lambda r: PRIORITY.get(r['room_type'], 30), reverse=True)
-    placed.extend(_place_rooms_in_band(
-        bedroom_band_rooms, band_x, band_y, band_w, bedroom_h))
+    svc_placed = []
+    svc_x = band_x
+    for sr in service_band_rooms:
+        natural_w = sr['target_area'] / service_h if service_h > 0 else 7.0
+        min_w = MIN_DIMS.get(sr['room_type'], (5, 5))[0]
+        max_w = 8.0 if sr['room_type'] in ('bathroom', 'toilet') else 7.0
+        w = _snap(max(min_w, min(natural_w, max_w)))
+        # Don't exceed remaining band width
+        w = min(w, _snap((band_x + band_w) - svc_x))
+        if w < 3.0:
+            break  # No space left
+
+        entry = dict(sr)
+        entry['_placed'] = {
+            'x': round(svc_x, 2),
+            'y': round(service_y, 2),
+            'w': round(w, 2),
+            'h': round(service_h, 2),
+        }
+        svc_placed.append(entry)
+        svc_x += w
+
+    # --- Step 3: Extend bedrooms upward OR fill gaps ---
+    # Track which X ranges in the service sub-band are covered
+    svc_covered_end = band_x
+    for sr in svc_placed:
+        sp = sr['_placed']
+        svc_covered_end = max(svc_covered_end, sp['x'] + sp['w'])
+
+    for br in bed_placed:
+        bp = br['_placed']
+        bed_left = bp['x']
+        bed_right = bp['x'] + bp['w']
+
+        # Check if ANY service room overlaps this bedroom's X range
+        has_overlap = False
+        for sr in svc_placed:
+            sp = sr['_placed']
+            overlap = min(bed_right, sp['x'] + sp['w']) - max(bed_left, sp['x'])
+            if overlap > 1.0:
+                has_overlap = True
+                break
+
+        # Only extend if NO service room is above this bedroom
+        # AND the extended height would not exceed the max aspect ratio
+        if not has_overlap:
+            new_h = bp['h'] + service_h
+            new_ar = _aspect(bp['w'], new_h)
+            max_ar = _max_ar(br['room_type'])
+            if new_ar <= max_ar:
+                bp['h'] = round(new_h, 2)
+
+    # --- Step 4: Fill remaining gaps in service sub-band ---
+    # If service rooms don't fill the full band width above the bedroom
+    # that has the bath, add a utility/common WC to fill the gap.
+    gap_left = svc_covered_end
+    gap_right = band_x + band_w
+    # Only fill up to where extended bedrooms start (don't overlap)
+    for br in bed_placed:
+        bp = br['_placed']
+        # If this bedroom was extended (h > bedroom_h), it covers the gap
+        if bp['h'] > bedroom_h + 1:
+            gap_right = min(gap_right, bp['x'])
+
+    gap_w = _snap(gap_right - gap_left)
+    MAX_FILLER_W = 8.0  # Cap utility/wash filler width
+    if gap_w >= 4.0:
+        filler_w = min(gap_w, MAX_FILLER_W)
+        placed.append({
+            'room_type': 'utility',
+            'name': 'Wash Area',
+            'zone': 'service',
+            'target_area': filler_w * service_h,
+            '_placed': {
+                'x': round(gap_left, 2),
+                'y': round(service_y, 2),
+                'w': round(filler_w, 2),
+                'h': round(service_h, 2),
+            },
+        })
+
+    placed.extend(bed_placed)
+    placed.extend(svc_placed)
 
     return placed
 
@@ -1088,30 +1233,19 @@ def _generate_candidate(
     serv = list(service_rooms)
 
     # Apply variant transformations
+    # RULE: Living Room ALWAYS stays first (leftmost) so it shares walls
+    # with Kitchen AND (via extension through corridor) with bedrooms.
+    # Kitchen ALWAYS stays next to Living (direct access required).
     if variant == 1:
-        pub = list(reversed(pub))
+        # Reverse private only
+        priv = list(reversed(priv))
     elif variant == 2:
         priv = list(reversed(priv))
     elif variant == 3:
-        pub = list(reversed(pub))
         priv = list(reversed(priv))
     elif variant >= 4:
-        # Shuffle within type groups (don't break kitchen-dining adjacency)
-        kit = [r for r in pub if r['room_type'] == 'kitchen']
-        din = [r for r in pub if r['room_type'] == 'dining']
-        liv = [r for r in pub if r['room_type'] == 'living']
-        other_pub = [r for r in pub if r['room_type'] not in
-                     ('kitchen', 'dining', 'living')]
-
-        # Keep kitchen-dining adjacent, randomize position
-        kit_din = kit + din
-        combos = [
-            kit_din + liv + other_pub,
-            liv + kit_din + other_pub,
-            other_pub + kit_din + liv,
-            liv + other_pub + kit_din,
-        ]
-        pub = combos[variant % len(combos)]
+        # Shuffle private rooms only — public order is fixed
+        priv = list(reversed(priv)) if variant % 2 == 0 else priv
 
     # Order rooms within bands
     pub_ordered = _order_public_rooms(pub, uw) if variant < 4 else pub
@@ -1130,9 +1264,48 @@ def _generate_candidate(
     placed.extend(_place_rooms_in_band(
         pub_ordered, ux, pub_y, uw, public_h))
 
-    # --- Place CORRIDOR (middle) ---
+    # --- LIVING ROOM EXTENDS into corridor for direct access ---
+    # Find the living room we just placed and extend it upward through
+    # the corridor so it shares walls with BOTH public rooms AND the
+    # private band. This makes bedrooms directly accessible from living.
+    living_idx = None
+    for i, r in enumerate(placed):
+        if r.get('room_type') == 'living':
+            living_idx = i
+            break
+
     corridor_y = pub_y + public_h
-    if corridor_h > 0:
+    priv_y = corridor_y + corridor_h
+    raw_priv_h = _snap((uy + ul) - priv_y)
+    # Use the capped private_h from band height allocation (prevents overly tall rooms)
+    priv_h_actual = min(raw_priv_h, private_h) if private_h > 0 else raw_priv_h
+
+    if living_idx is not None and corridor_h > 0:
+        # Extend living room upward through corridor zone
+        living_p = placed[living_idx]['_placed']
+        old_h = living_p['h']
+        living_p['h'] = round(old_h + corridor_h, 2)
+
+        # Place corridor only in the remaining width (not under living room)
+        corr_start_x = living_p['x'] + living_p['w']
+        corr_w = round((ux + uw) - corr_start_x, 2)
+        if corr_w > 2.0:
+            corridor_room = {
+                'room_type': 'corridor',
+                'name': 'Passage',
+                'zone': 'circulation',
+                'target_area': corr_w * corridor_h,
+                'priority': 10,
+                '_placed': {
+                    'x': round(corr_start_x, 2),
+                    'y': round(corridor_y, 2),
+                    'w': corr_w,
+                    'h': round(corridor_h, 2),
+                },
+            }
+            placed.append(corridor_room)
+    elif corridor_h > 0:
+        # Fallback: full-width corridor
         corridor_room = {
             'room_type': 'corridor',
             'name': 'Passage',
@@ -1149,9 +1322,6 @@ def _generate_candidate(
         placed.append(corridor_room)
 
     # --- Place PRIVATE band (back/top of plot) ---
-    priv_y = corridor_y + corridor_h
-    priv_h_actual = _snap((uy + ul) - priv_y)  # Absorb rounding, wall-to-wall
-
     placed.extend(_place_private_band_smart(
         priv_ordered, attached_pairs, rooms, serv,
         ux, priv_y, uw, priv_h_actual, total_area))
@@ -1317,14 +1487,53 @@ def _generate_tall_layout(
         has_bed = any(r['room_type'] in ('master_bedroom', 'bedroom', 'living') for r in band)
         has_bath = any(r['room_type'] in ('bathroom', 'toilet') for r in band)
         min_h = 10.0 if has_bed else (7.0 if has_bath else 7.0)
-        h = max(h, min_h)
+        # For single-room bands using full width, ensure AR is within limits
+        if len(band) == 1:
+            room_max_ar = _max_ar(band[0]['room_type'])
+            # Room width = uw (full width) → min height = uw / max_ar
+            ar_min_h = uw / room_max_ar
+            min_h = max(min_h, ar_min_h)
+        # Cap band height to prevent AR violations
+        max_h = 30.0
+        for r in band:
+            room_max_ar = _max_ar(r['room_type'])
+            # For multi-room bands, each room gets ~uw/n width
+            room_w = uw / len(band)
+            room_max_h = room_w * room_max_ar
+            max_h = min(max_h, room_max_h)
+        h = max(min(h, max_h), min_h)
         band_heights.append(h)
 
-    # Scale to fit
+    # Scale to fit — preserving minimum heights
     total_h = sum(band_heights)
     if total_h > available_h:
-        scale = available_h / total_h
-        band_heights = [h * scale for h in band_heights]
+        # Compute the minimum heights each band needs
+        min_heights = []
+        for band in all_bands:
+            has_bed = any(r['room_type'] in ('master_bedroom', 'bedroom', 'living') for r in band)
+            has_bath = any(r['room_type'] in ('bathroom', 'toilet') for r in band)
+            mh = 10.0 if has_bed else (7.0 if has_bath else 7.0)
+            if len(band) == 1:
+                room_max_ar = _max_ar(band[0]['room_type'])
+                ar_min = uw / room_max_ar
+                mh = max(mh, ar_min)
+            min_heights.append(mh)
+
+        # First, set all bands to their minimums
+        total_min = sum(min_heights)
+        if total_min <= available_h:
+            # Extra space beyond minimums — distribute proportionally
+            extra = available_h - total_min
+            above_min = [max(0, bh - mh) for bh, mh in zip(band_heights, min_heights)]
+            total_above = sum(above_min) or 1
+            band_heights = [
+                mh + extra * (am / total_above)
+                for mh, am in zip(min_heights, above_min)
+            ]
+        else:
+            # Even minimums don't fit — scale minimums
+            scale = available_h / total_min
+            band_heights = [mh * scale for mh in min_heights]
 
     # Snap heights
     band_heights = [_snap(h) for h in band_heights]
@@ -1354,11 +1563,28 @@ def _generate_tall_layout(
         n = len(band)
         if n == 1:
             r = dict(band[0])
+            rw = uw
+            # Cap bathroom/service room widths in single-room bands
+            if r['room_type'] in ('bathroom', 'toilet', 'utility', 'store'):
+                max_w = 8.0
+                rw = min(uw, max_w)
             r['_placed'] = {
                 'x': round(ux, 2), 'y': round(cy, 2),
-                'w': round(uw, 2), 'h': round(bh, 2),
+                'w': round(rw, 2), 'h': round(bh, 2),
             }
             placed.append(r)
+            # If bathroom didn't fill the width, add a utility room
+            if rw < uw - 3.0:
+                placed.append({
+                    'room_type': 'utility',
+                    'name': 'Wash Area',
+                    'zone': 'service',
+                    'target_area': (uw - rw) * bh,
+                    '_placed': {
+                        'x': round(ux + rw, 2), 'y': round(cy, 2),
+                        'w': round(uw - rw, 2), 'h': round(bh, 2),
+                    },
+                })
         elif n >= 2:
             # Split width proportionally to target areas
             areas = [r['target_area'] for r in band]

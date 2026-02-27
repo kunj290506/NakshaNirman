@@ -2445,9 +2445,10 @@ def generate_gnn_floor_plan(
         rooms_config['master_bedroom'] = master_bed_count
     if regular_bed_count > 0:
         rooms_config['bedroom'] = regular_bed_count
-    # Total bathrooms = attached (one per master) + extra common bathrooms
+    # Total bathrooms = max of user-requested and attached (one per master)
+    # User says "1 bathroom" meaning 1 total, not 1 extra beyond attached.
     attached_bath_count = master_bed_count
-    rooms_config['bathroom'] = max(bathrooms + attached_bath_count, 1)
+    rooms_config['bathroom'] = max(bathrooms, attached_bath_count, 1)
     rooms_config['kitchen'] = max(kitchens, 1)
 
     # Only add extras the user explicitly selected

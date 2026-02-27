@@ -333,7 +333,7 @@ export default function PlanPreview({ plan }) {
                     filter="url(#wall-shadow)"
                 />
 
-                {/* Room polygons — zone-colored fills, thin interior walls */}
+                {/* Room polygons — zone-colored fills, subtle interior walls */}
                 {plan.rooms.map((room, i) => {
                     const colors = getRoomColor(room)
                     return (
@@ -341,10 +341,9 @@ export default function PlanPreview({ plan }) {
                             key={`room-${i}`}
                             d={toPathD(room.polygon)}
                             fill={colors.fill}
-                            stroke="#1E293B"
-                            strokeWidth={innerWall}
+                            stroke={colors.stroke || '#CBD5E1'}
+                            strokeWidth={innerWall * 0.6}
                             strokeLinejoin="miter"
-                            filter="url(#room-glow)"
                         />
                     )
                 })}
