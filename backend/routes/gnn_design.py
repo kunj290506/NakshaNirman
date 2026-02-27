@@ -42,7 +42,7 @@ class GNNDesignRequest(BaseModel):
     # Room preferences
     total_area: float = Field(default=1200, ge=200, le=10000)
     bedrooms: int = Field(default=2, ge=0, le=8)
-    bathrooms: int = Field(default=1, ge=1, le=6)
+    bathrooms: int = Field(default=0, ge=0, le=6)
     kitchens: int = Field(default=1, ge=0, le=3)
     floors: int = Field(default=1, ge=1, le=4)
     extras: Optional[List[str]] = []
@@ -122,19 +122,23 @@ async def gnn_design(req: GNNDesignRequest, db: AsyncSession = Depends(get_db)):
         bedrooms = req.bedrooms
         bathrooms = req.bathrooms
         kitchens = req.kitchens
+        master_bedrooms = None  # will be passed to engine
         extras = list(req.extras or [])
 
         if req.rooms:
             # Parse frontend room format [{room_type, quantity}, ...]
-            bed_count = 0
+            master_bed_count = 0
+            regular_bed_count = 0
             bath_count = 0
             kitchen_count = 0
             extra_list = []
             for r in req.rooms:
                 rtype = r.get('room_type', '')
                 qty = r.get('quantity', 1)
-                if rtype in ('master_bedroom', 'bedroom'):
-                    bed_count += qty
+                if rtype == 'master_bedroom':
+                    master_bed_count += qty
+                elif rtype == 'bedroom':
+                    regular_bed_count += qty
                 elif rtype == 'bathroom':
                     bath_count += qty
                 elif rtype == 'kitchen':
@@ -144,16 +148,24 @@ async def gnn_design(req: GNNDesignRequest, db: AsyncSession = Depends(get_db)):
                 else:
                     for _ in range(qty):
                         extra_list.append(rtype)
-            if bed_count > 0:
-                bedrooms = bed_count
+            total_beds = master_bed_count + regular_bed_count
+            if total_beds > 0:
+                bedrooms = total_beds
+                master_bedrooms = master_bed_count  # how many are master
             if bath_count > 0:
-                bathrooms = bath_count
+                bathrooms = bath_count  # EXTRA common bathrooms only
             if kitchen_count > 0:
                 kitchens = kitchen_count
             if extra_list:
                 extras = extra_list
 
         # Generate floor plan
+        logger.info(
+            f"GNN design request: total_area={req.total_area}, bedrooms={bedrooms}, "
+            f"master_bedrooms={master_bedrooms}, bathrooms={bathrooms}, "
+            f"kitchens={kitchens}, floors={req.floors}, "
+            f"extras={extras}, rooms_from_frontend={bool(req.rooms)}"
+        )
         layout = generate_gnn_floor_plan(
             boundary_coords=boundary_coords,
             front_door_pos=front_door_pos,
@@ -166,6 +178,7 @@ async def gnn_design(req: GNNDesignRequest, db: AsyncSession = Depends(get_db)):
             model_path=req.model_path,
             plot_width=req.plot_width,
             plot_length=req.plot_length,
+            master_bedrooms=master_bedrooms,
         )
 
         # Generate DXF export if project_id provided

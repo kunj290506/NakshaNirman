@@ -24,7 +24,6 @@ export default function Workspace() {
     const [sessionId] = useState(() => generateSessionId())
     const [error, setError] = useState(null)
 
-    const [engine, setEngine] = useState('gnn')  // 'gnn' or 'arch'
     const [backendHealthy, setBackendHealthy] = useState(true)
     const backendUrl = '/api'
 
@@ -121,43 +120,48 @@ export default function Workspace() {
 
             setLoadingMessage('Generating your floor plan...')
 
+            // Merge extras from room cards + requirements checkboxes
+            const roomExtras = rooms
+                .filter(r => !['master_bedroom', 'bedroom', 'bathroom', 'kitchen', 'living'].includes(r.room_type))
+                .map(r => r.room_type)
+            const reqExtras = requirements?.extras || []
+            const allExtras = [...new Set([...roomExtras, ...reqExtras])]
+
             const roomPayload = {
                 project_id: pid,
                 total_area: totalArea,
                 rooms: rooms,
-                bedrooms: rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
-                bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
-                floors: 1,
-                extras: rooms.filter(r => !['master_bedroom', 'bedroom', 'bathroom', 'kitchen', 'living'].includes(r.room_type)).map(r => r.room_type),
+                bedrooms: requirements?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
+                bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
+                kitchens: rooms.filter(r => r.room_type === 'kitchen').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
+                floors: requirements?.floors || 1,
+                extras: allExtras,
                 boundary_polygon: boundary || null,
             }
 
-            // Select endpoint based on engine choice
-            const endpoints = engine === 'gnn'
-                ? ['/api/gnn/design', '/api/engine/design', '/api/generate-floorplan']
-                : ['/api/engine/design', '/api/gnn/design', '/api/generate-floorplan']
+            console.log('[Design] Sending payload:', JSON.stringify(roomPayload, null, 2))
 
+            // Use GNN design engine
             let data
-            for (const endpoint of endpoints) {
-                if (data) break
-                try {
-                    const res = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(roomPayload),
-                    })
-                    if (res.ok) {
-                        const json = await res.json()
-                        // Both engine and gnn routes return { layout: {...} }
-                        if (json.layout) {
-                            data = { plan: json.layout, project_id: json.project_id || pid }
-                        } else if (json.plan) {
-                            data = json
-                        }
+            try {
+                const res = await fetch('/api/gnn/design', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(roomPayload),
+                })
+                if (res.ok) {
+                    const json = await res.json()
+                    if (json.layout) {
+                        data = { plan: json.layout, project_id: json.project_id || pid }
+                    } else if (json.plan) {
+                        data = json
                     }
-                } catch (err) {
-                    console.warn(`${endpoint} failed, trying next:`, err)
+                } else {
+                    const errData = await res.json().catch(() => ({}))
+                    throw new Error(errData.detail || 'Design generation failed')
                 }
+            } catch (err) {
+                throw new Error(err.message || 'Failed to connect to design engine')
             }
             if (data.plan) {
                 setPlan(data.plan)
@@ -309,38 +313,12 @@ export default function Workspace() {
             {/* Sidebar - Input Panel */}
             <div className="sidebar">
                 <div className="sidebar-header">
-                    <span className="sidebar-title">Input</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.72rem' }}>
-                        <span style={{ color: '#666', fontWeight: 500 }}>Engine:</span>
-                        <button
-                            onClick={() => setEngine('gnn')}
-                            style={{
-                                padding: '0.15rem 0.45rem',
-                                borderRadius: '4px',
-                                border: engine === 'gnn' ? '1.5px solid #000' : '1px solid #ccc',
-                                background: engine === 'gnn' ? '#000' : '#fff',
-                                color: engine === 'gnn' ? '#fff' : '#555',
-                                fontWeight: engine === 'gnn' ? 700 : 500,
-                                fontSize: '0.68rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.15s',
-                            }}
-                        >GNN</button>
-                        <button
-                            onClick={() => setEngine('arch')}
-                            style={{
-                                padding: '0.15rem 0.45rem',
-                                borderRadius: '4px',
-                                border: engine === 'arch' ? '1.5px solid #000' : '1px solid #ccc',
-                                background: engine === 'arch' ? '#000' : '#fff',
-                                color: engine === 'arch' ? '#fff' : '#555',
-                                fontWeight: engine === 'arch' ? 700 : 500,
-                                fontSize: '0.68rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.15s',
-                            }}
-                        >Arch</button>
-                    </div>
+                    <span className="sidebar-title">
+                        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: -2 }}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                        </svg>
+                        Design Controls
+                    </span>
                 </div>
                 <div className="tab-switcher">
                     <button

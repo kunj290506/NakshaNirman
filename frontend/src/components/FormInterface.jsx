@@ -31,6 +31,50 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
     const fileInputRef = useRef(null)
     const [requirements, setRequirements] = useState(null)
 
+    // Sync RequirementsForm values → room card selections whenever requirements change
+    const handleRequirementsChange = (req) => {
+        setRequirements(req)
+        if (!req) return
+
+        setSelectedRooms(prev => {
+            const next = { ...prev }
+
+            // Sync bedrooms: ALL are master_bedroom (each auto-gets attached bathroom)
+            const totalBed = parseInt(req.bedrooms) || 0
+            if (totalBed >= 1) {
+                next.master_bedroom = { selected: true, qty: totalBed }
+                next.bedroom = { selected: false, qty: 1 }
+            } else {
+                next.master_bedroom = { selected: false, qty: 1 }
+                next.bedroom = { selected: false, qty: 1 }
+            }
+
+            // Sync bathrooms — EXTRA common bathrooms only (attached baths auto-created)
+            const totalBath = parseInt(req.bathrooms) || 0
+            next.bathroom = { selected: totalBath > 0, qty: Math.max(totalBath, 0) }
+
+            // Sync kitchen
+            const totalKitchen = parseInt(req.kitchen) || 0
+            if (totalKitchen >= 1) {
+                next.kitchen = { selected: true, qty: totalKitchen }
+            } else {
+                next.kitchen = { selected: false, qty: 1 }
+            }
+
+            // Sync extras from checkboxes
+            next.balcony = { selected: !!req.balcony, qty: prev.balcony?.qty || 1 }
+            next.pooja = { selected: !!req.pooja_room, qty: prev.pooja?.qty || 1 }
+            next.garage = { selected: !!req.parking, qty: prev.garage?.qty || 1 }
+
+            return next
+        })
+
+        // Sync max_area to totalArea if user entered it
+        if (req.max_area && req.max_area > 0) {
+            setTotalArea(Math.round(req.max_area * 10.764))  // sq.m → sq.ft
+        }
+    }
+
     const toggleRoom = (key) => {
         setSelectedRooms(prev => ({
             ...prev,
@@ -62,7 +106,14 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                 room_type: key,
                 quantity: v.qty || 1,
             }))
-        onGenerate(rooms, totalArea, requirements)
+        // Merge requirements data so floors + extras always reach the backend
+        const mergedRequirements = {
+            ...(requirements || {}),
+            floors: requirements?.floors || 1,
+            bedrooms: rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
+            bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+        }
+        onGenerate(rooms, totalArea, mergedRequirements)
     }
 
     const selectedCount = Object.values(selectedRooms).filter(v => v.selected).length
@@ -141,7 +192,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
 
                     <div style={{ marginBottom: '0.8rem' }}>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.45rem', fontWeight: 600 }}>Requirements</div>
-                        <RequirementsForm value={requirements} onChange={(v) => setRequirements(v)} />
+                        <RequirementsForm value={requirements} onChange={handleRequirementsChange} />
                     </div>
 
                     {/* Plot mode: manual area entry */}
@@ -366,6 +417,12 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                     {inputMode === 'boundary' && boundaryData
                                         ? `${boundaryData.area?.toFixed(1)} sq.m`
                                         : `${totalArea} sq ft`}
+                                </div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Floors</div>
+                                <div style={{ fontSize: '1.15rem', fontWeight: 700 }}>
+                                    {requirements?.floors || 1}
                                 </div>
                             </div>
                             <div style={{ textAlign: 'right' }}>

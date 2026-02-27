@@ -642,17 +642,16 @@ _MAX_AREAS = {
 
 
 def _build_room_list(rooms_config, total_area):
-    """Build canonical room list with Indian naming from rooms_config dict."""
+    """Build canonical room list with Indian naming from rooms_config dict.
+    
+    Strictly follows user's rooms_config — does NOT auto-add rooms.
+    Master bedrooms (rooms_config['master_bedroom']) each get an attached bathroom
+    auto-created. The 'bathroom' count = EXTRA common bathrooms.
+    """
     total_beds = rooms_config.get('master_bedroom', 0) + rooms_config.get('bedroom', 0)
 
-    # Auto-add pooja for 3BHK+
-    if total_beds >= 3 and rooms_config.get('pooja', 0) == 0:
-        rooms_config['pooja'] = 1
-
-    # Ensure attached bathrooms (1 per bedroom)
+    # Respect user's bathroom count — do NOT override
     total_baths = rooms_config.get('bathroom', 0) + rooms_config.get('toilet', 0)
-    if total_baths < total_beds:
-        rooms_config['bathroom'] = total_beds
 
     def _pct(rtype):
         lo, hi = ROOM_AREA_RATIOS.get(rtype, (0.04, 0.06))
@@ -673,14 +672,21 @@ def _build_room_list(rooms_config, total_area):
     # Named rooms (Indian style)
     living = _make('living', 'Drawing Room')
 
+    # Create N master bedrooms (each is a bedroom with attached bathroom)
+    n_master = rooms_config.get('master_bedroom', 0)
     master = None
-    if rooms_config.get('master_bedroom', 0) > 0:
-        master = _make('master_bedroom', 'Master Bed Room')
+    if n_master > 0:
+        master = _make('master_bedroom',
+                        'Master Bed Room' if n_master == 1 else 'Master Bed Room 1')
 
     bedrooms = []
+    # Additional master bedrooms (2nd, 3rd, etc.) go into bedrooms list
+    for i in range(1, n_master):
+        bedrooms.append(_make('master_bedroom', f'Master Bed Room {i + 1}'))
+
     n_bed = rooms_config.get('bedroom', 0)
     for i in range(n_bed):
-        lbl = f'Bed Room {i + 2}' if (master or n_bed > 1) else 'Bed Room'
+        lbl = f'Bed Room {i + 1}'
         bedrooms.append(_make('bedroom', lbl))
 
     kitchens = [_make('kitchen', 'Kitchen')
@@ -869,17 +875,48 @@ def _place_grid(cells, ux, uy, uw, ul, place_fn):
         cy += rh
 
 
+# ---- Layout helpers -------------------------------------------------------
+
+def _extract_masters_and_attached(master, beds, baths):
+    """
+    Collect ALL master bedrooms and assign one attached bathroom per master.
+
+    Returns:
+        all_masters: list of master bedroom dicts
+        att_baths:   list of attached bathroom dicts (same order as masters)
+        remaining_beds:  regular bedrooms (non-master) left over
+        remaining_baths: common bathrooms left over
+    """
+    all_masters = []
+    if master:
+        all_masters.append(master)
+    extra_masters = [b for b in beds if b.get('room_type') == 'master_bedroom']
+    remaining_beds = [b for b in beds if b.get('room_type') != 'master_bedroom']
+    all_masters.extend(extra_masters)
+
+    remaining_baths = list(baths)
+    att_baths = []
+    for m in all_masters:
+        if remaining_baths:
+            ab = remaining_baths.pop(0)
+            ab['_attached_to'] = 'master_bedroom'
+            att_baths.append(ab)
+
+    return all_masters, att_baths, remaining_beds, remaining_baths
+
+
 # ---- Layout strategies ---------------------------------------------------
 
 def _layout_grid_2x3(rl, ux, uy, uw, ul, place_fn):
     """
     2 rows × 3 columns — for wide/square plots.
-    Like the reference: bedrooms top, living/dining bottom.
+    All bedrooms in bottom row flanking Living for direct accessibility.
+    Attached bathroom above Master Bedroom.
 
     ┌─────────────┬───────────┬─────────────┐
-    │ Master Bed  │ Bed Room  │Kitchen+Wash │  ← Top (private/service)
+    │ Att. Bath   │ Kitchen   │ Service     │  ← Top (service, back)
     ├─────────────┼───────────┼─────────────┤
-    │ Bed Room    │Living Room│ Dining Area │  ← Bottom (public, entry)
+    │ Master Bed  │Living Room│ Bed / Dining│  ← Bottom (entry, beds flank living)
     └─────────────┴───────────┴─────────────┘
     """
     living = rl['living']
@@ -896,35 +933,43 @@ def _layout_grid_2x3(rl, ux, uy, uw, ul, place_fn):
     stairs = list(rl['staircases'])
     balconies = list(rl['balconies'])
 
-    # Service rooms: pick wash area for kitchen-adjacent
-    wash = baths.pop(0) if baths else None
+    # All master bedrooms + auto-attach one bathroom per master
+    all_masters, att_baths, beds, baths = _extract_masters_and_attached(master, beds, baths)
 
-    # Bottom row (front/road): Bed/Study | Living Room | Dining
-    bottom_left = beds.pop(0) if beds else (studies.pop(0) if studies else None)
+    # Bottom row (road-facing): Master1 | Living | Master2/Bed/Dining
+    # All bedrooms flanking Living for direct accessibility
+    bottom_left = all_masters[0] if all_masters else (beds.pop(0) if beds else None)
     bottom_center = living
-    bottom_right = dinings.pop(0) if dinings else (
-        studies.pop(0) if studies else (poojas.pop(0) if poojas else None))
+    bottom_right = (all_masters[1] if len(all_masters) > 1 else
+                    (beds.pop(0) if beds else
+                     (dinings.pop(0) if dinings else
+                      (studies.pop(0) if studies else None))))
 
-    # Top row (back/private): Master | Bed/Stair | Kitchen+Wash
-    top_left = master if master else (beds.pop(0) if beds else None)
-    top_center = beds.pop(0) if beds else (
-        stairs.pop(0) if stairs else (stores.pop(0) if stores else None))
-
-    # Kitchen + Wash merged into top-right (or just kitchen)
-    # We'll place kitchen and wash stacked if both exist
-    top_right = kitchens.pop(0) if kitchens else None
+    # Top row (back): AttBath1 (above master1) | Kitchen | AttBath2/Service
+    top_left = att_baths[0] if att_baths else None
+    top_center = kitchens.pop(0) if kitchens else None
+    top_right = (att_baths[1] if len(att_baths) > 1 else
+                 (dinings.pop(0) if dinings else
+                  (stores.pop(0) if stores else
+                   (poojas.pop(0) if poojas else None))))
 
     # Build 2 rows
     bottom_row = [r for r in [bottom_left, bottom_center, bottom_right] if r]
     top_row = [r for r in [top_left, top_center, top_right] if r]
 
-    # Any remaining rooms: add wash to top row, baths near beds
-    remaining = baths + toilets + stores + poojas + utils + stairs + balconies + studies
-    if wash:
-        remaining.insert(0, wash)
+    # Remaining rooms — overflow masters/att_baths + extra beds go to TOP row
+    overflow = all_masters[2:] + att_baths[2:]
+    remaining = overflow + beds + baths + toilets + stores + poojas + utils + stairs + balconies + studies + dinings
+    extra_beds = [rm for rm in remaining if rm.get('room_type') in ('bedroom', 'master_bedroom')]
+    other_remaining = [rm for rm in remaining if rm.get('room_type') not in ('bedroom', 'master_bedroom')]
 
-    # Distribute remaining to shorter row
-    for rm in remaining:
+    # Insert extra beds in top row (position above Living column area)
+    insert_idx = 1 if att_baths else 0
+    for b in extra_beds:
+        top_row.insert(insert_idx, b)
+        insert_idx += 1
+
+    for rm in other_remaining:
         if len(top_row) <= len(bottom_row):
             top_row.append(rm)
         else:
@@ -937,13 +982,16 @@ def _layout_grid_2x3(rl, ux, uy, uw, ul, place_fn):
 def _layout_grid_3x2(rl, ux, uy, uw, ul, place_fn):
     """
     3 rows × 2 columns — for tall/narrow plots.
+    Kitchen next to Living (bottom row) for easy access.
+    Master above Living (same column = adjacent).
+    Attached bath above Master.
 
     ┌──────────┬──────────┐
-    │ Kitchen  │Wash/Bath │  ← Top (service)
+    │Att. Bath │ Service  │  ← Top (service)
     ├──────────┼──────────┤
-    │ Master   │ Bed Room │  ← Middle (private)
+    │ Master   │ Bed/Dine │  ← Middle (private)
     ├──────────┼──────────┤
-    │ Living   │ Dining   │  ← Bottom (public, entry)
+    │ Living   │ Kitchen  │  ← Bottom (public, entry)
     └──────────┴──────────┘
     """
     living = rl['living']
@@ -960,28 +1008,45 @@ def _layout_grid_3x2(rl, ux, uy, uw, ul, place_fn):
     stairs = list(rl['staircases'])
     balconies = list(rl['balconies'])
 
-    # Bottom: Living + Dining/Bed
-    bot_right = dinings.pop(0) if dinings else (
-        beds.pop(0) if beds else (studies.pop(0) if studies else None))
+    # All master bedrooms + auto-attach one bathroom per master
+    all_masters, att_baths, beds, baths = _extract_masters_and_attached(master, beds, baths)
+
+    # Bottom: Living + Kitchen (kitchen easily accessible from living)
+    kitchen = kitchens.pop(0) if kitchens else None
     bottom = [living]
-    if bot_right:
-        bottom.append(bot_right)
+    if kitchen:
+        bottom.append(kitchen)
 
-    # Middle: Master + Bed
-    mid_left = master if master else (beds.pop(0) if beds else None)
-    mid_right = beds.pop(0) if beds else (
-        studies.pop(0) if studies else (stairs.pop(0) if stairs else None))
-    middle = [r for r in [mid_left, mid_right] if r]
+    # Middle: All masters + remaining bedroom (masters above living = adjacent)
+    middle = list(all_masters)
+    if beds:
+        middle.append(beds.pop(0))
+    if not middle:
+        filler = dinings.pop(0) if dinings else (studies.pop(0) if studies else None)
+        if filler:
+            middle.append(filler)
 
-    # Top: Kitchen + Wash
+    # Top: Attached baths + remaining service
+    top = list(att_baths)
     wash = baths.pop(0) if baths else None
-    top_left = kitchens.pop(0) if kitchens else None
-    top_right = wash
-    top = [r for r in [top_left, top_right] if r]
+    if wash:
+        top.append(wash)
+    if not top:
+        top_fill = (dinings.pop(0) if dinings else
+                    (stores.pop(0) if stores else
+                     (toilets.pop(0) if toilets else None)))
+        if top_fill:
+            top.append(top_fill)
 
-    # Distribute remaining rooms
+    # Distribute remaining — bedrooms to BOTTOM row for living adjacency
     remaining = beds + baths + toilets + stores + poojas + utils + stairs + balconies + dinings + studies
-    for rm in remaining:
+    extra_beds = [rm for rm in remaining if rm.get('room_type') in ('bedroom', 'master_bedroom')]
+    other_remaining = [rm for rm in remaining if rm.get('room_type') not in ('bedroom', 'master_bedroom')]
+
+    for b in extra_beds:
+        bottom.append(b)
+
+    for rm in other_remaining:
         lens = [len(bottom), len(middle), len(top)]
         min_idx = lens.index(min(lens))
         [bottom, middle, top][min_idx].append(rm)
@@ -993,16 +1058,18 @@ def _layout_grid_3x2(rl, ux, uy, uw, ul, place_fn):
 def _layout_wrap(rl, ux, uy, uw, ul, place_fn):
     """
     Rooms wrap around central Living Room — for large square plots.
+    All bedrooms in left column (adjacent to Living via shared vertical wall).
+    Attached bathroom next to Master in left column.
 
-    ┌──────────┬──────────┬──────────┐
-    │ Master   │ Kitchen  │Wash Area │  ← Top
-    ├──────────┼──────────┴──────────┤
-    │ Bed Room │                     │
-    ├──────────┤  Living / Drawing   │  ← Center (large)
-    │ Study    │      Room          │
-    ├──────────┼──────────┬──────────┤
-    │ Puja     │ Dining   │ Stair   │  ← Bottom
-    └──────────┴──────────┴──────────┘
+    ┌──────────┬──────────────────────┐
+    │ Master   │                      │
+    ├──────────┤                      │
+    │Att. Bath │  Living / Drawing    │
+    ├──────────┤      Room            │
+    │ Bed Room │                      │
+    ├──────────┼──────────┬───────────┤
+    │ Study    │ Kitchen  │ Wash/Dine │  ← Bottom (service)
+    └──────────┴──────────┴───────────┘
     """
     living = rl['living']
     master = rl['master']
@@ -1018,39 +1085,44 @@ def _layout_wrap(rl, ux, uy, uw, ul, place_fn):
     stairs = list(rl['staircases'])
     balconies = list(rl['balconies'])
 
-    # Gather all remaining rooms into the groups BEFORE placement
     # Left strip width (~35% of plot)
     left_w = uw * 0.35
     right_w = uw - left_w
 
-    # Left column: stacked rooms (bedrooms + master)
+    # Left column: Masters + Attached Baths + remaining Bedrooms
+    # All rooms here share vertical wall with Living (center-right)
+    all_masters, att_baths_list, beds, baths = _extract_masters_and_attached(master, beds, baths)
     left_rooms = []
-    if master:
-        left_rooms.append(master)
+    for i, m in enumerate(all_masters):
+        left_rooms.append(m)
+        # Place attached bath right after each master (shares horizontal wall)
+        if i < len(att_baths_list):
+            left_rooms.append(att_baths_list[i])
     for b in beds:
         left_rooms.append(b)
-    # Also add puja/study to left column
+
+    # Secondary rooms for bottom-left area (puja/study go here)
+    secondary_left = []
     if poojas:
-        left_rooms.extend(poojas)
+        secondary_left.extend(poojas)
         poojas = []
     if studies:
-        left_rooms.extend(studies)
+        secondary_left.extend(studies)
         studies = []
 
-    # Top-right: Kitchen + Wash + extra baths
+    # Bottom-right service row: Kitchen + remaining baths + dining
     kitchen = kitchens.pop(0) if kitchens else None
-    top_right = [r for r in [kitchen] if r]
-    # All bathrooms go into top-right service row
+    bot_right = [r for r in [kitchen] if r]
     for b in baths:
-        top_right.append(b)
+        bot_right.append(b)
     baths = []
     for t in toilets:
-        top_right.append(t)
+        bot_right.append(t)
     toilets = []
 
-    # Bottom-right: Dining + stairs + stores + utilities
     dining = dinings.pop(0) if dinings else None
-    bot_right = [r for r in [dining] if r]
+    if dining:
+        bot_right.append(dining)
     for s in stairs:
         bot_right.append(s)
     stairs = []
@@ -1069,23 +1141,23 @@ def _layout_wrap(rl, ux, uy, uw, ul, place_fn):
     for d in dinings:
         bot_right.append(d)
 
-    # Top/bottom heights (~28% each, living gets remaining ~44%)
-    service_h = ul * 0.28
-    living_h = ul - 2 * service_h
-
-    # Place left column (full height, stacked)
-    if left_rooms:
-        n = len(left_rooms)
-        h_each = ul / n
-        cy = uy
-        for i, rm in enumerate(left_rooms):
-            rh = h_each if i < n - 1 else (uy + ul) - cy
-            place_fn(rm, ux, cy, left_w, max(rh, 5))
-            cy += rh
+    # Service row height (~25%), living gets the rest
+    service_h = ul * 0.25
+    living_h = ul - service_h
 
     rx = ux + left_w
 
-    # Place bottom-right row
+    # Place bottom-left secondary rooms (in service row area)
+    if secondary_left:
+        sl_n = len(secondary_left)
+        sl_h_each = service_h / sl_n
+        cy = uy
+        for i, rm in enumerate(secondary_left):
+            rh = sl_h_each if i < sl_n - 1 else (uy + service_h) - cy
+            place_fn(rm, ux, cy, left_w, max(rh, 5))
+            cy += rh
+
+    # Place bottom-right service row
     if bot_right:
         cw_each = right_w / len(bot_right)
         cx = rx
@@ -1094,33 +1166,36 @@ def _layout_wrap(rl, ux, uy, uw, ul, place_fn):
             place_fn(rm, cx, uy, max(w, 5), service_h)
             cx += w
 
-    # Place Living (center-right)
+    # Place left column private rooms aligned with Living's Y range
     living_y = uy + service_h
-    living['target_area'] = max(living['target_area'], right_w * living_h * 0.7)
-    place_fn(living, rx, living_y, right_w, living_h)
+    actual_living_h = (uy + ul) - living_y
+    if left_rooms:
+        n = len(left_rooms)
+        h_each = actual_living_h / n
+        cy = living_y
+        for i, rm in enumerate(left_rooms):
+            rh = h_each if i < n - 1 else (uy + ul) - cy
+            place_fn(rm, ux, cy, left_w, max(rh, 5))
+            cy += rh
 
-    # Place top-right row
-    top_y = uy + service_h + living_h
-    actual_top_h = (uy + ul) - top_y
-    if top_right:
-        cw_each = right_w / len(top_right)
-        cx = rx
-        for i, rm in enumerate(top_right):
-            w = cw_each if i < len(top_right) - 1 else (ux + uw) - cx
-            place_fn(rm, cx, top_y, max(w, 5), actual_top_h)
-            cx += w
+    # Place Living (center-right, above service row)
+    living['target_area'] = max(living['target_area'], right_w * actual_living_h * 0.7)
+    place_fn(living, rx, living_y, right_w, actual_living_h)
 
 
 def _layout_grid_2x2(rl, ux, uy, uw, ul, place_fn, wide=True):
     """
     Simple 2×2 grid for small (1BHK) homes.
+    Bedroom adjacent to Living; attached bath adjacent to bedroom.
 
     Wide:                     Tall:
     ┌──────────┬──────────┐   ┌──────────┐
-    │ Bed Room │ Kitchen  │   │ Bed Room │
+    │Att. Bath │ Kitchen  │   │ Kitchen  │
     ├──────────┼──────────┤   ├──────────┤
-    │ Living   │ Bath     │   │ Kitchen  │
+    │ Bed Room │ Living   │   │Att. Bath │
     └──────────┴──────────┘   ├──────────┤
+                              │ Bed Room │
+                              ├──────────┤
                               │ Living   │
                               └──────────┘
     """
@@ -1134,19 +1209,31 @@ def _layout_grid_2x2(rl, ux, uy, uw, ul, place_fn, wide=True):
     poojas = list(rl['poojas'])
     utils = list(rl['utilities'])
 
-    bed = master if master else (beds.pop(0) if beds else None)
+    # All master bedrooms + auto-attach one bathroom per master
+    all_masters, att_baths_list, beds, baths = _extract_masters_and_attached(master, beds, baths)
+    bed = all_masters[0] if all_masters else (beds.pop(0) if beds else None)
     kitchen = kitchens.pop(0) if kitchens else None
-    bath = baths.pop(0) if baths else (toilets.pop(0) if toilets else None)
 
-    remaining = beds + baths + toilets + stores + poojas + utils
+    att_bath = att_baths_list[0] if att_baths_list else (
+        baths.pop(0) if baths else (toilets.pop(0) if toilets else None))
+    if att_bath and bed and '_attached_to' not in att_bath:
+        att_bath['_attached_to'] = bed.get('room_type', 'master_bedroom')
+
+    # Overflow masters + their att_baths
+    extra_masters = all_masters[1:]
+    extra_att = att_baths_list[1:]
+    remaining = extra_masters + extra_att + beds + baths + toilets + stores + poojas + utils
 
     if wide:
-        bottom = [living]
-        if bath:
-            bottom.append(bath)
-        top = []
+        # Bottom: Bed | Living (bedroom adjacent to living via shared wall)
+        bottom = []
         if bed:
-            top.append(bed)
+            bottom.append(bed)
+        bottom.append(living)
+        # Top: AttBath (above bed) | Kitchen
+        top = []
+        if att_bath:
+            top.append(att_bath)
         if kitchen:
             top.append(kitchen)
         for rm in remaining:
@@ -1156,21 +1243,20 @@ def _layout_grid_2x2(rl, ux, uy, uw, ul, place_fn, wide=True):
                 bottom.append(rm)
         grid = [bottom, top]
     else:
-        # Tall: single-column or 2-col
+        # Tall: Living (bottom), Bed (above living), AttBath (above bed), Kitchen (top)
         col = [living]
-        if kitchen:
-            col.append(kitchen)
         if bed:
             col.append(bed)
-        if bath:
-            col.append(bath)
+        if att_bath:
+            col.append(att_bath)
+        if kitchen:
+            col.append(kitchen)
         col.extend(remaining)
         # Split into 2 columns if more than 3 rooms
         if len(col) > 3:
             mid = len(col) // 2
             grid = [[col[i] for i in range(mid)],
                     [col[i] for i in range(mid, len(col))]]
-            # Transpose: treat as rows
         else:
             grid = [[r] for r in col]
 
@@ -1180,12 +1266,17 @@ def _layout_grid_2x2(rl, ux, uy, uw, ul, place_fn, wide=True):
 def _layout_column_3(rl, ux, uy, uw, ul, place_fn):
     """
     3-column layout with center service core — for compact narrow plots.
+    All bedrooms in left column with Living for accessibility.
+    Kitchen in center column bottom (adjacent to Living) for easy access.
+    Attached bathroom in center column top (adjacent to Master).
 
-    ┌──────────┬───────┬──────────┐
-    │ Bed Room │ Store │ Kitchen  │
-    ├──────────┤ Toilet├──────────┤
-    │ Drawing  │ Bath  │ Bed Room │
-    └──────────┴───────┴──────────┘
+    ┌──────────┬───────────┬──────────┐
+    │ Master   │Att. Bath  │ Pooja    │
+    ├──────────┤  Toilet   ├──────────┤
+    │ Bed Room │  Store    │ Dining   │
+    ├──────────┤           ├──────────┤
+    │ Living   │ Kitchen   │ Extra    │
+    └──────────┴───────────┴──────────┘
     """
     living = rl['living']
     master = rl['master']
@@ -1201,19 +1292,28 @@ def _layout_column_3(rl, ux, uy, uw, ul, place_fn):
     stairs = list(rl['staircases'])
     balconies = list(rl['balconies'])
 
+    # All master bedrooms + auto-attach bathrooms
+    all_masters, att_baths_list, beds, baths = _extract_masters_and_attached(master, beds, baths)
+
+    # Left column: Living (bottom) + regular bedrooms + all Masters (top)
     left = [living]
-    if stairs:
-        left.append(stairs.pop(0))
-    left.extend(dinings)
+    for b in beds:
+        left.append(b)
+    for m in all_masters:
+        left.append(m)
     left.extend(studies)
-    if master:
-        left.append(master)
-    elif beds:
-        left.append(beds.pop(0))
 
-    center = baths + toilets + stores + utils
+    # Center: Kitchen (bottom, adj to Living) + service + Att Baths (top, adj to Masters)
+    center = []
+    kitchen = kitchens.pop(0) if kitchens else None
+    if kitchen:
+        center.append(kitchen)  # bottom of center = adjacent to Living in left
+    center.extend(baths + toilets + stores + utils)
+    for ab in att_baths_list:
+        center.append(ab)  # top of center = adjacent to Masters in left
 
-    right = beds + kitchens + poojas + balconies + stairs
+    # Right: dining + remaining
+    right = dinings + poojas + balconies + stairs + kitchens
 
     # Fallback
     if not right and len(left) > 2:
@@ -1706,10 +1806,17 @@ class FloorPlanBuilder:
                 'doors': [],
                 'windows': [],
             }
+            # Carry attached-bathroom tag from layout strategy
+            if spec.get('_attached_to'):
+                room['_attached_to'] = spec['_attached_to']
             rooms.append(room)
 
         # Assign doors and windows
         rooms = self._assign_doors_windows(rooms, plot_w, plot_l)
+
+        # Clean up internal _attached_to flags after door assignment
+        for room in rooms:
+            room.pop('_attached_to', None)
 
         # Build PlanPreview-compatible fields
         boundary = [list(c) for c in self.boundary_coords]
@@ -1879,20 +1986,40 @@ class FloorPlanBuilder:
                 ]
                 entry_wall = min(edges, key=lambda e: e[1])[0]
                 doors.append({'wall': entry_wall, 'width': 3.5})
-                # Second door toward interior
-                _, interior_wall = _find_nearest(room, ('kitchen', 'dining', 'bedroom', 'master_bedroom'))
+                # Second door toward interior (bedrooms / kitchen)
+                _, interior_wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'kitchen', 'dining'))
                 if interior_wall and interior_wall != entry_wall:
                     doors.append({'wall': interior_wall, 'width': 3})
 
             elif rtype in ('bathroom', 'toilet'):
-                # Door toward nearest bedroom
-                _, wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'living'))
-                doors.append({'wall': wall or 'S', 'width': 2.5})
+                attached_to = room.get('_attached_to')
+                if attached_to:
+                    # ATTACHED bathroom: door ONLY toward the master bedroom
+                    _, wall = _find_nearest(room, (attached_to,))
+                    doors.append({'wall': wall or 'S', 'width': 2.5})
+                else:
+                    # Regular bathroom: door toward nearest bedroom or living
+                    _, wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'living'))
+                    doors.append({'wall': wall or 'S', 'width': 2.5})
 
             elif rtype in ('master_bedroom', 'bedroom'):
-                # Door toward nearest living/bathroom/passage
-                _, wall = _find_nearest(room, ('living', 'foyer', 'bathroom', 'dining'))
+                # Door MUST face toward living room for accessibility
+                _, wall = _find_nearest(room, ('living',))
+                if wall is None:
+                    # Fallback: try foyer or dining
+                    _, wall = _find_nearest(room, ('foyer', 'dining'))
                 doors.append({'wall': wall or 'S', 'width': 3})
+
+                # Master bedroom: additional door toward attached bathroom
+                if rtype == 'master_bedroom':
+                    has_attached = any(
+                        r.get('_attached_to') == 'master_bedroom'
+                        for r in rooms if r.get('room_type') in ('bathroom', 'toilet')
+                    )
+                    if has_attached:
+                        _, bath_wall = _find_nearest(room, ('bathroom', 'toilet'))
+                        if bath_wall and bath_wall != wall:
+                            doors.append({'wall': bath_wall, 'width': 2.5})
 
             elif rtype in ('kitchen',):
                 # Door toward dining or living
@@ -2111,6 +2238,7 @@ def generate_gnn_floor_plan(
     model_path: Optional[str] = None,
     plot_width: Optional[float] = None,
     plot_length: Optional[float] = None,
+    master_bedrooms: Optional[int] = None,
 ) -> Dict:
     """
     Main entry point: Generate a floor plan using the GNN-inspired pipeline.
@@ -2159,28 +2287,30 @@ def generate_gnn_floor_plan(
     if not front_door_pos:
         front_door_pos = ((bounds[0] + bounds[2]) / 2, bounds[1])
 
-    # Step 2: Build room configuration (Indian BHK-style)
+    # Step 2: Build room configuration — strictly from user input
+    # Master bedrooms each auto-get an attached bathroom.
+    # 'bathrooms' from user = EXTRA common bathrooms beyond attached ones.
+    if master_bedrooms is None:
+        # Backward compat: default all bedrooms to master bedrooms
+        master_bedrooms = bedrooms
+    master_bed_count = min(master_bedrooms, bedrooms) if bedrooms > 0 else 0
+    regular_bed_count = max(bedrooms - master_bed_count, 0)
+
     rooms_config = {'living': 1}
-    if bedrooms > 0:
-        rooms_config['master_bedroom'] = 1
-        if bedrooms > 1:
-            rooms_config['bedroom'] = bedrooms - 1
-    # Indian standard: at least 1 bathroom per bedroom (attached bath)
-    rooms_config['bathroom'] = max(bathrooms, bedrooms, 1)
+    if master_bed_count > 0:
+        rooms_config['master_bedroom'] = master_bed_count
+    if regular_bed_count > 0:
+        rooms_config['bedroom'] = regular_bed_count
+    # Total bathrooms = attached (one per master) + extra common bathrooms
+    attached_bath_count = master_bed_count
+    rooms_config['bathroom'] = max(bathrooms + attached_bath_count, 1)
     rooms_config['kitchen'] = max(kitchens, 1)
 
-    # Auto-add dining for 2BHK+ if not explicitly requested
-    if bedrooms >= 2 and 'dining' not in [e.lower().replace(' ', '_') for e in extras]:
-        rooms_config['dining'] = 1
-
+    # Only add extras the user explicitly selected
     for extra in extras:
         extra_lower = extra.lower().replace(' ', '_')
         if extra_lower in ROOM_EMBEDDINGS:
             rooms_config[extra_lower] = rooms_config.get(extra_lower, 0) + 1
-
-    # Auto-add pooja for 3BHK+ (Indian tradition)  
-    if bedrooms >= 3 and rooms_config.get('pooja', 0) == 0:
-        rooms_config['pooja'] = 1
 
     # Step 3: Try GATNet model first
     use_model = False
@@ -2349,9 +2479,7 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
         lines.append("Vastu: " + "; ".join(vastu_notes[:3]) + ".")
 
     # Check attached bathrooms
-    attached = sum(1 for r in rooms if r['room_type'] == 'bathroom')
-    if attached >= bedroom_count:
-        lines.append(f"Attached bathrooms: {attached} (one per bedroom).")
+    lines.append("Master bedroom has attached bathroom. All bedrooms accessible from living room.")
 
     lines.append(
         f"Utilization: {area.get('utilization_percentage', '?')}. "

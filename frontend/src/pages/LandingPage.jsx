@@ -17,8 +17,8 @@ const FEATURES = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
             </svg>
         ),
-        title: 'Smart Floor Plans',
-        desc: 'Automatic room placement with zero overlaps, respecting plot boundaries and following architectural best practices.',
+        title: 'GNN Layout Engine',
+        desc: 'Graph Neural Network-inspired algorithms with smart room adjacency, Vastu compliance, and adaptive layout strategies for any plot shape.',
     },
     {
         icon: (
@@ -121,19 +121,20 @@ export default function LandingPage() {
             <section className="hero">
                 <div className="hero-badge fade-in fade-in-1">
                     <span className="badge-dot"></span>
-                    AI-Powered Floor Plan Generator
+                    GNN-Powered Architecture Engine
                 </div>
                 <h1 className="fade-in fade-in-2">
-                    Your Essential <span className="accent-text">Tool</span> for<br />
-                    Home Design!
+                    AI-Powered <span className="accent-text">Floor Plan</span><br />
+                    Architecture Generator
                 </h1>
                 <p className="hero-subtitle fade-in fade-in-3">
-                    Generate 2D floor plans, 3D models, and CAD exports from simple descriptions.
-                    Upload your plot boundary, configure rooms, and let AI handle the rest.
+                    Generate professional 2D floor plans, 3D models, and CAD exports using our
+                    GNN-inspired layout engine. Upload your plot boundary, configure rooms, and
+                    get Vastu-compliant designs instantly.
                 </p>
                 <div className="hero-buttons fade-in fade-in-4">
                     <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
-                        Start Free Trial <ArrowIcon />
+                        Start Designing <ArrowIcon />
                     </button>
                 </div>
 
@@ -159,10 +160,10 @@ export default function LandingPage() {
                         </div>
                         <div className="dashboard-body">
                             <div className="dashboard-sidebar">
-                                <div className="dash-nav-item active">Form Builder</div>
+                                <div className="dash-nav-item active">Design Form</div>
                                 <div className="dash-nav-item">AI Chat</div>
                                 <div className="dash-nav-item">Upload Boundary</div>
-                                <div className="dash-nav-item">Room Config</div>
+                                <div className="dash-nav-item">GNN Engine</div>
                                 <div className="dash-nav-item">Export</div>
                             </div>
                             <div className="dashboard-canvas">
@@ -301,7 +302,7 @@ export default function LandingPage() {
                             No sign-up required during beta.
                         </p>
                         <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
-                            Start Designing Free <ArrowIcon />
+                            Start Designing Now <ArrowIcon />
                         </button>
                     </div>
                 </div>
@@ -338,9 +339,9 @@ export default function LandingPage() {
                     </div>
                     <div className="footer-col">
                         <h4>Technology</h4>
+                        <a href="#features">GNN Engine</a>
                         <a href="#features">React + Vite</a>
                         <a href="#features">FastAPI</a>
-                        <a href="#features">AI Engine</a>
                         <a href="#features">Three.js</a>
                     </div>
                 </div>

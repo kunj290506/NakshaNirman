@@ -145,7 +145,13 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                         const rooms = data.extracted_data.rooms || extractedRef.current.rooms
                         const totalArea = data.extracted_data.total_area || extractedRef.current.total_area
                         if (totalArea && rooms?.length > 0) {
-                            onGenerate(rooms, totalArea)
+                            const chatRequirements = {
+                                floors: data.extracted_data.floors || data.collected?.floors || 1,
+                                bedrooms: data.extracted_data.bedrooms || data.collected?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
+                                bathrooms: data.extracted_data.bathrooms || data.collected?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+                                extras: data.extracted_data.extras || data.collected?.extras || [],
+                            }
+                            onGenerate(rooms, totalArea, chatRequirements)
                         }
                     }
                 }
@@ -214,7 +220,13 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                         const totalArea = data.extracted_data?.total_area || extractedRef.current.total_area
                         const rooms = data.rooms?.length > 0 ? data.rooms : extractedRef.current.rooms
                         if (totalArea && rooms?.length > 0) {
-                            onGenerate(rooms, totalArea)
+                            const chatRequirements = {
+                                floors: data.extracted_data?.floors || 1,
+                                bedrooms: data.extracted_data?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
+                                bathrooms: data.extracted_data?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+                                extras: data.extracted_data?.extras || [],
+                            }
+                            onGenerate(rooms, totalArea, chatRequirements)
                         }
                     }
                 })

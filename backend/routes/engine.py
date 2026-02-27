@@ -174,6 +174,29 @@ async def engine_design_direct(req: DesignRequest, db: AsyncSession = Depends(ge
         val = getattr(req, field, None)
         if val is not None and field not in input_data:
             input_data[field] = val
+
+    # Parse room counts from rooms list if provided (frontend format)
+    if req.rooms and not input_data.get("bedrooms"):
+        bed_count = 0
+        bath_count = 0
+        extra_list = list(input_data.get("extras", []))
+        for r in req.rooms:
+            rtype = r.get('room_type', '') if isinstance(r, dict) else ''
+            qty = r.get('quantity', 1) if isinstance(r, dict) else 1
+            if rtype in ('master_bedroom', 'bedroom'):
+                bed_count += qty
+            elif rtype == 'bathroom':
+                bath_count += qty
+            elif rtype not in ('kitchen', 'living', ''):
+                for _ in range(qty):
+                    extra_list.append(rtype)
+        if bed_count > 0:
+            input_data["bedrooms"] = bed_count
+        if bath_count > 0:
+            input_data["bathrooms"] = bath_count
+        if extra_list:
+            input_data["extras"] = list(set(extra_list))
+
     input_data["generatePlan"] = True
 
     result = design_generate(input_data)

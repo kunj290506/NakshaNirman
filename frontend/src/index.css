@@ -925,6 +925,9 @@ a {
     font-size: 0.85rem;
     font-weight: 700;
     color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
 }
 
 .tab-switcher {
