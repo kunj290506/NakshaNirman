@@ -138,13 +138,14 @@ PRIORITY = {
 }
 
 # Desired adjacencies (room_type_a, room_type_b)
+# Kitchen must be accessible from Living/Drawing room.
+# Dining must be accessible ONLY from Kitchen (not directly from Living).
 DESIRED_ADJACENCIES = [
     ("master_bedroom", "bathroom"),
     ("bedroom", "bathroom"),
+    ("living", "kitchen"),
     ("kitchen", "dining"),
     ("kitchen", "utility"),
-    ("living", "dining"),
-    ("living", "kitchen"),
 ]
 
 # Forbidden adjacencies
@@ -154,6 +155,9 @@ FORBIDDEN_ADJACENCIES = [
     ("bathroom", "living"),
     ("toilet", "living"),
     ("toilet", "kitchen"),
+    ("dining", "living"),       # Dining must NOT open directly to living
+    ("dining", "bedroom"),      # Dining accessed only from kitchen
+    ("dining", "master_bedroom"),
 ]
 
 
@@ -271,12 +275,14 @@ def build_room_specs(
         "priority": PRIORITY["kitchen"],
     })
     
+    # Dining is placed right after kitchen so they are adjacent.
+    # Dining is accessed ONLY from the kitchen (no direct living room access).
     if "dining" in extras:
         front_rooms.append({
             "room_type": "dining", "name": "Dining Room",
             "zone": "semi_private", "zone_group": "front",
             "target_area": _target("dining"),
-            "priority": PRIORITY["dining"],
+            "priority": PRIORITY["kitchen"] - 1,  # placed right after kitchen
         })
     
     if "balcony" in extras:
@@ -415,6 +421,10 @@ class PerfectLayoutEngine:
         random.shuffle(front_specs)
         random.shuffle(back_specs)
         
+        # Ensure kitchen+dining stay together (dining only accessed from kitchen).
+        # After shuffle, re-order so: other rooms first, then kitchen, then dining.
+        front_specs = self._order_kitchen_dining(front_specs)
+        
         # Reorder back_specs to ensure bathrooms sit next to bedrooms
         back_specs = self._order_for_adjacency(back_specs)
         
@@ -492,8 +502,19 @@ class PerfectLayoutEngine:
     # Adjacency-aware ordering
     # -----------------------------------------------------------------
     
+    def _order_kitchen_dining(self, specs: List[Dict]) -> List[Dict]:
+        """Keep kitchen+dining together: [other rooms..., kitchen, dining].
+        This ensures the treemap splits them into the same sub-zone so
+        dining is adjacent to kitchen, not directly to living."""
+        kitchen = [s for s in specs if s["room_type"] == "kitchen"]
+        dining = [s for s in specs if s["room_type"] == "dining"]
+        others = [s for s in specs if s["room_type"] not in ("kitchen", "dining")]
+        # others first (e.g. living), then kitchen, then dining
+        return others + kitchen + dining
+    
     def _order_for_adjacency(self, specs: List[Dict]) -> List[Dict]:
-        """Reorder specs so bathrooms appear right after their adjacent bedrooms."""
+        """Reorder specs so bathrooms appear right after their adjacent bedrooms,
+        and dining appears right after kitchen (dining only accessed from kitchen)."""
         beds = [s for s in specs if s["room_type"] in ("master_bedroom", "bedroom")]
         baths = [s for s in specs if s["room_type"] in ("bathroom", "toilet")]
         others = [s for s in specs if s["room_type"] not in
@@ -605,6 +626,18 @@ class PerfectLayoutEngine:
                     ar_ratio = ar / limit  # normalized: 1.0 means at limit
                     worst_ar_ratio = max(worst_ar_ratio, ar_ratio)
                 
+                # Penalize forbidden adjacencies (e.g. dining next to living)
+                for ii in range(len(combined)):
+                    for jj in range(ii + 1, len(combined)):
+                        ta = combined[ii]["room_type"]
+                        tb = combined[jj]["room_type"]
+                        is_forbidden = any(
+                            (ta == fa and tb == fb) or (tb == fa and ta == fb)
+                            for fa, fb in FORBIDDEN_ADJACENCIES
+                        )
+                        if is_forbidden and rects_share_wall(combined[ii], combined[jj]):
+                            worst_ar_ratio += 1.0  # heavy penalty
+                
                 if worst_ar_ratio < best_worst_ar:
                     best_worst_ar = worst_ar_ratio
                     best_result = combined
@@ -615,13 +648,40 @@ class PerfectLayoutEngine:
         """
         Generate candidate binary splits for the room list.
         Uses balanced area partitioning + a few heuristics.
+        
+        RULE: kitchen and dining must stay in the same split group
+        so the treemap places them adjacent (dining accessed only from kitchen).
         """
         n = len(sorted_specs)
+        types = [s["room_type"] for s in sorted_specs]
+        has_kitchen = "kitchen" in types
+        has_dining = "dining" in types
+        must_pair = has_kitchen and has_dining
+        
+        def _valid_split(g1, g2):
+            """Ensure kitchen+dining are never separated across groups."""
+            if not must_pair:
+                return True
+            t1 = {s["room_type"] for s in g1}
+            t2 = {s["room_type"] for s in g2}
+            # Both in g1 or both in g2 — OK
+            if ("kitchen" in t1 and "dining" in t1):
+                return True
+            if ("kitchen" in t2 and "dining" in t2):
+                return True
+            # Separated — reject
+            return False
+        
         splits = []
         
         if n == 2:
-            splits.append(([sorted_specs[0]], [sorted_specs[1]]))
-            return splits
+            pair = ([sorted_specs[0]], [sorted_specs[1]])
+            if _valid_split(*pair):
+                splits.append(pair)
+            else:
+                # kitchen+dining as pair: don't split them
+                pass
+            return splits if splits else [([sorted_specs[0]], [sorted_specs[1]])]
         
         # Split 1: balanced area partition (greedy)
         g1, g2 = [], []
@@ -633,25 +693,42 @@ class PerfectLayoutEngine:
             else:
                 g2.append(s)
                 s2 += s["target_area"]
-        if g1 and g2:
+        if g1 and g2 and _valid_split(g1, g2):
             splits.append((g1, g2))
         
         # Split 2: largest room alone vs rest
-        splits.append(([sorted_specs[0]], sorted_specs[1:]))
+        pair = ([sorted_specs[0]], sorted_specs[1:])
+        if _valid_split(*pair):
+            splits.append(pair)
         
         # Split 3: first half vs second half (by area order)
         mid = n // 2
-        splits.append((sorted_specs[:mid], sorted_specs[mid:]))
+        pair = (sorted_specs[:mid], sorted_specs[mid:])
+        if _valid_split(*pair):
+            splits.append(pair)
         
         # Split 4: for ≥4 rooms, try 2 largest vs rest
         if n >= 4:
-            splits.append((sorted_specs[:2], sorted_specs[2:]))
+            pair = (sorted_specs[:2], sorted_specs[2:])
+            if _valid_split(*pair):
+                splits.append(pair)
         
         # Split 5: alternating assignment
         if n >= 3:
             odds = [sorted_specs[i] for i in range(0, n, 2)]
             evens = [sorted_specs[i] for i in range(1, n, 2)]
-            splits.append((odds, evens))
+            if _valid_split(odds, evens):
+                splits.append((odds, evens))
+        
+        # Fallback split: if must_pair and all splits were rejected,
+        # force kitchen+dining together vs everything else
+        if not splits and must_pair:
+            kd = [s for s in sorted_specs if s["room_type"] in ("kitchen", "dining")]
+            rest = [s for s in sorted_specs if s["room_type"] not in ("kitchen", "dining")]
+            if rest:
+                splits.append((rest, kd))
+            else:
+                splits.append((kd[:1], kd[1:]))
         
         return splits
     
@@ -782,7 +859,7 @@ class PerfectLayoutEngine:
                 for rb in rooms_b:
                     if rects_share_wall(ra, rb):
                         forbidden_count += 1
-        scores["forbidden"] = max(0, 15 - forbidden_count * 5)
+        scores["forbidden"] = max(0, 15 - forbidden_count * 8)
         
         total = sum(scores.values())
         return round(total, 2)
@@ -965,13 +1042,16 @@ class PerfectLayoutEngine:
                     windows.append({"wall": "N", "width": 3.0})
             
             elif rtype == "kitchen":
-                # Kitchen: door toward living/corridor
-                # Check if adjacent to living on left or right
+                # Kitchen: door toward living/drawing room (primary access)
                 adjacent_wall = self._find_adjacent_wall(room, "living", result)
                 if adjacent_wall:
                     doors.append({"wall": adjacent_wall, "width": 2.5})
                 else:
                     doors.append({"wall": "S", "width": 2.5})
+                # Kitchen → Dining internal door (dining accessed only from kitchen)
+                dining_wall = self._find_adjacent_wall(room, "dining", result)
+                if dining_wall:
+                    doors.append({"wall": dining_wall, "width": 2.5, "type": "internal"})
                 # Kitchen window on exterior wall
                 if ry <= self.uy + 0.5:
                     windows.append({"wall": "S", "width": 2.5})
@@ -998,11 +1078,13 @@ class PerfectLayoutEngine:
                     windows.append({"wall": "N", "width": 1.5, "type": "ventilation"})
             
             elif rtype == "dining":
+                # Dining is accessed ONLY from the kitchen — no other doors
                 adjacent_wall = self._find_adjacent_wall(room, "kitchen", result)
                 if adjacent_wall:
                     doors.append({"wall": adjacent_wall, "width": 3.0, "type": "open_arch"})
                 else:
-                    doors.append({"wall": "S", "width": 2.5})
+                    # Fallback: still point toward kitchen side, not living
+                    doors.append({"wall": "N", "width": 2.5})
             
             elif rtype == "balcony":
                 doors.append({"wall": "S", "width": 4.0, "type": "sliding"})

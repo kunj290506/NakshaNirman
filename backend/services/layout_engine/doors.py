@@ -98,11 +98,28 @@ def place_doors(
     list[Door]
         One door per shared wall.
     """
+    # Access rules: dining is only accessible from kitchen.
+    # A door between dining and any non-kitchen room is suppressed.
+    ACCESS_RULES = {
+        "dining": {"allowed_neighbours": {"kitchen"}},
+    }
+
     Door.reset_counter()
     doors: List[Door] = []
 
     for i in range(len(rooms)):
         for j in range(i + 1, len(rooms)):
+            type_i = getattr(rooms[i], "room_type", "unknown")
+            type_j = getattr(rooms[j], "room_type", "unknown")
+
+            # Enforce access rules — skip door if rule forbids it
+            rule_i = ACCESS_RULES.get(type_i)
+            if rule_i and type_j not in rule_i["allowed_neighbours"]:
+                continue
+            rule_j = ACCESS_RULES.get(type_j)
+            if rule_j and type_i not in rule_j["allowed_neighbours"]:
+                continue
+
             poly_i = rooms[i].polygon
             poly_j = rooms[j].polygon
 

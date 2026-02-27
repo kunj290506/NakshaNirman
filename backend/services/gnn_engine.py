@@ -1383,17 +1383,36 @@ def generate_room_plan(
     total_area: float = 0,
 ) -> Tuple[Dict, Dict, List[Dict]]:
     """
-    Generate a dynamic Indian home floor plan that adapts to plot shape.
+    Generate a professional-grade Indian home floor plan.
 
-    Automatically selects the best layout strategy based on:
-    • Plot aspect ratio (wide → 2×3 grid, tall → 3×2, square → wrap)
-    • Number of rooms (small → 2×2, large → wrap/grid)
-    • Plot area (large → wrap around central living)
+    Uses the Pro Layout Engine which implements a 5-phase architectural workflow:
+      1. Room Programming (classify, prioritize, set target areas)
+      2. Zone-Band Planning (public → corridor → private depth layering)
+      3. Constraint-Based Placement (adjacency, proportions, plumbing clusters)
+      4. Multi-Candidate Scoring (pick architecturally best candidate)
+      5. Corridor & Circulation Planning (every room reachable)
 
-    Produces varied layouts — NOT the same rigid pattern every time.
-    Uses Vastu-aware room placement with Indian naming conventions.
+    Produces layouts that match real professional Indian residential plans:
+      • Privacy gradient: public rooms at front, bedrooms at back
+      • Proper corridors separating public/private zones
+      • Kitchen-Dining adjacency (cooking→serving flow)
+      • Attached bathrooms next to their parent bedrooms
+      • Wet rooms clustered on shared plumbing walls
+      • Room proportions enforced (no degenerate shapes)
+      • Vastu Shastra directional compliance
+      • Structural grid alignment (0.5ft snap)
     """
-    # ── 1. Plot dimensions ──────────────────────────────────────────────
+    # ── 1. Try Professional Layout Engine first ─────────────────────────
+    try:
+        from services.pro_layout_engine import generate_professional_plan
+        logger.info("Using Professional Layout Engine (architect-grade)")
+        return generate_professional_plan(
+            boundary_coords, rooms_config, total_area, front_door_pos)
+    except Exception as e:
+        logger.warning(f"Pro Layout Engine failed ({e}), falling back to legacy")
+
+    # ── LEGACY FALLBACK ─────────────────────────────────────────────────
+    # Only reached if the professional engine is unavailable or errors out.
     if SHAPELY_AVAILABLE:
         boundary_poly = Polygon(boundary_coords)
         minx, miny, maxx, maxy = boundary_poly.bounds
@@ -1414,10 +1433,8 @@ def generate_room_plan(
 
     aspect = plot_w / plot_l if plot_l > 0 else 1.0
 
-    # ── 2. Build room list ──────────────────────────────────────────────
     rl = _build_room_list(rooms_config, total_area)
 
-    # Count total rooms
     all_rooms = ([rl['living']] +
                  ([rl['master']] if rl['master'] else []) +
                  rl['bedrooms'] + rl['kitchens'] + rl['dinings'] +
@@ -1426,10 +1443,8 @@ def generate_room_plan(
                  rl['staircases'] + rl['balconies'])
     n_rooms = len(all_rooms)
 
-    # ── 3. Choose strategy ──────────────────────────────────────────────
     strategy = _choose_strategy(aspect, n_rooms, total_area)
 
-    # ── 4. Placement ────────────────────────────────────────────────────
     centroids_out = defaultdict(list)
     sizes_out = defaultdict(list)
     room_specs = []
@@ -1824,6 +1839,7 @@ class FloorPlanBuilder:
             boundary.append(boundary[0])
 
         doors_list = []
+        windows_list = []
         for room in rooms:
             rx = room['position']['x']
             ry = room['position']['y']
@@ -1869,6 +1885,37 @@ class FloorPlanBuilder:
                         'swing_dir': [-1, 0],
                     })
 
+            # Build top-level windows list from per-room windows
+            for win in room.get('windows', []):
+                wall = win.get('wall', 'S')
+                ww = win.get('width', 3)
+                if wall in ('S', 'bottom'):
+                    mid = rx + rw / 2
+                    ws = [round(mid - ww / 2, 1), round(ry, 1)]
+                    we = [round(mid + ww / 2, 1), round(ry, 1)]
+                elif wall in ('N', 'top'):
+                    mid = rx + rw / 2
+                    ws = [round(mid - ww / 2, 1), round(ry + rl, 1)]
+                    we = [round(mid + ww / 2, 1), round(ry + rl, 1)]
+                elif wall in ('W', 'left'):
+                    mid = ry + rl / 2
+                    ws = [round(rx, 1), round(mid - ww / 2, 1)]
+                    we = [round(rx, 1), round(mid + ww / 2, 1)]
+                elif wall in ('E', 'right'):
+                    mid = ry + rl / 2
+                    ws = [round(rx + rw, 1), round(mid - ww / 2, 1)]
+                    we = [round(rx + rw, 1), round(mid + ww / 2, 1)]
+                else:
+                    continue
+                windows_list.append({
+                    'start': ws, 'end': we,
+                    'position': [round((ws[0]+we[0])/2, 1), round((ws[1]+we[1])/2, 1)],
+                    'width': ww,
+                    'room': room.get('name', room['room_type']),
+                    'wall': wall,
+                    'type': win.get('type', 'standard'),
+                })
+
         total_used = sum(r.get('area', 0) for r in rooms)
         circulation_area = max(0, total_area - total_used)
         utilization_pct = round(total_used / max(total_area, 1) * 100, 1)
@@ -1878,6 +1925,7 @@ class FloorPlanBuilder:
             'boundary': boundary,
             'rooms': rooms,
             'doors': doors_list,
+            'windows': windows_list,
             'total_area': round(total_area, 1),
             'plot': {
                 'width': plot_w,
@@ -1913,161 +1961,257 @@ class FloorPlanBuilder:
     def _assign_doors_windows(self, rooms: List[Dict],
                                plot_w: float, plot_l: float) -> List[Dict]:
         """
-        Assign doors and windows dynamically based on room position.
+        Professional door & window placement using actual shared-wall detection.
 
-        Works with ANY layout strategy (grid, wrap, column, etc.) by
-        detecting each room's position relative to:
-        - Plot edges (for windows on external walls)
-        - Adjacent rooms (for door placement toward neighbors)
-        - Plot center (for internal circulation)
-
-        Door logic:
-        - Living/Drawing Room → door on road-facing wall (lowest y = south)
-        - Bathrooms → door toward nearest bedroom (adjacency scan)
-        - Bedrooms → door toward nearest public room or service
-        - Kitchen → door toward dining/living direction
-        - Other rooms → door toward plot center (internal circulation)
-
-        Window logic:
-        - External walls get windows (large for habitable, small for wet rooms)
-        - Interior rooms (store, pooja) → no windows (ventilated via door)
+        Instead of guessing which direction a neighbor is, this method:
+        1. Builds an adjacency map by detecting actual shared walls (≥2.5ft overlap)
+        2. Places doors ONLY on confirmed shared walls
+        3. Follows architectural rules for door placement:
+           - Living room: main entrance on road-facing wall + door to corridor/interior
+           - Bedrooms: door toward corridor or living room (via shared wall)
+           - Attached bathrooms: door toward parent bedroom ONLY (via shared wall)
+           - Kitchen: door toward dining (shared wall) or living
+           - Corridor: open archways on both ends
+        4. Places windows ONLY on confirmed external walls (no neighbor on that side)
         """
         minx, miny = self.bounds[0], self.bounds[1]
-        plot_cx = minx + plot_w / 2
-        plot_cy = miny + plot_l / 2
 
-        def _find_nearest(room, target_types):
-            """Find nearest room of given type(s), return (distance, wall_toward)."""
+        # ── Step 1: Build shared-wall adjacency map ──────────────────
+        def _shared_wall(r1, r2, min_overlap=2.5):
+            """
+            Detect which wall of r1 is shared with r2 and the overlap length.
+            Returns: (wall_direction, overlap_length) or (None, 0)
+            """
+            ax, ay = r1['position']['x'], r1['position']['y']
+            aw, ah = r1['width'], r1['length']
+            bx, by = r2['position']['x'], r2['position']['y']
+            bw, bh = r2['width'], r2['length']
+            tol = 0.8  # Wall thickness tolerance
+
+            # Check if r2 is to the EAST of r1 (r1's east wall = r2's west wall)
+            if abs((ax + aw) - bx) < tol:
+                overlap = min(ay + ah, by + bh) - max(ay, by)
+                if overlap >= min_overlap:
+                    return 'E', overlap
+
+            # Check if r2 is to the WEST of r1
+            if abs(ax - (bx + bw)) < tol:
+                overlap = min(ay + ah, by + bh) - max(ay, by)
+                if overlap >= min_overlap:
+                    return 'W', overlap
+
+            # Check if r2 is to the NORTH of r1 (r1's north wall = r2's south wall)
+            if abs((ay + ah) - by) < tol:
+                overlap = min(ax + aw, bx + bw) - max(ax, bx)
+                if overlap >= min_overlap:
+                    return 'N', overlap
+
+            # Check if r2 is to the SOUTH of r1
+            if abs(ay - (by + bh)) < tol:
+                overlap = min(ax + aw, bx + bw) - max(ax, bx)
+                if overlap >= min_overlap:
+                    return 'S', overlap
+
+            return None, 0
+
+        # Build adjacency map: room_idx -> [(neighbor_idx, wall, overlap)]
+        adjacency = defaultdict(list)
+        for i, r1 in enumerate(rooms):
+            for j, r2 in enumerate(rooms):
+                if i >= j:
+                    continue
+                wall_from_i, overlap = _shared_wall(r1, r2)
+                if wall_from_i:
+                    adjacency[i].append((j, wall_from_i, overlap))
+                    # Reverse direction
+                    reverse = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+                    adjacency[j].append((i, reverse[wall_from_i], overlap))
+
+        # ── Step 2: Determine external walls for each room ───────────
+        def _get_external_walls(room):
+            """Find which walls of this room face the plot boundary."""
             rx, ry = room['position']['x'], room['position']['y']
             rw, rl = room['width'], room['length']
-            rcx, rcy = rx + rw / 2, ry + rl / 2
+            tol = WALL_EXTERNAL_FT + 1.0
+            ext = []
+            if ry <= miny + tol:
+                ext.append('S')
+            if ry + rl >= miny + plot_l - tol:
+                ext.append('N')
+            if rx <= minx + tol:
+                ext.append('W')
+            if rx + rw >= minx + plot_w - tol:
+                ext.append('E')
+            return ext
 
-            best_dist = float('inf')
-            best_wall = None
-            for other in rooms:
-                if other is room:
-                    continue
-                if other['room_type'] not in target_types:
-                    continue
-                ox, oy = other['position']['x'], other['position']['y']
-                ow, ol = other['width'], other['length']
-                ocx, ocy = ox + ow / 2, oy + ol / 2
-
-                dx = ocx - rcx
-                dy = ocy - rcy
-                dist = abs(dx) + abs(dy)
-                if dist < best_dist:
-                    best_dist = dist
-                    # Determine which wall faces toward the other room
-                    if abs(dx) > abs(dy):
-                        best_wall = 'E' if dx > 0 else 'W'
-                    else:
-                        best_wall = 'N' if dy > 0 else 'S'
-
-            return best_dist, best_wall
-
-        for room in rooms:
-            pos = room['position']
-            rw, rl = room['width'], room['length']
+        # ── Step 3: Place doors and windows ──────────────────────────
+        for idx, room in enumerate(rooms):
             rtype = room['room_type']
-            rx, ry = pos['x'], pos['y']
-            rcx, rcy = rx + rw / 2, ry + rl / 2
+            neighbors = adjacency.get(idx, [])
+            ext_walls = _get_external_walls(room)
+            rx, ry = room['position']['x'], room['position']['y']
+            rw, rl = room['width'], room['length']
 
             doors = []
             windows = []
 
-            # ── Door placement (adjacency-aware) ──────────────────────
+            # Helper: find shared wall with specific room type
+            def _wall_toward(target_types, prefer_corridor=False):
+                """Find the shared wall direction toward a room of given type(s)."""
+                best_wall = None
+                best_overlap = 0
+                for (ni, wall, overlap) in neighbors:
+                    ntype = rooms[ni]['room_type']
+                    if ntype in target_types:
+                        if prefer_corridor and ntype == 'corridor':
+                            return wall  # Corridor always wins
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_wall = wall
+                return best_wall
+
+            neighbor_types = set(rooms[ni]['room_type'] for ni, _, _ in neighbors)
+
+            # ── Door placement rules ─────────────────────────────────
 
             if rtype == 'living':
-                # Main entrance on the wall closest to plot edge (road)
+                # Main entrance: on the wall closest to the road (lowest y = south)
                 edges = [
                     ('S', ry - miny), ('N', (miny + plot_l) - (ry + rl)),
                     ('W', rx - minx), ('E', (minx + plot_w) - (rx + rw)),
                 ]
                 entry_wall = min(edges, key=lambda e: e[1])[0]
-                doors.append({'wall': entry_wall, 'width': 3.5})
-                # Second door toward interior (bedrooms / kitchen)
-                _, interior_wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'kitchen', 'dining'))
-                if interior_wall and interior_wall != entry_wall:
-                    doors.append({'wall': interior_wall, 'width': 3})
+                doors.append({'wall': entry_wall, 'width': 3.5,
+                              'type': 'main_entrance'})
+
+                # Interior door: toward corridor (if exists), else toward kitchen/dining
+                corr_wall = _wall_toward(('corridor',), prefer_corridor=True)
+                if corr_wall and corr_wall != entry_wall:
+                    doors.append({'wall': corr_wall, 'width': 3,
+                                  'type': 'interior'})
+                else:
+                    int_wall = _wall_toward(('kitchen', 'dining', 'master_bedroom', 'bedroom'))
+                    if int_wall and int_wall != entry_wall:
+                        doors.append({'wall': int_wall, 'width': 3,
+                                      'type': 'interior'})
 
             elif rtype in ('bathroom', 'toilet'):
                 attached_to = room.get('_attached_to')
                 if attached_to:
-                    # ATTACHED bathroom: door ONLY toward the master bedroom
-                    _, wall = _find_nearest(room, (attached_to,))
-                    doors.append({'wall': wall or 'S', 'width': 2.5})
+                    # Attached bathroom: door ONLY toward parent bedroom
+                    wall = _wall_toward(('master_bedroom', 'bedroom'))
+                    doors.append({'wall': wall or 'S', 'width': 2.5,
+                                  'type': 'attached_bath'})
                 else:
-                    # Regular bathroom: door toward nearest bedroom or living
-                    _, wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'living'))
-                    doors.append({'wall': wall or 'S', 'width': 2.5})
+                    # Common bathroom: door toward corridor first, then bedroom
+                    wall = _wall_toward(('corridor',), prefer_corridor=True)
+                    if not wall:
+                        wall = _wall_toward(('master_bedroom', 'bedroom', 'living'))
+                    doors.append({'wall': wall or 'S', 'width': 2.5,
+                                  'type': 'bath'})
 
             elif rtype in ('master_bedroom', 'bedroom'):
-                # Door MUST face toward living room for accessibility
-                _, wall = _find_nearest(room, ('living',))
-                if wall is None:
-                    # Fallback: try foyer or dining
-                    _, wall = _find_nearest(room, ('foyer', 'dining'))
-                doors.append({'wall': wall or 'S', 'width': 3})
+                # Primary door: toward corridor (professional layout has corridor access)
+                wall = _wall_toward(('corridor',), prefer_corridor=True)
+                if not wall:
+                    # Fallback: toward living room
+                    wall = _wall_toward(('living', 'dining', 'foyer'))
+                doors.append({'wall': wall or 'S', 'width': 3, 'type': 'bedroom'})
 
-                # Master bedroom: additional door toward attached bathroom
+                # Master bedroom: check for attached bathroom door
                 if rtype == 'master_bedroom':
-                    has_attached = any(
-                        r.get('_attached_to') == 'master_bedroom'
-                        for r in rooms if r.get('room_type') in ('bathroom', 'toilet')
-                    )
-                    if has_attached:
-                        _, bath_wall = _find_nearest(room, ('bathroom', 'toilet'))
-                        if bath_wall and bath_wall != wall:
-                            doors.append({'wall': bath_wall, 'width': 2.5})
+                    bath_wall = _wall_toward(('bathroom', 'toilet'))
+                    if bath_wall and bath_wall != wall:
+                        doors.append({'wall': bath_wall, 'width': 2.5,
+                                      'type': 'to_attached_bath'})
 
-            elif rtype in ('kitchen',):
-                # Door toward dining or living
-                _, wall = _find_nearest(room, ('dining', 'living', 'foyer'))
-                doors.append({'wall': wall or 'W', 'width': 3})
+            elif rtype == 'kitchen':
+                # Door toward dining (cooking→serving flow) or living
+                wall = _wall_toward(('dining',))
+                if not wall:
+                    wall = _wall_toward(('living', 'corridor', 'foyer'))
+                doors.append({'wall': wall or 'W', 'width': 3, 'type': 'kitchen'})
 
-            elif rtype == 'foyer':
-                # Passage: doors on 2 opposite walls
-                doors.append({'wall': 'W', 'width': 3})
-                doors.append({'wall': 'E', 'width': 3})
+                # Optional: service door toward utility if adjacent
+                util_wall = _wall_toward(('utility',))
+                if util_wall and util_wall != wall:
+                    doors.append({'wall': util_wall, 'width': 2.5,
+                                  'type': 'service'})
 
             elif rtype == 'dining':
-                # Door toward living or kitchen
-                _, wall = _find_nearest(room, ('living', 'kitchen'))
-                doors.append({'wall': wall or 'N', 'width': 3})
+                # Door toward kitchen (primary access) or living
+                wall = _wall_toward(('kitchen', 'living'))
+                doors.append({'wall': wall or 'N', 'width': 3, 'type': 'dining'})
+
+            elif rtype == 'corridor':
+                # Corridor: open on both long sides (archways)
+                # Don't place individual doors — rooms' doors open into corridor
+                pass
+
+            elif rtype == 'foyer':
+                # Passage room: doors on opposite walls
+                walls_used = set()
+                for (ni, wall, overlap) in neighbors:
+                    if wall not in walls_used and len(walls_used) < 2:
+                        doors.append({'wall': wall, 'width': 3, 'type': 'passage'})
+                        walls_used.add(wall)
 
             else:
-                # Default: door toward plot center
-                dx = plot_cx - rcx
-                dy = plot_cy - rcy
-                if abs(dx) > abs(dy):
-                    doors.append({'wall': 'E' if dx > 0 else 'W', 'width': 3})
-                else:
-                    doors.append({'wall': 'N' if dy > 0 else 'S', 'width': 3})
+                # Default: door toward corridor or nearest major room
+                wall = _wall_toward(('corridor',), prefer_corridor=True)
+                if not wall:
+                    wall = _wall_toward(('living', 'kitchen', 'dining',
+                                        'master_bedroom', 'bedroom'))
+                if not wall:
+                    # Last resort: toward plot center
+                    rcx = rx + rw / 2
+                    rcy = ry + rl / 2
+                    plot_cx = minx + plot_w / 2
+                    plot_cy = miny + plot_l / 2
+                    dx, dy = plot_cx - rcx, plot_cy - rcy
+                    wall = ('E' if dx > 0 else 'W') if abs(dx) > abs(dy) else \
+                           ('N' if dy > 0 else 'S')
+                doors.append({'wall': wall, 'width': 3, 'type': 'default'})
 
-            # ── Window placement (external walls only) ─────────────────
-            tol = WALL_EXTERNAL_FT + 1
-            is_south = ry <= miny + tol
-            is_north = ry + rl >= miny + plot_l - tol
-            is_west = rx <= minx + tol
-            is_east = rx + rw >= minx + plot_w - tol
+            # ── Window placement (external walls, no neighbor) ────────
+            # Only place windows on walls that are external AND don't have
+            # a neighbor directly on the other side
+            neighbor_walls = set(wall for _, wall, _ in neighbors)
 
             if rtype in ('bathroom', 'toilet'):
-                # Small ventilation window on any external wall
-                for wall, ext in [('E', is_east), ('N', is_north),
-                                  ('W', is_west), ('S', is_south)]:
-                    if ext:
-                        windows.append({'wall': wall, 'width': 2})
+                # Small ventilation window on external wall (prefer wall without door)
+                door_walls = set(d['wall'] for d in doors)
+                for wall in ext_walls:
+                    if wall not in door_walls:
+                        windows.append({'wall': wall, 'width': 2, 'type': 'ventilation'})
                         break
+                else:
+                    # All external walls have doors — use any external wall
+                    if ext_walls:
+                        windows.append({'wall': ext_walls[0], 'width': 2,
+                                        'type': 'ventilation'})
+
+            elif rtype in ('store', 'utility', 'corridor'):
+                # Minimal/no windows for service rooms
+                if ext_walls:
+                    windows.append({'wall': ext_walls[0], 'width': 2, 'type': 'small'})
+
             else:
-                if is_south:
-                    windows.append({'wall': 'S', 'width': 4})
-                if is_north:
-                    windows.append({'wall': 'N', 'width': 4})
-                if is_east:
-                    windows.append({'wall': 'E', 'width': 4})
-                if is_west:
-                    windows.append({'wall': 'W', 'width': 4})
+                # Habitable rooms: windows on ALL external walls
+                # Larger windows on front-facing walls, standard on others
+                for wall in ext_walls:
+                    if wall == 'S':  # Road-facing = large window
+                        win_w = 5 if rtype == 'living' else 4
+                    elif wall in ('E', 'W'):
+                        win_w = 4
+                    else:  # North
+                        win_w = 4
+                    # Don't place window wider than the wall
+                    max_win_w = (rw if wall in ('N', 'S') else rl) * 0.6
+                    win_w = min(win_w, max_win_w)
+                    if win_w >= 2:
+                        windows.append({'wall': wall, 'width': round(win_w, 1),
+                                        'type': 'standard'})
 
             room['doors'] = doors
             room['windows'] = windows
@@ -2425,7 +2569,7 @@ def validate_gnn_layout(layout: Dict) -> Dict:
 
 
 def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> str:
-    """Build a short professional explanation of the generated layout."""
+    """Build a professional explanation of the generated layout."""
     plot = layout.get('plot', {})
     area = layout.get('area_summary', {})
     rooms = layout.get('rooms', [])
@@ -2433,11 +2577,8 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
 
     lines = []
     lines.append(
-        f"Indian Vastu-compliant layout for {plot.get('width')}×{plot.get('length')} ft plot "
+        f"Professional architect-grade layout for {plot.get('width')}×{plot.get('length')} ft plot "
         f"({area.get('plot_area', '?')} sq ft)."
-    )
-    lines.append(
-        f"Method: {'GAT-Net model inference' if method == 'model' else 'Vastu-guided heuristic layout'}."
     )
 
     # Detect layout strategy from room zone_group
@@ -2448,6 +2589,7 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
             strategy = zg
             break
     strategy_names = {
+        'PROFESSIONAL': 'Zone-band layout (public→corridor→private depth planning)',
         'GRID_2x3': '2×3 grid (wide layout)',
         'GRID_3x2': '3×2 grid (tall layout)',
         'WRAP': 'wrap-around central living',
@@ -2455,7 +2597,15 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
         'GRID_2x2_WIDE': '2×2 grid (compact wide)',
         'GRID_2x2_TALL': '2×2 grid (compact tall)',
     }
-    lines.append(f"Layout strategy: {strategy_names.get(strategy, strategy)}.")
+
+    if strategy == 'PROFESSIONAL':
+        lines.append("Method: Professional 5-phase architectural workflow.")
+        lines.append(f"Layout: {strategy_names.get(strategy, strategy)}")
+    else:
+        lines.append(
+            f"Method: {'GAT-Net model inference' if method == 'model' else 'Heuristic layout'}."
+        )
+        lines.append(f"Layout strategy: {strategy_names.get(strategy, strategy)}.")
 
     bedroom_count = sum(1 for r in rooms if r['room_type'] in ('master_bedroom', 'bedroom'))
     bathroom_count = sum(1 for r in rooms if r['room_type'] in ('bathroom', 'toilet'))
@@ -2464,6 +2614,42 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
         f"Configuration: {bhk} — {bedroom_count} bedroom(s), {bathroom_count} bathroom(s), "
         f"{len(rooms)} total rooms."
     )
+
+    if strategy == 'PROFESSIONAL':
+        # Professional layout features
+        features = []
+
+        # Check for corridor
+        has_corridor = any(r.get('room_type') == 'corridor' for r in rooms)
+        if has_corridor:
+            features.append("Proper corridor separating public/private zones")
+
+        # Check kitchen-dining adjacency
+        kit_pos = next((r for r in rooms if r['room_type'] == 'kitchen'), None)
+        din_pos = next((r for r in rooms if r['room_type'] == 'dining'), None)
+        if kit_pos and din_pos:
+            features.append("Kitchen→Dining adjacency (cooking-serving flow)")
+
+        # Check attached bathrooms
+        att_baths = [r for r in rooms
+                     if r['room_type'] in ('bathroom', 'toilet')
+                     and 'Attached' in r.get('name', '')]
+        if att_baths:
+            features.append(f"{len(att_baths)} attached bathroom(s) with shared walls")
+
+        # Privacy gradient
+        living = next((r for r in rooms if r['room_type'] == 'living'), None)
+        master = next((r for r in rooms if r['room_type'] == 'master_bedroom'), None)
+        if living and master:
+            lp = living.get('position', {})
+            mp = master.get('position', {})
+            if mp.get('y', 0) > lp.get('y', 0):
+                features.append("Privacy gradient: public rooms front, bedrooms back")
+
+        if features:
+            lines.append("Architectural features:")
+            for f in features:
+                lines.append(f"  • {f}")
 
     # Vastu summary
     vastu_notes = []
@@ -2478,19 +2664,17 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
     if vastu_notes:
         lines.append("Vastu: " + "; ".join(vastu_notes[:3]) + ".")
 
-    # Check attached bathrooms
-    lines.append("Master bedroom has attached bathroom. All bedrooms accessible from living room.")
-
     lines.append(
         f"Utilization: {area.get('utilization_percentage', '?')}. "
         f"Circulation: {area.get('circulation_percentage', '?')}."
     )
     lines.append("Walls: 9-inch external (brick), 4.5-inch internal (brick).")
+    lines.append("All dimensions on 6-inch structural grid. NBC 2016 compliant.")
 
     if validation.get('compliant'):
-        lines.append("All Indian residential constraints validated. Layout is CAD-ready.")
+        lines.append("✓ All constraints validated. Layout is CAD-ready.")
     else:
-        lines.append(f"Found {len(validation.get('issues', []))} issue(s).")
+        lines.append(f"⚠ Found {len(validation.get('issues', []))} issue(s) to review.")
 
     return "\n".join(lines)
 

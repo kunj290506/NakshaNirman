@@ -318,7 +318,9 @@ def _get_placement_order() -> List[str]:
     
     Order respects:
     - Entry sequence (porch → living)
-    - Zone adjacency (living near dining)
+    - Zone adjacency (living → kitchen → dining)
+    - Kitchen accessed from living/drawing room
+    - Dining accessed ONLY from kitchen
     - Service core (kitchen/utility stacked for plumbing)
     - Private zone separation (bedrooms away from public)
     - Structural stacking (toilets aligned vertically)
@@ -327,8 +329,8 @@ def _get_placement_order() -> List[str]:
         "parking",       # Near entry, road-facing
         "porch",         # Main entrance vestibule
         "living",        # Center, public zone, near entry
-        "dining",        # Adjacent to living, semi-private
-        "kitchen",       # Near dining, outer wall for exhaust
+        "kitchen",       # Adjacent to living/drawing room for access
+        "dining",        # Adjacent to kitchen ONLY (accessed from kitchen)
         "utility",       # Adjacent to kitchen, plumbing stack
         "master_bedroom", # Private zone, quiet corner
         "bedroom",       # Private zone, natural light
@@ -368,27 +370,27 @@ def _place_room_intelligently(
         x = entry_point[0] - room_width / 2
         y = entry_point[1] + 5  # Offset from entry
     
-    # Dining: Adjacent to living
-    elif room_type == "dining":
+    # Kitchen: Adjacent to living/drawing room (accessed from living)
+    elif room_type == "kitchen":
         living_room = next((r for r in placed_rooms if r["room_type"] == "living"), None)
         if living_room:
             lx, ly = living_room["centroid"]
-            x = lx + 14  # Next to living
+            x = lx + 14  # Next to living room
             y = ly
-        else:
-            x = centroid.x - room_width / 2
-            y = centroid.y - room_height / 2
-    
-    # Kitchen: Near dining, on outer wall
-    elif room_type == "kitchen":
-        dining_room = next((r for r in placed_rooms if r["room_type"] == "dining"), None)
-        if dining_room:
-            dx, dy = dining_room["centroid"]
-            x = dx
-            y = dy + 12  # Adjacent to dining
         else:
             x = maxx - room_width - 2
             y = miny + 2
+    
+    # Dining: Adjacent to kitchen ONLY (accessed only from kitchen, not from living)
+    elif room_type == "dining":
+        kitchen_room = next((r for r in placed_rooms if r["room_type"] == "kitchen"), None)
+        if kitchen_room:
+            kx, ky = kitchen_room["centroid"]
+            x = kx
+            y = ky + 12  # Place behind/beside kitchen, away from living
+        else:
+            x = centroid.x - room_width / 2
+            y = centroid.y - room_height / 2
     
     # Bedrooms: On edges, private zone
     elif room_type in ["bedroom", "master_bedroom"]:
