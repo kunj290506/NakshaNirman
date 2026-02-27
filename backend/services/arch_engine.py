@@ -29,44 +29,44 @@ class EngineMode(str, Enum):
     VALIDATION = "validation"
 
 
-# Minimum room sizes (sq ft)
+# Minimum room sizes (sq ft) — Indian residential standards (NBC 2016)
 MIN_ROOM_SIZES = {
-    "master_bedroom": 100,
+    "master_bedroom": 120,
     "bedroom": 100,
     "bathroom": 35,
-    "toilet": 24,
-    "kitchen": 80,
+    "toilet": 15,
+    "kitchen": 60,
     "living": 120,
     "dining": 80,
     "study": 60,
-    "pooja": 25,
+    "pooja": 16,
     "store": 25,
-    "utility": 24,
+    "utility": 20,
     "hallway": 30,
     "porch": 40,
     "parking": 150,
-    "balcony": 30,
-    "staircase": 50,
+    "balcony": 25,
+    "staircase": 40,
     "garage": 150,
 }
 
-# Standard room sizes (width x length in feet)
+# Standard room sizes (width x length in feet) — typical Indian residential
 STANDARD_ROOM_SIZES = {
     "master_bedroom": (12, 14),
     "bedroom": (10, 12),
     "bathroom": (5, 8),
-    "toilet": (4, 6),
+    "toilet": (4, 5),
     "kitchen": (8, 10),
     "living": (14, 16),
     "dining": (10, 12),
     "study": (10, 10),
     "pooja": (5, 5),
     "store": (6, 6),
-    "utility": (4, 6),
+    "utility": (5, 6),
     "hallway": (3.5, 10),
     "porch": (10, 8),
     "parking": (10, 18),
-    "balcony": (4, 10),
+    "balcony": (5, 10),
     "staircase": (5, 10),
     "garage": (10, 18),
 }
@@ -80,12 +80,14 @@ WALL_INTERNAL_FT = WALL_INTERNAL_INCHES / 12  # 0.375 ft
 # Minimum passage width
 MIN_PASSAGE_WIDTH_FT = 3
 
-# Area distribution guidelines (percentage of total)
+# Area distribution guidelines (percentage of total) — Indian homes
 AREA_DISTRIBUTION = {
-    "living": (18, 22),
-    "bedrooms_total": (30, 35),
-    "kitchen": (8, 12),
-    "bathrooms_total": (8, 12),
+    "living": (15, 20),
+    "bedrooms_total": (28, 35),
+    "kitchen": (7, 10),
+    "dining": (7, 10),
+    "bathrooms_total": (6, 10),
+    "pooja": (1.5, 2.5),
     "circulation": (10, 15),
     "walls_structure": (8, 10),
 }
@@ -1149,27 +1151,30 @@ def _place_rooms(
     usable_w: float, usable_l: float,
 ) -> List[Dict]:
     """
-    Wall-to-wall architectural room placement.
+    Wall-to-wall architectural room placement (Indian Vastu-compliant).
 
     Rooms tile the ENTIRE usable area with zero gaps. Follows Indian
-    residential conventions:
+    residential conventions with Vastu Shastra directional placement:
 
-        ┌──────────┬──────────┬──────────┐
-        │ Living   │ Kitchen  │ Dining   │  ← public / semi-private
-        ├──────────┴──────────┴──────────┤
-        │           CORRIDOR             │  ← 3.5 ft passage
-        ├────────┬─────┬─────────┬───────┤
-        │ Master │Bath │ Bedroom │ Study  │  ← private / service
-        └────────┴─────┴─────────┴───────┘
+        ┌─────────────────────────────────────────────┐
+        │ Living (NE)│ Dining (W) │ Pooja (NE)/Study  │ ← public zone
+        ├─────────────────────────────────────────────┤
+        │              CORRIDOR (3.5 ft)               │
+        ├──────────┬─────┬─────────┬──────┬───────────┤
+        │Master(SW)│Bath │Bedroom  │Bath  │Kitchen(SE)│ ← private+service
+        └──────────┴─────┴─────────┴──────┴───────────┘
+        Entry from South/East edge
 
-    Rules applied:
-      • Every row fills the FULL usable width — no side gaps.
-      • Room widths within a row are proportional to target area.
-      • The last room in each row absorbs rounding residual.
-      • The last row extends to the plot's back boundary.
-      • Kitchen stays adjacent to Dining (cooking-serving flow).
-      • Bedrooms interleave with Bathrooms (attached-bath pattern).
-      • Corridor inserted between public and private zone groups.
+    Indian home design rules:
+      • Kitchen in SE (Agni/fire corner) with outer wall for chimney
+      • Master Bedroom in SW (earth element, stability)
+      • Pooja room in NE (most auspicious corner)
+      • Bathrooms attached to bedrooms (bed-bath pairs)
+      • Dining adjacent to kitchen (cooking-serving flow)
+      • Living near entrance with maximum frontage
+      • Central corridor connecting public and private zones
+      • All habitable rooms have outer wall exposure
+      • 9-inch external walls, 4.5-inch internal walls (brick)
     """
     placed = []
     WALL = WALL_EXTERNAL_FT
@@ -1190,24 +1195,30 @@ def _place_rooms(
         else:
             private_rooms.append(r)
 
-    # ── 2. Smart ordering within each group ─────────────────────────────
-    # Public: Living first (entrance), then Kitchen → Dining (adjacent!)
+    # ── 2. Smart ordering within each group (Vastu-compliant) ────────────
+    # Public: Living first (NE/entrance), then Dining, then Kitchen→SE (Agni)
+    # Vastu: Living=NE, Dining=W/center, Kitchen=SE
     pub_order = {
-        "living": 0, "foyer": 1, "kitchen": 2, "dining": 3,
-        "balcony": 4, "garage": 5, "porch": 6,
+        "living": 0, "porch": 1, "foyer": 2, "dining": 3,
+        "kitchen": 4, "balcony": 5, "garage": 6,
     }
     public_rooms.sort(key=lambda r: pub_order.get(r["room_type"], 99))
 
-    # Private: interleave Bed-Bath pairs, extras at end
+    # Private: Master Bedroom first (SW corner), then interleave Bed-Bath pairs
+    # Vastu: Master=SW, Guest bedrooms=NW, Bathrooms attached
     beds = sorted(
         [r for r in private_rooms if r["room_type"] in ("master_bedroom", "bedroom")],
-        key=lambda r: r["target_area"], reverse=True,
+        key=lambda r: (0 if r["room_type"] == "master_bedroom" else 1, -r["target_area"]),
     )
     baths = sorted(
         [r for r in private_rooms if r["room_type"] in ("bathroom", "toilet")],
         key=lambda r: r["target_area"], reverse=True,
     )
+    # Study/Pooja go to specific Vastu positions
     extras = [r for r in private_rooms if r not in beds and r not in baths]
+    _extra_order = {"study": 0, "pooja": 1, "store": 2, "utility": 3,
+                    "staircase": 4, "garage": 5}
+    extras.sort(key=lambda r: _extra_order.get(r["room_type"], 99))
 
     interleaved: List[Dict] = []
     for i in range(max(len(beds), len(baths))):
@@ -1252,8 +1263,8 @@ def _place_rooms(
     row_areas = [sum(r["target_area"] for r in row) for row in all_rows]
     total_area = sum(row_areas) or 1.0
 
-    # Proportional heights, minimum 8 ft per row
-    MIN_ROW_H = 8.0
+    # Proportional heights, minimum 10 ft per row (Indian bedroom depth)
+    MIN_ROW_H = 10.0
     heights = [max(MIN_ROW_H, (a / total_area) * avail_h) for a in row_areas]
 
     # Re-scale so total == avail_h

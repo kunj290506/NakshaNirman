@@ -95,14 +95,25 @@ analyzing every design decision carefully.
 - Door width: 3 feet standard
 - Window width: 4 feet
 
-## VASTU SHASTRA GUIDELINES
-- **North-East (NE)**: Pooja room, open spaces, water elements
-- **South-East (SE)**: Kitchen (fire element)
-- **South-West (SW)**: Master bedroom (stability)
-- **North-West (NW)**: Guest bedroom, store
-- **East**: Living room entrance preferred
-- **North**: Open spaces, balcony
-- **Center (Brahmasthan)**: Keep open or light, no heavy structures
+## VASTU SHASTRA GUIDELINES (MANDATORY FOR INDIAN HOMES)
+- **North-East (NE/Ishan)**: Pooja room, study, open spaces, water elements — MOST AUSPICIOUS
+- **South-East (SE/Agni)**: Kitchen (fire element) — ALWAYS place kitchen here
+- **South-West (SW/Nairutya)**: Master bedroom (earth, stability) — Owner's bedroom MUST be here
+- **North-West (NW/Vayu)**: Guest bedroom, store, garage — Transient spaces
+- **East (Indra)**: Living room, main entrance preferred — Morning sunlight
+- **North (Kubera)**: Open spaces, balcony, study — Wealth direction
+- **South (Yama)**: Dining room, bedrooms — Solid, enclosed
+- **West (Varuna)**: Dining, study — Evening light
+- **Center (Brahmasthan)**: Keep open or light corridor — NO heavy structures, NO toilet
+- **Bathrooms**: MUST be attached to bedrooms (Indian standard)
+- **Dining**: MUST be adjacent to kitchen (cooking-serving flow)
+- **Pooja**: NE corner, away from toilet/kitchen
+
+## INDIAN BHK CONFIGURATION STANDARDS
+- 1BHK: 1 Master Bedroom + 1 Attached Bath + Kitchen + Living (400-650 sqft)
+- 2BHK: 1 Master + 1 Bedroom + 2 Attached Baths + Kitchen + Living + Dining (700-1200 sqft)
+- 3BHK: 1 Master + 2 Bedrooms + 2-3 Baths + Kitchen + Living + Dining + Study/Pooja (1100-1800 sqft)
+- 4BHK: 1 Master + 3 Bedrooms + 3-4 Baths + Kitchen + Living + Dining + Study + Pooja + Utility (1600-3000 sqft)
 
 ## DESIGN PRINCIPLES
 1. Entry from longest edge (road-facing)

@@ -29,5 +29,180 @@
       "balcony": 2.0,
       "entrance": 1.5
     }
+  },
+
+  "india_vastu": {
+    "description": "Indian Vastu Shastra compliant residential layout rules",
+    "notes": "Based on traditional Indian architecture + NBC 2016 building code + Vastu Shastra principles",
+
+    "vastu_directions": {
+      "NE": {
+        "name": "Ishan (North-East)",
+        "element": "water",
+        "suitable_rooms": ["pooja", "living", "study", "balcony"],
+        "avoid_rooms": ["toilet", "kitchen", "store", "garage"],
+        "principle": "Most auspicious corner. Keep light, open, and sacred."
+      },
+      "SE": {
+        "name": "Agni (South-East)",
+        "element": "fire",
+        "suitable_rooms": ["kitchen", "utility"],
+        "avoid_rooms": ["master_bedroom", "pooja", "study"],
+        "principle": "Fire element zone — ideal for kitchen and cooking."
+      },
+      "SW": {
+        "name": "Nairutya (South-West)",
+        "element": "earth",
+        "suitable_rooms": ["master_bedroom", "bedroom"],
+        "avoid_rooms": ["kitchen", "pooja", "bathroom"],
+        "principle": "Heaviest, most stable corner. Owner's bedroom."
+      },
+      "NW": {
+        "name": "Vayu (North-West)",
+        "element": "wind/air",
+        "suitable_rooms": ["bedroom", "store", "garage", "dining"],
+        "avoid_rooms": ["pooja", "master_bedroom"],
+        "principle": "Air element. Guest rooms, storage, transient spaces."
+      },
+      "N": {
+        "name": "North (Kubera)",
+        "element": "wealth",
+        "suitable_rooms": ["living", "balcony", "study"],
+        "avoid_rooms": ["toilet", "store"],
+        "principle": "Open, well-lit. Good for living areas."
+      },
+      "E": {
+        "name": "East (Indra)",
+        "element": "solar",
+        "suitable_rooms": ["living", "entrance", "porch", "study"],
+        "avoid_rooms": ["toilet", "store"],
+        "principle": "Main entrance preferred. Morning sunlight."
+      },
+      "S": {
+        "name": "South (Yama)",
+        "element": "earth",
+        "suitable_rooms": ["dining", "bedroom", "staircase"],
+        "avoid_rooms": ["entrance", "pooja"],
+        "principle": "Solid, enclosed. Bedrooms and dining."
+      },
+      "W": {
+        "name": "West (Varuna)",
+        "element": "water",
+        "suitable_rooms": ["dining", "study", "bedroom", "staircase"],
+        "avoid_rooms": ["entrance"],
+        "principle": "Evening light. Study and dining areas."
+      },
+      "CENTER": {
+        "name": "Brahmasthan (Center)",
+        "element": "space/ether",
+        "suitable_rooms": ["corridor", "courtyard"],
+        "avoid_rooms": ["toilet", "kitchen", "bedroom", "staircase"],
+        "principle": "Keep open, light. Central circulation spine."
+      }
+    },
+
+    "bhk_configs": {
+      "1BHK": {
+        "area_range": [400, 650],
+        "rooms": {
+          "living": 1, "master_bedroom": 1, "kitchen": 1, "bathroom": 1
+        },
+        "attached_bath": true,
+        "corridor": false
+      },
+      "2BHK": {
+        "area_range": [700, 1200],
+        "rooms": {
+          "living": 1, "master_bedroom": 1, "bedroom": 1,
+          "kitchen": 1, "bathroom": 2, "dining": 1
+        },
+        "attached_bath": true,
+        "corridor": true
+      },
+      "3BHK": {
+        "area_range": [1100, 1800],
+        "rooms": {
+          "living": 1, "master_bedroom": 1, "bedroom": 2,
+          "kitchen": 1, "bathroom": 2, "dining": 1,
+          "study": 1, "pooja": 1
+        },
+        "attached_bath": true,
+        "corridor": true
+      },
+      "4BHK": {
+        "area_range": [1600, 3000],
+        "rooms": {
+          "living": 1, "master_bedroom": 1, "bedroom": 3,
+          "kitchen": 1, "bathroom": 3, "dining": 1,
+          "study": 1, "pooja": 1, "utility": 1, "store": 1
+        },
+        "attached_bath": true,
+        "corridor": true
+      }
+    },
+
+    "standard_room_sizes_ft": {
+      "living":         {"min": [12, 14], "ideal": [14, 16], "max": [18, 20]},
+      "master_bedroom": {"min": [12, 12], "ideal": [12, 14], "max": [14, 16]},
+      "bedroom":        {"min": [10, 10], "ideal": [10, 12], "max": [12, 14]},
+      "kitchen":        {"min": [7, 8],   "ideal": [8, 10],  "max": [10, 12]},
+      "bathroom":       {"min": [5, 7],   "ideal": [5, 8],   "max": [6, 9]},
+      "toilet":         {"min": [3, 4],   "ideal": [4, 5],   "max": [4, 6]},
+      "dining":         {"min": [10, 10], "ideal": [10, 12], "max": [12, 14]},
+      "study":          {"min": [8, 8],   "ideal": [10, 10], "max": [10, 12]},
+      "pooja":          {"min": [4, 4],   "ideal": [5, 5],   "max": [6, 6]},
+      "store":          {"min": [5, 5],   "ideal": [6, 6],   "max": [8, 8]},
+      "porch":          {"min": [6, 5],   "ideal": [10, 8],  "max": [12, 10]},
+      "utility":        {"min": [4, 5],   "ideal": [5, 6],   "max": [6, 8]},
+      "balcony":        {"min": [4, 8],   "ideal": [5, 10],  "max": [6, 12]},
+      "parking":        {"min": [10, 18], "ideal": [10, 20], "max": [12, 22]},
+      "staircase":      {"min": [4, 8],   "ideal": [5, 10],  "max": [6, 12]},
+      "corridor":       {"min_width": 3.5, "ideal_width": 4.0}
+    },
+
+    "placement_order": [
+      "parking", "porch", "living", "dining", "kitchen",
+      "utility", "master_bedroom", "bathroom",
+      "bedroom", "bathroom", "bedroom", "bathroom",
+      "study", "pooja", "store", "staircase"
+    ],
+
+    "adjacency_rules": {
+      "kitchen_dining":      {"required": true, "note": "Cooking-serving flow"},
+      "master_bedroom_bath": {"required": true, "note": "Attached bathroom mandatory"},
+      "bedroom_bath":        {"preferred": true, "note": "Attached or nearby bathroom"},
+      "living_dining":       {"preferred": true, "note": "Social flow"},
+      "kitchen_utility":     {"preferred": true, "note": "Shared plumbing wall"},
+      "pooja_kitchen":       {"avoid": true, "note": "Avoid fire near sacred space"}
+    },
+
+    "architectural_rules": {
+      "wall_thickness": {
+        "external_inches": 9,
+        "internal_inches": 4.5,
+        "partition_inches": 4
+      },
+      "min_passage_width_ft": 3.5,
+      "min_door_width_ft": 2.5,
+      "main_door_width_ft": 3.5,
+      "window_sill_height_ft": 3.0,
+      "lintel_height_ft": 7.0,
+      "floor_to_ceiling_ft": 10.0,
+      "plinth_height_ft": 1.5,
+      "staircase_riser_inches": 7,
+      "staircase_tread_inches": 10,
+      "cross_ventilation": true,
+      "all_rooms_outer_wall": true
+    },
+
+    "setbacks": {
+      "front": 3.0,
+      "rear": 2.0,
+      "left": 1.5,
+      "right": 1.5
+    },
+    "max_ground_coverage": 0.60,
+    "max_floors": 4,
+    "min_plot_area": 40.0
   }
 }

@@ -25,13 +25,32 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# Uploads & exports
-uploads/
-exports/
+# Uploads & exports (runtime artifacts)
+backend/uploads/*.png
+backend/uploads/*.jpg
+backend/uploads/*.dxf
+backend/exports/*.dxf
+backend/exports/*.glb
 
-# Database
+# Database (auto-created on startup)
 *.db
 *.sqlite3
 
 # Logs
 *.log
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# ML pipeline artifacts
+backend/ml_pipeline/checkpoints/
+backend/ml_pipeline/logs/
+backend/ml_pipeline/datasets/
+
+# Misc
+*.png
+!frontend/public/*.png
+!frontend/public/*.svg

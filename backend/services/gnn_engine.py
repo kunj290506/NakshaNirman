@@ -86,42 +86,76 @@ NUM_ROOM_TYPES = 7  # one-hot encoding dimension
 WALL_EXTERNAL_FT = 9 / 12  # 0.75 ft
 WALL_INTERNAL_FT = 4.5 / 12  # 0.375 ft
 
-# Recommended room area ratios (fraction of usable area)
+# =========================================================================
+# INDIAN RESIDENTIAL STANDARDS — Vastu Shastra + NBC 2016 compliant
+# =========================================================================
+
+# Room area ratios tuned for Indian BHK-style homes
+# Source: Indian National Building Code 2016, IS 1893, common practice
 ROOM_AREA_RATIOS = {
-    'living':         (0.18, 0.22),
-    'master_bedroom': (0.12, 0.16),
-    'bedroom':        (0.10, 0.14),
-    'kitchen':        (0.08, 0.12),
-    'bathroom':       (0.04, 0.06),
-    'toilet':         (0.03, 0.04),
-    'dining':         (0.08, 0.12),
-    'study':          (0.05, 0.08),
-    'pooja':          (0.02, 0.03),
-    'store':          (0.02, 0.04),
-    'balcony':        (0.03, 0.05),
-    'utility':        (0.02, 0.03),
-    'garage':         (0.10, 0.14),
+    'living':         (0.15, 0.20),   # drawing/living room
+    'master_bedroom': (0.12, 0.15),   # owner's bedroom
+    'bedroom':        (0.09, 0.12),   # additional bedrooms
+    'kitchen':        (0.07, 0.10),   # cooking area
+    'bathroom':       (0.03, 0.05),   # attached bath
+    'toilet':         (0.02, 0.03),   # WC only
+    'dining':         (0.07, 0.10),   # dining area
+    'study':          (0.04, 0.06),   # study/home office
+    'pooja':          (0.015, 0.025), # prayer room
+    'store':          (0.02, 0.035),  # storage
+    'balcony':        (0.03, 0.05),   # sit-out / balcony
+    'utility':        (0.015, 0.025), # washing/utility
+    'garage':         (0.10, 0.14),   # car parking
+    'porch':          (0.03, 0.05),   # entrance vestibule
+    'foyer':          (0.02, 0.04),   # entrance lobby
+    'staircase':      (0.04, 0.06),   # staircase well
+}
+
+# Standard room sizes (width x length) in feet — Indian residential
+# These represent ideal proportions for typical Indian homes
+STANDARD_ROOM_SIZES_FT = {
+    'living':         (14, 16),
+    'master_bedroom': (12, 14),
+    'bedroom':        (10, 12),
+    'kitchen':        (8, 10),
+    'bathroom':       (5, 8),
+    'toilet':         (4, 5),
+    'dining':         (10, 12),
+    'study':          (10, 10),
+    'pooja':          (5, 5),
+    'store':          (6, 6),
+    'balcony':        (4, 10),
+    'utility':        (5, 6),
+    'garage':         (10, 18),
+    'porch':          (10, 8),
+    'foyer':          (6, 6),
+    'staircase':      (5, 10),
 }
 
 # Min room dimensions (width, length) in feet
 MIN_ROOM_DIMS = {
-    'living':         (10, 12),
-    'master_bedroom': (10, 12),
-    'bedroom':        (9, 10),
+    'living':         (12, 14),
+    'master_bedroom': (12, 12),
+    'bedroom':        (10, 10),
     'kitchen':        (7, 8),
-    'bathroom':       (5, 6),
-    'toilet':         (4, 5),
-    'dining':         (8, 10),
-    'study':          (7, 8),
-    'pooja':          (5, 5),
+    'bathroom':       (5, 7),
+    'toilet':         (3, 4),
+    'dining':         (10, 10),
+    'study':          (8, 8),
+    'pooja':          (4, 4),
     'store':          (5, 5),
     'balcony':        (4, 8),
     'utility':        (4, 5),
     'garage':         (10, 18),
+    'porch':          (6, 5),
+    'foyer':          (5, 5),
+    'staircase':      (4, 8),
 }
 
 ZONE_MAP = {
     'living': 'public',
+    'porch': 'public',
+    'foyer': 'public',
     'dining': 'semi_private',
     'kitchen': 'semi_private',
     'master_bedroom': 'private',
@@ -134,6 +168,47 @@ ZONE_MAP = {
     'balcony': 'public',
     'utility': 'service',
     'garage': 'public',
+    'staircase': 'circulation',
+}
+
+# =========================================================================
+# VASTU SHASTRA PLACEMENT RULES
+# =========================================================================
+# Quadrant preference for each room type (priority order)
+# Quadrants: NE (top-left in screen), NW (top-right), SE (bottom-left), SW (bottom-right)
+# In our coordinate system: (0,0) = bottom-left of plot
+#   SW = bottom-left, SE = bottom-right, NW = top-left, NE = top-right
+VASTU_PLACEMENT = {
+    'living':         ['NE', 'N', 'E'],         # NE corner, open, welcoming
+    'kitchen':        ['SE', 'S', 'E'],          # SE = Agni (fire) corner
+    'dining':         ['W', 'NW', 'S'],          # West or near kitchen
+    'master_bedroom': ['SW', 'S', 'W'],          # SW = Earth, stability
+    'bedroom':        ['NW', 'W', 'S'],          # NW = guest/children
+    'bathroom':       ['NW', 'W', 'S'],          # West side, attached to bedroom
+    'toilet':         ['NW', 'W'],               # Never NE
+    'study':          ['NE', 'E', 'N', 'W'],     # NE = concentration
+    'pooja':          ['NE', 'E', 'N'],           # NE = most auspicious
+    'store':          ['NW', 'SW', 'W'],          # NW = Vayu (air, dryness)
+    'utility':        ['NW', 'SE', 'W'],          # Near kitchen or store
+    'balcony':        ['N', 'E', 'NE'],           # North/East for light
+    'garage':         ['NW', 'SE'],               # Near entrance
+    'porch':          ['E', 'N', 'NE'],           # Entrance side
+    'foyer':          ['E', 'N', 'NE'],           # Entrance side
+    'staircase':      ['S', 'W', 'SW'],           # South or West
+}
+
+# Adjacency requirements (architectural + Vastu)
+# (room_a, room_b) -> 'required' | 'preferred' | 'avoid'
+ADJACENCY_RULES = {
+    ('kitchen', 'dining'):          'required',
+    ('master_bedroom', 'bathroom'): 'required',   # attached bath
+    ('bedroom', 'bathroom'):        'preferred',   # attached or nearby
+    ('living', 'dining'):           'preferred',
+    ('kitchen', 'utility'):         'preferred',   # shared plumbing
+    ('living', 'porch'):            'preferred',
+    ('pooja', 'kitchen'):           'avoid',       # fire near sacred
+    ('toilet', 'kitchen'):          'avoid',
+    ('toilet', 'pooja'):            'avoid',
 }
 
 
@@ -515,8 +590,691 @@ def _squarify_layout(items, x, y, w, h, place_fn):
 
 
 # ===========================================================================
-# ROOM PLAN GENERATION  (uses treemap above)
+# INDIAN HOME LAYOUT ENGINE — Dynamic multi-strategy placement
 # ===========================================================================
+# Adapts layout strategy to plot shape (wide, tall, square, L-shaped).
+# Produces varied, natural-looking Indian residential floor plans — NOT
+# the same rigid pattern for every plot.
+#
+# Layout strategies:
+#   GRID_2x3   — 2 rows × 3 cols (wide/square plots, like ref architect plans)
+#   GRID_3x2   — 3 rows × 2 cols (tall/narrow plots)
+#   WRAP       — Rooms wrap around central Living Room (large square plots)
+#   COLUMN_3   — 3-column service core (compact narrow plots)
+
+import random as _random
+
+def _get_vastu_quadrant(rx, ry, rw, rh, plot_cx, plot_cy):
+    """Determine which Vastu quadrant a room's center falls in."""
+    cx = rx + rw / 2
+    cy = ry + rh / 2
+    if cx <= plot_cx and cy >= plot_cy:
+        return 'NW'
+    elif cx > plot_cx and cy >= plot_cy:
+        return 'NE'
+    elif cx <= plot_cx and cy < plot_cy:
+        return 'SW'
+    else:
+        return 'SE'
+
+
+def _vastu_score(room_type, quadrant):
+    """Score how well a room type fits in a given Vastu quadrant (0-10)."""
+    prefs = VASTU_PLACEMENT.get(room_type, [])
+    if quadrant in prefs:
+        return max(10 - prefs.index(quadrant) * 3, 2)
+    return 0
+
+
+# ---- Room builder helpers ------------------------------------------------
+
+_MIN_AREAS = {
+    'living': 100, 'master_bedroom': 110, 'bedroom': 90,
+    'kitchen': 36, 'bathroom': 28, 'toilet': 15,
+    'dining': 70, 'study': 50, 'pooja': 16,
+    'store': 20, 'balcony': 25, 'utility': 16, 'garage': 100,
+    'porch': 30, 'staircase': 36,
+}
+_MAX_AREAS = {
+    'bathroom': 50, 'toilet': 25, 'pooja': 36, 'store': 50,
+    'utility': 35,
+}
+
+
+def _build_room_list(rooms_config, total_area):
+    """Build canonical room list with Indian naming from rooms_config dict."""
+    total_beds = rooms_config.get('master_bedroom', 0) + rooms_config.get('bedroom', 0)
+
+    # Auto-add pooja for 3BHK+
+    if total_beds >= 3 and rooms_config.get('pooja', 0) == 0:
+        rooms_config['pooja'] = 1
+
+    # Ensure attached bathrooms (1 per bedroom)
+    total_baths = rooms_config.get('bathroom', 0) + rooms_config.get('toilet', 0)
+    if total_baths < total_beds:
+        rooms_config['bathroom'] = total_beds
+
+    def _pct(rtype):
+        lo, hi = ROOM_AREA_RATIOS.get(rtype, (0.04, 0.06))
+        return (lo + hi) / 2
+
+    def _make(rtype, name):
+        target = _pct(rtype) * total_area
+        target = max(target, _MIN_AREAS.get(rtype, 20))
+        mx = _MAX_AREAS.get(rtype)
+        if mx:
+            target = min(target, mx)
+        return {
+            'room_type': rtype, 'name': name,
+            'zone': ZONE_MAP.get(rtype, 'private'),
+            'target_area': target,
+        }
+
+    # Named rooms (Indian style)
+    living = _make('living', 'Drawing Room')
+
+    master = None
+    if rooms_config.get('master_bedroom', 0) > 0:
+        master = _make('master_bedroom', 'Master Bed Room')
+
+    bedrooms = []
+    n_bed = rooms_config.get('bedroom', 0)
+    for i in range(n_bed):
+        lbl = f'Bed Room {i + 2}' if (master or n_bed > 1) else 'Bed Room'
+        bedrooms.append(_make('bedroom', lbl))
+
+    kitchens = [_make('kitchen', 'Kitchen')
+                for _ in range(rooms_config.get('kitchen', 1))]
+    dinings = [_make('dining', 'Dining Area')
+               for _ in range(rooms_config.get('dining', 0))]
+
+    n_bath = rooms_config.get('bathroom', 0)
+    bathrooms = []
+    for i in range(n_bath):
+        lbl = 'Wash Area' if i == 0 else f'Bath {i + 1}'
+        bathrooms.append(_make('bathroom', lbl))
+
+    toilets = [_make('toilet', 'Toilet')
+               for _ in range(rooms_config.get('toilet', 0))]
+    stores = [_make('store', 'Store Room')
+              for _ in range(rooms_config.get('store', 0))]
+    poojas = [_make('pooja', 'Puja Room')
+              for _ in range(rooms_config.get('pooja', 0))]
+    utilities = [_make('utility', 'Utility')
+                 for _ in range(rooms_config.get('utility', 0))]
+    studies = [_make('study', 'Study')
+               for _ in range(rooms_config.get('study', 0))]
+    staircases = [_make('staircase', 'Staircase')
+                  for _ in range(rooms_config.get('staircase', 0))]
+    balconies = [_make('balcony', 'Balcony')
+                 for _ in range(rooms_config.get('balcony', 0))]
+
+    return {
+        'living': living, 'master': master,
+        'bedrooms': bedrooms, 'kitchens': kitchens, 'dinings': dinings,
+        'bathrooms': bathrooms, 'toilets': toilets, 'stores': stores,
+        'poojas': poojas, 'utilities': utilities, 'studies': studies,
+        'staircases': staircases, 'balconies': balconies,
+    }
+
+
+# ---- Strategy selection ---------------------------------------------------
+
+def _choose_strategy(aspect, n_rooms, total_area):
+    """
+    Pick the best layout strategy based on plot shape and room count.
+
+    aspect = plot_width / plot_length
+      > 1.15  → wide plot   (GRID_2x3 or WRAP)
+      < 0.85  → tall plot   (GRID_3x2 or COLUMN_3)
+      else    → square plot (any strategy, pick by room count)
+    """
+    strategies = []
+
+    if n_rooms <= 4:
+        # Very small (1BHK): simple 2×2 or 2-col
+        if aspect > 1.0:
+            strategies = ['GRID_2x2_WIDE']
+        else:
+            strategies = ['GRID_2x2_TALL']
+    elif aspect > 1.15:
+        # Wide plot
+        strategies = ['GRID_2x3']
+        if total_area > 1800 and aspect < 1.4:
+            strategies.append('WRAP')  # Only if not extremely wide
+    elif aspect < 0.85:
+        # Tall/narrow plot
+        strategies = ['GRID_3x2']
+        if n_rooms <= 6:
+            strategies.append('COLUMN_3')
+    else:
+        # Near-square
+        if total_area > 1800:
+            strategies = ['WRAP', 'GRID_2x3']
+        elif n_rooms >= 8:
+            strategies = ['GRID_2x3', 'GRID_3x2']
+        else:
+            strategies = ['GRID_2x3', 'GRID_3x2', 'WRAP']
+
+    return _random.choice(strategies)
+
+
+# ---- Grid cell placer (shared by all strategies) --------------------------
+
+def _place_grid(cells, ux, uy, uw, ul, place_fn):
+    """
+    Place rooms in a row×col grid.
+    cells = list of rows, each row = list of room-dicts (or None for empty)
+    Each row gets height proportional to its tallest room's area needs.
+    Each col within a row gets width proportional to room area.
+    """
+    n_rows = len(cells)
+    if n_rows == 0:
+        return
+
+    # Calculate row heights (proportional to max room area in row)
+    row_areas = []
+    for row in cells:
+        valid = [r for r in row if r is not None]
+        if valid:
+            row_areas.append(sum(r['target_area'] for r in valid))
+        else:
+            row_areas.append(50)
+
+    total_row_area = sum(row_areas) or 1
+
+    # Min height per row varies by room type
+    MIN_ROW_H = 8.0
+    row_heights = []
+    for i, row in enumerate(cells):
+        h = ul * (row_areas[i] / total_row_area)
+        # Check if row has bedrooms/living — need min 9ft
+        has_major = any(r and r['room_type'] in
+                       ('living', 'master_bedroom', 'bedroom', 'kitchen', 'dining')
+                       for r in row)
+        minh = 9.0 if has_major else MIN_ROW_H
+        row_heights.append(max(h, minh))
+
+    # Scale to fit
+    total_h = sum(row_heights)
+    if total_h > ul:
+        scale = ul / total_h
+        row_heights = [h * scale for h in row_heights]
+
+    # Snap last row
+    deficit = ul - sum(row_heights)
+    if abs(deficit) > 0.05:
+        row_heights[-1] += deficit
+
+    # Place each row
+    cy = uy
+    for ri, (row, rh) in enumerate(zip(cells, row_heights)):
+        if ri == n_rows - 1:
+            rh = (uy + ul) - cy  # snap
+
+        valid = [r for r in row if r is not None]
+        if not valid:
+            cy += rh
+            continue
+
+        n_cols = len(row)
+        col_areas = []
+        for r in row:
+            if r is None:
+                col_areas.append(0)
+            else:
+                col_areas.append(r['target_area'])
+
+        total_col = sum(col_areas) or 1
+
+        # Min column width
+        MIN_COL_W = min(7.0, uw / max(n_cols, 1) * 0.5)
+        col_widths = []
+        for ca in col_areas:
+            if ca == 0:
+                col_widths.append(0)
+            else:
+                w = uw * (ca / total_col)
+                # Small service rooms get capped width
+                col_widths.append(max(w, MIN_COL_W))
+
+        # Scale to fit
+        total_w = sum(col_widths)
+        if total_w > uw and total_w > 0:
+            scale = uw / total_w
+            col_widths = [w * scale for w in col_widths]
+
+        # Snap last col
+        used_w = sum(col_widths)
+        diff = uw - used_w
+        if abs(diff) > 0.05:
+            # Add to largest non-zero column
+            for j in range(len(col_widths) - 1, -1, -1):
+                if col_widths[j] > 0:
+                    col_widths[j] += diff
+                    break
+
+        cx = ux
+        for ci, (room, cw) in enumerate(zip(row, col_widths)):
+            if room is None or cw <= 0:
+                cx += cw
+                continue
+            # Last col snaps to boundary
+            if ci == n_cols - 1:
+                cw = (ux + uw) - cx
+            cw = max(cw, 3.0)
+            place_fn(room, cx, cy, cw, rh)
+            cx += cw
+
+        cy += rh
+
+
+# ---- Layout strategies ---------------------------------------------------
+
+def _layout_grid_2x3(rl, ux, uy, uw, ul, place_fn):
+    """
+    2 rows × 3 columns — for wide/square plots.
+    Like the reference: bedrooms top, living/dining bottom.
+
+    ┌─────────────┬───────────┬─────────────┐
+    │ Master Bed  │ Bed Room  │Kitchen+Wash │  ← Top (private/service)
+    ├─────────────┼───────────┼─────────────┤
+    │ Bed Room    │Living Room│ Dining Area │  ← Bottom (public, entry)
+    └─────────────┴───────────┴─────────────┘
+    """
+    living = rl['living']
+    master = rl['master']
+    beds = list(rl['bedrooms'])
+    kitchens = list(rl['kitchens'])
+    dinings = list(rl['dinings'])
+    baths = list(rl['bathrooms'])
+    toilets = list(rl['toilets'])
+    stores = list(rl['stores'])
+    poojas = list(rl['poojas'])
+    studies = list(rl['studies'])
+    utils = list(rl['utilities'])
+    stairs = list(rl['staircases'])
+    balconies = list(rl['balconies'])
+
+    # Service rooms: pick wash area for kitchen-adjacent
+    wash = baths.pop(0) if baths else None
+
+    # Bottom row (front/road): Bed/Study | Living Room | Dining
+    bottom_left = beds.pop(0) if beds else (studies.pop(0) if studies else None)
+    bottom_center = living
+    bottom_right = dinings.pop(0) if dinings else (
+        studies.pop(0) if studies else (poojas.pop(0) if poojas else None))
+
+    # Top row (back/private): Master | Bed/Stair | Kitchen+Wash
+    top_left = master if master else (beds.pop(0) if beds else None)
+    top_center = beds.pop(0) if beds else (
+        stairs.pop(0) if stairs else (stores.pop(0) if stores else None))
+
+    # Kitchen + Wash merged into top-right (or just kitchen)
+    # We'll place kitchen and wash stacked if both exist
+    top_right = kitchens.pop(0) if kitchens else None
+
+    # Build 2 rows
+    bottom_row = [r for r in [bottom_left, bottom_center, bottom_right] if r]
+    top_row = [r for r in [top_left, top_center, top_right] if r]
+
+    # Any remaining rooms: add wash to top row, baths near beds
+    remaining = baths + toilets + stores + poojas + utils + stairs + balconies + studies
+    if wash:
+        remaining.insert(0, wash)
+
+    # Distribute remaining to shorter row
+    for rm in remaining:
+        if len(top_row) <= len(bottom_row):
+            top_row.append(rm)
+        else:
+            bottom_row.append(rm)
+
+    grid = [bottom_row, top_row]
+    _place_grid(grid, ux, uy, uw, ul, place_fn)
+
+
+def _layout_grid_3x2(rl, ux, uy, uw, ul, place_fn):
+    """
+    3 rows × 2 columns — for tall/narrow plots.
+
+    ┌──────────┬──────────┐
+    │ Kitchen  │Wash/Bath │  ← Top (service)
+    ├──────────┼──────────┤
+    │ Master   │ Bed Room │  ← Middle (private)
+    ├──────────┼──────────┤
+    │ Living   │ Dining   │  ← Bottom (public, entry)
+    └──────────┴──────────┘
+    """
+    living = rl['living']
+    master = rl['master']
+    beds = list(rl['bedrooms'])
+    kitchens = list(rl['kitchens'])
+    dinings = list(rl['dinings'])
+    baths = list(rl['bathrooms'])
+    toilets = list(rl['toilets'])
+    stores = list(rl['stores'])
+    poojas = list(rl['poojas'])
+    studies = list(rl['studies'])
+    utils = list(rl['utilities'])
+    stairs = list(rl['staircases'])
+    balconies = list(rl['balconies'])
+
+    # Bottom: Living + Dining/Bed
+    bot_right = dinings.pop(0) if dinings else (
+        beds.pop(0) if beds else (studies.pop(0) if studies else None))
+    bottom = [living]
+    if bot_right:
+        bottom.append(bot_right)
+
+    # Middle: Master + Bed
+    mid_left = master if master else (beds.pop(0) if beds else None)
+    mid_right = beds.pop(0) if beds else (
+        studies.pop(0) if studies else (stairs.pop(0) if stairs else None))
+    middle = [r for r in [mid_left, mid_right] if r]
+
+    # Top: Kitchen + Wash
+    wash = baths.pop(0) if baths else None
+    top_left = kitchens.pop(0) if kitchens else None
+    top_right = wash
+    top = [r for r in [top_left, top_right] if r]
+
+    # Distribute remaining rooms
+    remaining = beds + baths + toilets + stores + poojas + utils + stairs + balconies + dinings + studies
+    for rm in remaining:
+        lens = [len(bottom), len(middle), len(top)]
+        min_idx = lens.index(min(lens))
+        [bottom, middle, top][min_idx].append(rm)
+
+    grid = [bottom, middle, top]
+    _place_grid(grid, ux, uy, uw, ul, place_fn)
+
+
+def _layout_wrap(rl, ux, uy, uw, ul, place_fn):
+    """
+    Rooms wrap around central Living Room — for large square plots.
+
+    ┌──────────┬──────────┬──────────┐
+    │ Master   │ Kitchen  │Wash Area │  ← Top
+    ├──────────┼──────────┴──────────┤
+    │ Bed Room │                     │
+    ├──────────┤  Living / Drawing   │  ← Center (large)
+    │ Study    │      Room          │
+    ├──────────┼──────────┬──────────┤
+    │ Puja     │ Dining   │ Stair   │  ← Bottom
+    └──────────┴──────────┴──────────┘
+    """
+    living = rl['living']
+    master = rl['master']
+    beds = list(rl['bedrooms'])
+    kitchens = list(rl['kitchens'])
+    dinings = list(rl['dinings'])
+    baths = list(rl['bathrooms'])
+    toilets = list(rl['toilets'])
+    stores = list(rl['stores'])
+    poojas = list(rl['poojas'])
+    studies = list(rl['studies'])
+    utils = list(rl['utilities'])
+    stairs = list(rl['staircases'])
+    balconies = list(rl['balconies'])
+
+    # Gather all remaining rooms into the groups BEFORE placement
+    # Left strip width (~35% of plot)
+    left_w = uw * 0.35
+    right_w = uw - left_w
+
+    # Left column: stacked rooms (bedrooms + master)
+    left_rooms = []
+    if master:
+        left_rooms.append(master)
+    for b in beds:
+        left_rooms.append(b)
+    # Also add puja/study to left column
+    if poojas:
+        left_rooms.extend(poojas)
+        poojas = []
+    if studies:
+        left_rooms.extend(studies)
+        studies = []
+
+    # Top-right: Kitchen + Wash + extra baths
+    kitchen = kitchens.pop(0) if kitchens else None
+    top_right = [r for r in [kitchen] if r]
+    # All bathrooms go into top-right service row
+    for b in baths:
+        top_right.append(b)
+    baths = []
+    for t in toilets:
+        top_right.append(t)
+    toilets = []
+
+    # Bottom-right: Dining + stairs + stores + utilities
+    dining = dinings.pop(0) if dinings else None
+    bot_right = [r for r in [dining] if r]
+    for s in stairs:
+        bot_right.append(s)
+    stairs = []
+    for s in stores:
+        bot_right.append(s)
+    stores = []
+    for u in utils:
+        bot_right.append(u)
+    utils = []
+    for b in balconies:
+        bot_right.append(b)
+    balconies = []
+    # Extra kitchens / dinings
+    for k in kitchens:
+        bot_right.append(k)
+    for d in dinings:
+        bot_right.append(d)
+
+    # Top/bottom heights (~28% each, living gets remaining ~44%)
+    service_h = ul * 0.28
+    living_h = ul - 2 * service_h
+
+    # Place left column (full height, stacked)
+    if left_rooms:
+        n = len(left_rooms)
+        h_each = ul / n
+        cy = uy
+        for i, rm in enumerate(left_rooms):
+            rh = h_each if i < n - 1 else (uy + ul) - cy
+            place_fn(rm, ux, cy, left_w, max(rh, 5))
+            cy += rh
+
+    rx = ux + left_w
+
+    # Place bottom-right row
+    if bot_right:
+        cw_each = right_w / len(bot_right)
+        cx = rx
+        for i, rm in enumerate(bot_right):
+            w = cw_each if i < len(bot_right) - 1 else (ux + uw) - cx
+            place_fn(rm, cx, uy, max(w, 5), service_h)
+            cx += w
+
+    # Place Living (center-right)
+    living_y = uy + service_h
+    living['target_area'] = max(living['target_area'], right_w * living_h * 0.7)
+    place_fn(living, rx, living_y, right_w, living_h)
+
+    # Place top-right row
+    top_y = uy + service_h + living_h
+    actual_top_h = (uy + ul) - top_y
+    if top_right:
+        cw_each = right_w / len(top_right)
+        cx = rx
+        for i, rm in enumerate(top_right):
+            w = cw_each if i < len(top_right) - 1 else (ux + uw) - cx
+            place_fn(rm, cx, top_y, max(w, 5), actual_top_h)
+            cx += w
+
+
+def _layout_grid_2x2(rl, ux, uy, uw, ul, place_fn, wide=True):
+    """
+    Simple 2×2 grid for small (1BHK) homes.
+
+    Wide:                     Tall:
+    ┌──────────┬──────────┐   ┌──────────┐
+    │ Bed Room │ Kitchen  │   │ Bed Room │
+    ├──────────┼──────────┤   ├──────────┤
+    │ Living   │ Bath     │   │ Kitchen  │
+    └──────────┴──────────┘   ├──────────┤
+                              │ Living   │
+                              └──────────┘
+    """
+    living = rl['living']
+    master = rl['master']
+    beds = list(rl['bedrooms'])
+    kitchens = list(rl['kitchens'])
+    baths = list(rl['bathrooms'])
+    toilets = list(rl['toilets'])
+    stores = list(rl['stores'])
+    poojas = list(rl['poojas'])
+    utils = list(rl['utilities'])
+
+    bed = master if master else (beds.pop(0) if beds else None)
+    kitchen = kitchens.pop(0) if kitchens else None
+    bath = baths.pop(0) if baths else (toilets.pop(0) if toilets else None)
+
+    remaining = beds + baths + toilets + stores + poojas + utils
+
+    if wide:
+        bottom = [living]
+        if bath:
+            bottom.append(bath)
+        top = []
+        if bed:
+            top.append(bed)
+        if kitchen:
+            top.append(kitchen)
+        for rm in remaining:
+            if len(top) <= len(bottom):
+                top.append(rm)
+            else:
+                bottom.append(rm)
+        grid = [bottom, top]
+    else:
+        # Tall: single-column or 2-col
+        col = [living]
+        if kitchen:
+            col.append(kitchen)
+        if bed:
+            col.append(bed)
+        if bath:
+            col.append(bath)
+        col.extend(remaining)
+        # Split into 2 columns if more than 3 rooms
+        if len(col) > 3:
+            mid = len(col) // 2
+            grid = [[col[i] for i in range(mid)],
+                    [col[i] for i in range(mid, len(col))]]
+            # Transpose: treat as rows
+        else:
+            grid = [[r] for r in col]
+
+    _place_grid(grid, ux, uy, uw, ul, place_fn)
+
+
+def _layout_column_3(rl, ux, uy, uw, ul, place_fn):
+    """
+    3-column layout with center service core — for compact narrow plots.
+
+    ┌──────────┬───────┬──────────┐
+    │ Bed Room │ Store │ Kitchen  │
+    ├──────────┤ Toilet├──────────┤
+    │ Drawing  │ Bath  │ Bed Room │
+    └──────────┴───────┴──────────┘
+    """
+    living = rl['living']
+    master = rl['master']
+    beds = list(rl['bedrooms'])
+    kitchens = list(rl['kitchens'])
+    dinings = list(rl['dinings'])
+    baths = list(rl['bathrooms'])
+    toilets = list(rl['toilets'])
+    stores = list(rl['stores'])
+    poojas = list(rl['poojas'])
+    utils = list(rl['utilities'])
+    studies = list(rl['studies'])
+    stairs = list(rl['staircases'])
+    balconies = list(rl['balconies'])
+
+    left = [living]
+    if stairs:
+        left.append(stairs.pop(0))
+    left.extend(dinings)
+    left.extend(studies)
+    if master:
+        left.append(master)
+    elif beds:
+        left.append(beds.pop(0))
+
+    center = baths + toilets + stores + utils
+
+    right = beds + kitchens + poojas + balconies + stairs
+
+    # Fallback
+    if not right and len(left) > 2:
+        right.append(left.pop())
+
+    # Center width
+    center_w = max(5.0, min(7.0, uw * 0.20)) if center else 0
+    rem = uw - center_w
+    left_w = rem * 0.52
+    right_w = rem - left_w
+
+    def _stack(rooms, sx, sy, sw, sh, cap_service=False):
+        if not rooms:
+            return
+        n = len(rooms)
+        total_a = sum(r['target_area'] for r in rooms) or 1
+        heights = []
+        for r in rooms:
+            h = sh * (r['target_area'] / total_a)
+            h = max(h, 5.0)
+            if cap_service and r['room_type'] in ('bathroom', 'toilet', 'store'):
+                h = min(h, 7.0)
+            heights.append(h)
+
+        total_h = sum(heights)
+        if total_h != sh:
+            scale = sh / total_h if total_h > 0 else 1
+            heights = [h * scale for h in heights]
+
+        # Add passage filler for service column
+        if cap_service:
+            actual = sum(heights)
+            capped_total = sum(min(h, 7.0) for h in heights)
+            if capped_total < sh * 0.7:
+                passage_h = sh - capped_total
+                passage = {'room_type': 'foyer', 'name': 'Passage',
+                           'zone': 'public', 'target_area': passage_h * sw}
+                rooms = list(rooms)
+                rooms.insert(0, passage)
+                heights = [passage_h] + [min(h, 7.0) for h in heights[1:] if h > 0]
+                # Recalc
+                n = len(rooms)
+                total_h = sum(heights)
+                if total_h != sh:
+                    scale = sh / total_h if total_h > 0 else 1
+                    heights = [h * scale for h in heights]
+
+        cy = sy
+        for i, (rm, rh) in enumerate(zip(rooms, heights)):
+            if i == n - 1:
+                rh = (sy + sh) - cy
+            place_fn(rm, sx, cy, sw, max(rh, 3))
+            cy += rh
+
+    _stack(left, ux, uy, left_w, ul)
+    if center:
+        _stack(center, ux + left_w, uy, center_w, ul, cap_service=True)
+    _stack(right, ux + left_w + center_w, uy, right_w, ul)
+
+
+# ---- Main entry point ----------------------------------------------------
 
 def generate_room_plan(
     boundary_coords: List[Tuple[float, float]],
@@ -525,25 +1283,15 @@ def generate_room_plan(
     total_area: float = 0,
 ) -> Tuple[Dict, Dict, List[Dict]]:
     """
-    Generate a professional residential floor plan via zoned treemap subdivision.
+    Generate a dynamic Indian home floor plan that adapts to plot shape.
 
-    Architecture
-    ────────────
-    Front zone (bottom, near entrance):
-        Public / semi-private rooms — Living, Kitchen, Dining, Balcony
-    Corridor (3–4 ft):
-        Passage separating public from private
-    Back zone (top):
-        Private / service rooms — Bedrooms, Bathrooms, Study, Pooja …
+    Automatically selects the best layout strategy based on:
+    • Plot aspect ratio (wide → 2×3 grid, tall → 3×2, square → wrap)
+    • Number of rooms (small → 2×2, large → wrap/grid)
+    • Plot area (large → wrap around central living)
 
-    Within each zone a *squarified treemap* fills 100 % of the rectangle,
-    producing wall-to-wall tiling with zero gaps and good aspect ratios.
-
-    Returns
-    -------
-    (room_centroids, room_sizes, room_specs)
-        – centroids / sizes: dict[room_type → list of (x,y) / (w,h)]
-        – room_specs:       list of room dicts, each with '_placed' key
+    Produces varied layouts — NOT the same rigid pattern every time.
+    Uses Vastu-aware room placement with Indian naming conventions.
     """
     # ── 1. Plot dimensions ──────────────────────────────────────────────
     if SHAPELY_AVAILABLE:
@@ -559,161 +1307,59 @@ def generate_room_plan(
     if total_area <= 0:
         total_area = plot_w * plot_l
 
-    EW = WALL_EXTERNAL_FT                         # 0.75 ft
-    ux, uy = minx + EW, miny + EW                 # usable origin
-    uw = plot_w - 2 * EW                           # usable width
-    ul = plot_l - 2 * EW                           # usable length
+    EW = WALL_EXTERNAL_FT
+    ux, uy = minx + EW, miny + EW
+    uw = plot_w - 2 * EW
+    ul = plot_l - 2 * EW
 
-    # ── 2. Target-area percentages (mid of ROOM_AREA_RATIOS) ────────────
-    def _pct(rtype):
-        lo, hi = ROOM_AREA_RATIOS.get(rtype, (0.04, 0.06))
-        return (lo + hi) / 2
+    aspect = plot_w / plot_l if plot_l > 0 else 1.0
 
-    # ── 3. Build room spec lists per zone ──────────────────────────────
-    front_rooms = []
-    back_rooms  = []
+    # ── 2. Build room list ──────────────────────────────────────────────
+    rl = _build_room_list(rooms_config, total_area)
 
-    # --- Front zone : public / semi-private --------------------------
-    front_rooms.append({
-        'room_type': 'living', 'name': 'Living',
-        'zone': 'public', 'zone_group': 'front',
-        'target_area': _pct('living') * total_area,
-    })
-    for _ in range(rooms_config.get('kitchen', 1)):
-        front_rooms.append({
-            'room_type': 'kitchen', 'name': 'Kitchen',
-            'zone': 'semi_private', 'zone_group': 'front',
-            'target_area': _pct('kitchen') * total_area,
-        })
-    for i in range(rooms_config.get('dining', 0)):
-        front_rooms.append({
-            'room_type': 'dining', 'name': 'Dining',
-            'zone': 'semi_private', 'zone_group': 'front',
-            'target_area': _pct('dining') * total_area,
-        })
-    for _ in range(rooms_config.get('balcony', 0)):
-        front_rooms.append({
-            'room_type': 'balcony', 'name': 'Balcony',
-            'zone': 'public', 'zone_group': 'front',
-            'target_area': _pct('balcony') * total_area,
-        })
+    # Count total rooms
+    all_rooms = ([rl['living']] +
+                 ([rl['master']] if rl['master'] else []) +
+                 rl['bedrooms'] + rl['kitchens'] + rl['dinings'] +
+                 rl['bathrooms'] + rl['toilets'] + rl['stores'] +
+                 rl['poojas'] + rl['utilities'] + rl['studies'] +
+                 rl['staircases'] + rl['balconies'])
+    n_rooms = len(all_rooms)
 
-    # --- Back zone : private / service --------------------------------
-    master_count  = rooms_config.get('master_bedroom', 0)
-    bedroom_count = rooms_config.get('bedroom', 0)
-    bathroom_count = rooms_config.get('bathroom', 0)
-    toilet_count  = rooms_config.get('toilet', 0)
+    # ── 3. Choose strategy ──────────────────────────────────────────────
+    strategy = _choose_strategy(aspect, n_rooms, total_area)
 
-    if master_count > 0:
-        back_rooms.append({
-            'room_type': 'master_bedroom', 'name': 'Master Bedroom',
-            'zone': 'private', 'zone_group': 'back',
-            'target_area': _pct('master_bedroom') * total_area,
-        })
-    bath_idx = 0
-    for bi in range(bedroom_count):
-        lbl = f'Bedroom {bi + 1}' if bedroom_count > 1 else 'Bedroom'
-        back_rooms.append({
-            'room_type': 'bedroom', 'name': lbl,
-            'zone': 'private', 'zone_group': 'back',
-            'target_area': _pct('bedroom') * total_area,
-        })
-    for _ in range(bathroom_count):
-        bath_idx += 1
-        lbl = f'Bathroom {bath_idx}' if bathroom_count > 1 else 'Bathroom'
-        back_rooms.append({
-            'room_type': 'bathroom', 'name': lbl,
-            'zone': 'service', 'zone_group': 'back',
-            'target_area': _pct('bathroom') * total_area,
-        })
-    for _ in range(toilet_count):
-        back_rooms.append({
-            'room_type': 'toilet', 'name': 'Toilet',
-            'zone': 'service', 'zone_group': 'back',
-            'target_area': _pct('toilet') * total_area,
-        })
-    for rtype in ('study', 'pooja', 'store', 'utility', 'garage'):
-        for _ in range(rooms_config.get(rtype, 0)):
-            back_rooms.append({
-                'room_type': rtype,
-                'name': rtype.replace('_', ' ').title(),
-                'zone': ZONE_MAP.get(rtype, 'private'),
-                'zone_group': 'back',
-                'target_area': _pct(rtype) * total_area,
-            })
-
-    # Enforce minimum room areas (Indian residential standards)
-    _MIN_AREAS = {
-        'living': 100, 'master_bedroom': 100, 'bedroom': 80,
-        'kitchen': 50, 'bathroom': 30, 'toilet': 20,
-        'dining': 60, 'study': 40, 'pooja': 20,
-        'store': 20, 'balcony': 25, 'utility': 16, 'garage': 80,
-    }
-    for r in front_rooms + back_rooms:
-        mn = _MIN_AREAS.get(r['room_type'], 20)
-        if r['target_area'] < mn:
-            r['target_area'] = mn
-
-    room_specs = front_rooms + back_rooms
-
-    # Cap small-room areas so bathrooms / pooja don't bloat in large homes
-    _MAX_AREAS = {'bathroom': 55, 'toilet': 35, 'pooja': 40, 'store': 40, 'utility': 30}
-    for r in front_rooms + back_rooms:
-        mx = _MAX_AREAS.get(r['room_type'])
-        if mx and r['target_area'] > mx:
-            r['target_area'] = mx
-
-    # ── 4. Zone heights ────────────────────────────────────────────────
-    has_back = len(back_rooms) > 0
-    if not has_back:
-        CORRIDOR = 0
-    elif total_area < 700:
-        CORRIDOR = 0                 # tiny homes: living IS the passage
-    elif total_area < 1000:
-        CORRIDOR = 2.0
-    else:
-        CORRIDOR = 3.5 if uw >= 18 else 2.5
-
-    front_total = sum(r['target_area'] for r in front_rooms) or 1
-    back_total  = sum(r['target_area'] for r in back_rooms)  or 0
-    zone_sum    = front_total + back_total
-
-    avail_l = ul - CORRIDOR                        # vertical budget
-    front_h = avail_l * (front_total / zone_sum) if has_back else avail_l
-    back_h  = avail_l - front_h if has_back else 0
-
-    # Clamp so neither zone is unrealistically shallow
-    has_beds = any(r['room_type'] in ('master_bedroom', 'bedroom') for r in back_rooms)
-    MIN_ZONE = 8 if has_beds else min(6, avail_l * 0.25)
-    if has_back:
-        if back_h < MIN_ZONE:
-            back_h = MIN_ZONE;  front_h = avail_l - back_h
-        if front_h < MIN_ZONE:
-            front_h = MIN_ZONE;  back_h = avail_l - front_h
-
-    # ── 5. Place rooms with squarified treemap ─────────────────────────
+    # ── 4. Placement ────────────────────────────────────────────────────
     centroids_out = defaultdict(list)
-    sizes_out     = defaultdict(list)
+    sizes_out = defaultdict(list)
+    room_specs = []
 
-    def _record(room, rx, ry, rw, rh):
-        """Callback — store placement for one room."""
+    def _place(room, rx, ry, rw, rh):
         room['_placed'] = {
             'x': round(rx, 2), 'y': round(ry, 2),
             'w': round(rw, 2), 'h': round(rh, 2),
         }
+        room['zone_group'] = strategy
         centroids_out[room['room_type']].append(
             (round(rx + rw / 2, 2), round(ry + rh / 2, 2)))
         sizes_out[room['room_type']].append(
             (round(rw, 2), round(rh, 2)))
+        room_specs.append(room)
 
-    # Front zone (bottom — near entrance)
-    if front_rooms:
-        _squarify_layout(front_rooms, ux, uy, uw, front_h, _record)
-
-    # Back zone (top)
-    if back_rooms:
-        back_y = uy + front_h + CORRIDOR
-        _squarify_layout(back_rooms, ux, back_y, uw, back_h, _record)
+    if strategy == 'GRID_2x3':
+        _layout_grid_2x3(rl, ux, uy, uw, ul, _place)
+    elif strategy == 'GRID_3x2':
+        _layout_grid_3x2(rl, ux, uy, uw, ul, _place)
+    elif strategy == 'WRAP':
+        _layout_wrap(rl, ux, uy, uw, ul, _place)
+    elif strategy == 'COLUMN_3':
+        _layout_column_3(rl, ux, uy, uw, ul, _place)
+    elif strategy == 'GRID_2x2_WIDE':
+        _layout_grid_2x2(rl, ux, uy, uw, ul, _place, wide=True)
+    elif strategy == 'GRID_2x2_TALL':
+        _layout_grid_2x2(rl, ux, uy, uw, ul, _place, wide=False)
+    else:
+        _layout_grid_2x3(rl, ux, uy, uw, ul, _place)
 
     return dict(centroids_out), dict(sizes_out), room_specs
 
@@ -1051,6 +1697,7 @@ class FloorPlanBuilder:
                 'room_type': rtype,
                 'name': spec.get('name', rtype.replace('_', ' ').title()),
                 'zone': zone,
+                'zone_group': spec.get('zone_group', ''),
                 'position': {'x': round(rx, 1), 'y': round(ry, 1)},
                 'width': round(rw, 1),
                 'length': round(rl, 1),
@@ -1158,68 +1805,120 @@ class FloorPlanBuilder:
 
     def _assign_doors_windows(self, rooms: List[Dict],
                                plot_w: float, plot_l: float) -> List[Dict]:
-        """Assign doors and windows to each room based on position and zoning."""
-        minx, miny = self.bounds[0], self.bounds[1]
+        """
+        Assign doors and windows dynamically based on room position.
 
-        # Find corridor midpoint
-        public_bottom = 0
-        private_top = plot_l
-        for room in rooms:
-            z = room.get('zone', 'private')
-            ry = room['position']['y']
-            rl = room['length']
-            if z in ('public', 'semi_private'):
-                public_bottom = max(public_bottom, ry + rl)
-            elif z in ('private', 'service'):
-                private_top = min(private_top, ry)
-        corridor_mid = (public_bottom + private_top) / 2
+        Works with ANY layout strategy (grid, wrap, column, etc.) by
+        detecting each room's position relative to:
+        - Plot edges (for windows on external walls)
+        - Adjacent rooms (for door placement toward neighbors)
+        - Plot center (for internal circulation)
+
+        Door logic:
+        - Living/Drawing Room → door on road-facing wall (lowest y = south)
+        - Bathrooms → door toward nearest bedroom (adjacency scan)
+        - Bedrooms → door toward nearest public room or service
+        - Kitchen → door toward dining/living direction
+        - Other rooms → door toward plot center (internal circulation)
+
+        Window logic:
+        - External walls get windows (large for habitable, small for wet rooms)
+        - Interior rooms (store, pooja) → no windows (ventilated via door)
+        """
+        minx, miny = self.bounds[0], self.bounds[1]
+        plot_cx = minx + plot_w / 2
+        plot_cy = miny + plot_l / 2
+
+        def _find_nearest(room, target_types):
+            """Find nearest room of given type(s), return (distance, wall_toward)."""
+            rx, ry = room['position']['x'], room['position']['y']
+            rw, rl = room['width'], room['length']
+            rcx, rcy = rx + rw / 2, ry + rl / 2
+
+            best_dist = float('inf')
+            best_wall = None
+            for other in rooms:
+                if other is room:
+                    continue
+                if other['room_type'] not in target_types:
+                    continue
+                ox, oy = other['position']['x'], other['position']['y']
+                ow, ol = other['width'], other['length']
+                ocx, ocy = ox + ow / 2, oy + ol / 2
+
+                dx = ocx - rcx
+                dy = ocy - rcy
+                dist = abs(dx) + abs(dy)
+                if dist < best_dist:
+                    best_dist = dist
+                    # Determine which wall faces toward the other room
+                    if abs(dx) > abs(dy):
+                        best_wall = 'E' if dx > 0 else 'W'
+                    else:
+                        best_wall = 'N' if dy > 0 else 'S'
+
+            return best_dist, best_wall
 
         for room in rooms:
             pos = room['position']
             rw, rl = room['width'], room['length']
-            zone = room.get('zone', 'private')
             rtype = room['room_type']
             rx, ry = pos['x'], pos['y']
+            rcx, rcy = rx + rw / 2, ry + rl / 2
 
             doors = []
             windows = []
 
-            room_center_y = ry + rl / 2
+            # ── Door placement (adjacency-aware) ──────────────────────
 
-            # Door placement
-            if rtype in ('bathroom', 'toilet'):
-                # Door toward adjacent bedroom
-                door_placed = False
-                for other in rooms:
-                    if other['room_type'] not in ('master_bedroom', 'bedroom'):
-                        continue
-                    ox = other['position']['x']
-                    ow = other['width']
-                    oy = other['position']['y']
-                    if abs((ox + ow) - rx) < 2.0 and abs(oy - ry) < 2.0:
-                        doors.append({'wall': 'W', 'width': 2.5})
-                        door_placed = True
-                        break
-                    if abs((rx + rw) - ox) < 2.0 and abs(oy - ry) < 2.0:
-                        doors.append({'wall': 'E', 'width': 2.5})
-                        door_placed = True
-                        break
-                if not door_placed:
-                    if room_center_y < corridor_mid:
-                        doors.append({'wall': 'N', 'width': 2.5})
-                    else:
-                        doors.append({'wall': 'S', 'width': 2.5})
-            elif zone in ('public', 'semi_private'):
-                doors.append({'wall': 'N', 'width': 3})
-                if rtype == 'living':
-                    doors.append({'wall': 'S', 'width': 3})
+            if rtype == 'living':
+                # Main entrance on the wall closest to plot edge (road)
+                edges = [
+                    ('S', ry - miny), ('N', (miny + plot_l) - (ry + rl)),
+                    ('W', rx - minx), ('E', (minx + plot_w) - (rx + rw)),
+                ]
+                entry_wall = min(edges, key=lambda e: e[1])[0]
+                doors.append({'wall': entry_wall, 'width': 3.5})
+                # Second door toward interior
+                _, interior_wall = _find_nearest(room, ('kitchen', 'dining', 'bedroom', 'master_bedroom'))
+                if interior_wall and interior_wall != entry_wall:
+                    doors.append({'wall': interior_wall, 'width': 3})
+
+            elif rtype in ('bathroom', 'toilet'):
+                # Door toward nearest bedroom
+                _, wall = _find_nearest(room, ('master_bedroom', 'bedroom', 'living'))
+                doors.append({'wall': wall or 'S', 'width': 2.5})
+
+            elif rtype in ('master_bedroom', 'bedroom'):
+                # Door toward nearest living/bathroom/passage
+                _, wall = _find_nearest(room, ('living', 'foyer', 'bathroom', 'dining'))
+                doors.append({'wall': wall or 'S', 'width': 3})
+
+            elif rtype in ('kitchen',):
+                # Door toward dining or living
+                _, wall = _find_nearest(room, ('dining', 'living', 'foyer'))
+                doors.append({'wall': wall or 'W', 'width': 3})
+
+            elif rtype == 'foyer':
+                # Passage: doors on 2 opposite walls
+                doors.append({'wall': 'W', 'width': 3})
+                doors.append({'wall': 'E', 'width': 3})
+
+            elif rtype == 'dining':
+                # Door toward living or kitchen
+                _, wall = _find_nearest(room, ('living', 'kitchen'))
+                doors.append({'wall': wall or 'N', 'width': 3})
+
             else:
-                if room_center_y > corridor_mid:
-                    doors.append({'wall': 'S', 'width': 3})
+                # Default: door toward plot center
+                dx = plot_cx - rcx
+                dy = plot_cy - rcy
+                if abs(dx) > abs(dy):
+                    doors.append({'wall': 'E' if dx > 0 else 'W', 'width': 3})
                 else:
-                    doors.append({'wall': 'N', 'width': 3})
+                    doors.append({'wall': 'N' if dy > 0 else 'S', 'width': 3})
 
-            # Window placement (external walls only)
+            # ── Window placement (external walls only) ─────────────────
             tol = WALL_EXTERNAL_FT + 1
             is_south = ry <= miny + tol
             is_north = ry + rl >= miny + plot_l - tol
@@ -1227,26 +1926,21 @@ class FloorPlanBuilder:
             is_east = rx + rw >= minx + plot_w - tol
 
             if rtype in ('bathroom', 'toilet'):
-                if is_east:
-                    windows.append({'wall': 'E', 'width': 2})
-                elif is_north:
-                    windows.append({'wall': 'N', 'width': 2})
-                elif is_west:
-                    windows.append({'wall': 'W', 'width': 2})
-                elif is_south:
-                    windows.append({'wall': 'S', 'width': 2})
+                # Small ventilation window on any external wall
+                for wall, ext in [('E', is_east), ('N', is_north),
+                                  ('W', is_west), ('S', is_south)]:
+                    if ext:
+                        windows.append({'wall': wall, 'width': 2})
+                        break
             else:
-                if is_north:
-                    windows.append({'wall': 'N', 'width': 4})
                 if is_south:
                     windows.append({'wall': 'S', 'width': 4})
+                if is_north:
+                    windows.append({'wall': 'N', 'width': 4})
                 if is_east:
                     windows.append({'wall': 'E', 'width': 4})
                 if is_west:
                     windows.append({'wall': 'W', 'width': 4})
-
-            if not windows and rtype not in ('bathroom', 'toilet', 'store', 'utility'):
-                windows.append({'wall': 'N', 'width': 4})
 
             room['doors'] = doors
             room['windows'] = windows
@@ -1465,19 +2159,28 @@ def generate_gnn_floor_plan(
     if not front_door_pos:
         front_door_pos = ((bounds[0] + bounds[2]) / 2, bounds[1])
 
-    # Step 2: Build room configuration
+    # Step 2: Build room configuration (Indian BHK-style)
     rooms_config = {'living': 1}
     if bedrooms > 0:
         rooms_config['master_bedroom'] = 1
         if bedrooms > 1:
             rooms_config['bedroom'] = bedrooms - 1
-    rooms_config['bathroom'] = max(bathrooms, 1)
+    # Indian standard: at least 1 bathroom per bedroom (attached bath)
+    rooms_config['bathroom'] = max(bathrooms, bedrooms, 1)
     rooms_config['kitchen'] = max(kitchens, 1)
+
+    # Auto-add dining for 2BHK+ if not explicitly requested
+    if bedrooms >= 2 and 'dining' not in [e.lower().replace(' ', '_') for e in extras]:
+        rooms_config['dining'] = 1
 
     for extra in extras:
         extra_lower = extra.lower().replace(' ', '_')
         if extra_lower in ROOM_EMBEDDINGS:
             rooms_config[extra_lower] = rooms_config.get(extra_lower, 0) + 1
+
+    # Auto-add pooja for 3BHK+ (Indian tradition)  
+    if bedrooms >= 3 and rooms_config.get('pooja', 0) == 0:
+        rooms_config['pooja'] = 1
 
     # Step 3: Try GATNet model first
     use_model = False
@@ -1600,27 +2303,64 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
 
     lines = []
     lines.append(
-        f"GNN-inspired layout for {plot.get('width')}×{plot.get('length')} ft plot "
+        f"Indian Vastu-compliant layout for {plot.get('width')}×{plot.get('length')} ft plot "
         f"({area.get('plot_area', '?')} sq ft)."
     )
     lines.append(
-        f"Method: {'GAT-Net model inference' if method == 'model' else 'Graph-based heuristic sizing'}."
+        f"Method: {'GAT-Net model inference' if method == 'model' else 'Vastu-guided heuristic layout'}."
     )
+
+    # Detect layout strategy from room zone_group
+    strategy = 'dynamic'
+    for r in rooms:
+        zg = r.get('zone_group', '')
+        if zg and zg != 'dynamic':
+            strategy = zg
+            break
+    strategy_names = {
+        'GRID_2x3': '2×3 grid (wide layout)',
+        'GRID_3x2': '3×2 grid (tall layout)',
+        'WRAP': 'wrap-around central living',
+        'COLUMN_3': '3-column service core',
+        'GRID_2x2_WIDE': '2×2 grid (compact wide)',
+        'GRID_2x2_TALL': '2×2 grid (compact tall)',
+    }
+    lines.append(f"Layout strategy: {strategy_names.get(strategy, strategy)}.")
 
     bedroom_count = sum(1 for r in rooms if r['room_type'] in ('master_bedroom', 'bedroom'))
     bathroom_count = sum(1 for r in rooms if r['room_type'] in ('bathroom', 'toilet'))
+    bhk = f"{bedroom_count}BHK"
     lines.append(
-        f"Configuration: {bedroom_count} bedroom(s), {bathroom_count} bathroom(s), "
+        f"Configuration: {bhk} — {bedroom_count} bedroom(s), {bathroom_count} bathroom(s), "
         f"{len(rooms)} total rooms."
     )
+
+    # Vastu summary
+    vastu_notes = []
+    for r in rooms:
+        rtype = r['room_type']
+        if rtype == 'kitchen':
+            vastu_notes.append("Kitchen placed per Vastu (SE/fire corner)")
+        elif rtype == 'master_bedroom':
+            vastu_notes.append("Master bedroom in SW (earth/stability)")
+        elif rtype == 'pooja':
+            vastu_notes.append("Pooja room in NE (most auspicious)")
+    if vastu_notes:
+        lines.append("Vastu: " + "; ".join(vastu_notes[:3]) + ".")
+
+    # Check attached bathrooms
+    attached = sum(1 for r in rooms if r['room_type'] == 'bathroom')
+    if attached >= bedroom_count:
+        lines.append(f"Attached bathrooms: {attached} (one per bedroom).")
+
     lines.append(
         f"Utilization: {area.get('utilization_percentage', '?')}. "
         f"Circulation: {area.get('circulation_percentage', '?')}."
     )
-    lines.append("Walls: 9-inch external, 4.5-inch internal.")
+    lines.append("Walls: 9-inch external (brick), 4.5-inch internal (brick).")
 
     if validation.get('compliant'):
-        lines.append("All constraints validated. Layout is CAD-ready.")
+        lines.append("All Indian residential constraints validated. Layout is CAD-ready.")
     else:
         lines.append(f"Found {len(validation.get('issues', []))} issue(s).")
 
