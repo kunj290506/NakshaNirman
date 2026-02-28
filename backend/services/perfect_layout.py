@@ -300,11 +300,11 @@ class PerfectLayoutEngine:
         self.room_specs = room_specs
         self.num_candidates = num_candidates
         
-        # Usable area after external walls
-        self.ux = WALL_EXTERNAL_FT
-        self.uy = WALL_EXTERNAL_FT
-        self.uw = snap_down(self.plot_w - 2 * WALL_EXTERNAL_FT)
-        self.ul = snap_down(self.plot_l - 2 * WALL_EXTERNAL_FT)
+        # Usable area after external walls (snap to grid so all derived positions stay on grid)
+        self.ux = snap_up(WALL_EXTERNAL_FT)
+        self.uy = snap_up(WALL_EXTERNAL_FT)
+        self.uw = snap_down(self.plot_w - 2 * self.ux)
+        self.ul = snap_down(self.plot_l - 2 * self.uy)
         self.usable_area = self.uw * self.ul
     
     def generate(self) -> Dict:
@@ -488,15 +488,30 @@ class PerfectLayoutEngine:
         for r in placed:
             ar = aspect_ratio(r["w"], r["h"])
             limit = max_ar_for(r["room_type"])
-            # Reject only if AR is egregiously bad (limit + 1.0).
-            # Mildly off-ratio rooms are penalized in scoring instead.
-            if ar > limit + 1.0:
-                logger.debug(f"Candidate rejected: {r['room_type']} AR={ar:.2f} > {limit}+1.0, dims={r['w']:.1f}x{r['h']:.1f}")
+            # Reject if AR exceeds limit + 0.3 (tightened from +1.0)
+            if ar > limit + 0.3:
+                logger.debug(f"Candidate rejected: {r['room_type']} AR={ar:.2f} > {limit}+0.3, dims={r['w']:.1f}x{r['h']:.1f}")
                 return None
-            # Only reject rooms that are impossibly small (< 3ft shortest side)
+            # Only reject rooms that are impossibly small (< 2.5ft shortest side)
             short_side = min(r["w"], r["h"])
-            if short_side < 3.0:
+            if short_side < 2.5:
                 logger.debug(f"Candidate rejected: {r['room_type']} impossibly small {short_side:.1f}ft, dims={r['w']:.1f}x{r['h']:.1f}")
+                return None
+        
+        # Validate — habitable rooms must touch at least one exterior wall (natural light)
+        habitable_types = ("living", "master_bedroom", "bedroom", "dining", "kitchen")
+        ext_tol = 1.5  # tolerance for "touching" exterior
+        for r in placed:
+            if r["room_type"] not in habitable_types:
+                continue
+            touches = (
+                r["x"] <= self.ux + ext_tol or
+                r["x"] + r["w"] >= self.ux + self.uw - ext_tol or
+                r["y"] <= self.uy + ext_tol or
+                r["y"] + r["h"] >= self.uy + self.ul - ext_tol
+            )
+            if not touches:
+                logger.debug(f"Candidate rejected: {r['room_type']} has no exterior wall access at ({r['x']:.1f},{r['y']:.1f})")
                 return None
         
         return placed
@@ -569,8 +584,8 @@ class PerfectLayoutEngine:
         for r in combined:
             ar = aspect_ratio(r['w'], r['h'])
             limit = max_ar_for(r['room_type'])
-            if ar > limit + 1.0:
-                logger.debug(f"Column-split AR fail: {r['room_type']} ar={ar:.2f} > limit={limit}+1.0, dims={r['w']:.1f}x{r['h']:.1f}")
+            if ar > limit + 0.3:
+                logger.debug(f"Column-split AR fail: {r['room_type']} ar={ar:.2f} > limit={limit}+0.3, dims={r['w']:.1f}x{r['h']:.1f}")
                 return None
         
         logger.debug(f"Column-split SUCCESS: {len(combined)} rooms placed")
@@ -645,7 +660,14 @@ class PerfectLayoutEngine:
             h_val = snap(zone_h)
             ar = aspect_ratio(w_val, h_val)
             limit = max_ar_for(s["room_type"])
-            # Single room must fit; if AR terrible, still accept (best we can do)
+            # Clamp AR: if room is too elongated, shrink the long side
+            if ar > limit + 0.3 and min(w_val, h_val) >= 2.5:
+                if w_val > h_val:
+                    w_val = snap_down(h_val * (limit + 0.2))
+                    w_val = max(w_val, snap(3.0))
+                else:
+                    h_val = snap_down(w_val * (limit + 0.2))
+                    h_val = max(h_val, snap(3.0))
             return [{
                 "room_type": s["room_type"],
                 "name": s["name"],
@@ -663,9 +685,9 @@ class PerfectLayoutEngine:
         best_worst_ar = float("inf")
         
         # Dynamic minimum sub-zone: allow smaller splits when rooms are small
-        # (e.g., pooja at 16sqft needs ~3ft slices, not the default 4ft)
+        # (e.g., bathroom at 17sqft or pooja at 16sqft needs ~2.5ft slices)
         smallest_area = min(s["target_area"] for s in specs)
-        min_sub = 3.0 if smallest_area < 30 else 4.0
+        min_sub = 2.5 if smallest_area < 25 else (3.0 if smallest_area < 30 else 4.0)
         
         # Generate candidate splits
         sorted_specs = sorted(specs, key=lambda s: s["target_area"], reverse=True)
@@ -1444,6 +1466,14 @@ def generate_perfect_layout(
     
     actual_area = total_area or (plot_width * plot_length)
     
+    # Wide-plot transposition: if width > length × 1.5 and depth < 15ft,
+    # horizontal zone bands create narrow strip rooms with terrible AR.
+    # Generate as if plot is rotated 90° (tall), then un-transpose output.
+    _transposed = False
+    if plot_width > plot_length * 1.5 and plot_length < 15:
+        _transposed = True
+        plot_width, plot_length = plot_length, plot_width
+    
     # Build room specifications
     room_specs = build_room_specs(
         total_area=actual_area,
@@ -1461,6 +1491,23 @@ def generate_perfect_layout(
     )
     
     result = engine.generate()
+    
+    # Un-transpose if we rotated for wide-plot handling
+    if _transposed:
+        # Swap room positions and dimensions back
+        for room in result.get("rooms", []):
+            pos = room.get("position", {})
+            old_x, old_y = pos.get("x", 0), pos.get("y", 0)
+            old_w, old_h = room.get("width", 0), room.get("length", 0)
+            pos["x"] = old_y
+            pos["y"] = old_x
+            room["width"] = old_h
+            room["length"] = old_w
+            room["area"] = old_w * old_h
+        # Swap plot dimensions back
+        p = result.get("plot", {})
+        if p:
+            p["width"], p["length"] = p.get("length", 0), p.get("width", 0)
     
     # Add multi-floor info
     result["floors"] = floors

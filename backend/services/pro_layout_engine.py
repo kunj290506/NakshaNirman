@@ -2531,6 +2531,16 @@ def generate_professional_plan(
     if total_area <= 0:
         total_area = plot_w * plot_l
 
+    # --- Wide-plot transposition ---
+    # If width > length × 1.5 AND depth < 15ft, horizontal bands create
+    # narrow strip rooms with terrible AR. Transpose the boundary so we
+    # generate as a tall plot (vertical bands), then un-transpose at the end.
+    _transposed = False
+    if plot_w > plot_l * 1.5 and plot_l < 15:
+        _transposed = True
+        minx, miny, maxx, maxy = miny, minx, maxy, maxx
+        plot_w, plot_l = plot_l, plot_w
+
     # Usable area after external walls — SNAP to 0.5ft structural grid
     # so every room boundary falls on the grid. The wall inner face at
     # 0.75ft (9-inch wall) snaps inward to 1.0ft, giving us clean grid.
@@ -2595,6 +2605,14 @@ def generate_professional_plan(
                 # Same band height — swap widths and x positions
                 mp['w'], rp['w'] = rp['w'], mp['w']
                 mp['x'], rp['x'] = rp['x'], mp['x']
+
+    # --- Un-transpose if we transposed for wide-plot handling ---
+    if _transposed:
+        for r in best_layout:
+            p = r.get('_placed')
+            if p:
+                p['x'], p['y'] = p['y'], p['x']
+                p['w'], p['h'] = p['h'], p['w']
 
     # --- Build output format (with final grid snap) ---
     centroids = defaultdict(list)
