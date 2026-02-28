@@ -71,6 +71,10 @@ class PerfectDesignRequest(BaseModel):
         default=80, ge=10, le=500,
         description="Number of layout candidates to evaluate"
     )
+    strict_mode: bool = Field(
+        default=False,
+        description="Enable strict 8-room architectural compliance mode"
+    )
     project_id: Optional[str] = None
 
 
@@ -198,6 +202,7 @@ async def perfect_design(
             floors=req.floors,
             extras=extras,
             boundary_coords=boundary_coords,
+            strict_mode=req.strict_mode,
             front_door_pos=front_door_pos,
             total_area=req.total_area,
             num_candidates=req.num_candidates,
@@ -266,12 +271,14 @@ async def _generate_dxf(project_id: str, layout: Dict) -> Optional[str]:
         })
 
     doors_for_dxf = layout.get("doors", [])
-    file_path = generate_dxf(
-        project_id=project_id,
-        boundary=boundary,
-        rooms=rooms_for_dxf,
-        doors=doors_for_dxf,
-    )
+    plan_data = {
+        "boundary": boundary,
+        "rooms": rooms_for_dxf,
+        "doors": doors_for_dxf,
+    }
+
+    dxf_path = os.path.join(str(EXPORT_DIR), f"{project_id}.dxf")
+    file_path = generate_dxf(plan_data, dxf_path)
 
     if file_path and os.path.exists(file_path):
         filename = os.path.basename(file_path)

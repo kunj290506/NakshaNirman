@@ -113,6 +113,8 @@ MIN_DIMS = {
     'hallway':        (3.0, 3.0),
     'foyer':          (5, 5),
     'porch':          (6, 5),
+    'wash_area':      (4, 4),
+    'passage':        (2.5, 2.5),
 }
 
 # Maximum aspect ratio per room type
@@ -135,6 +137,8 @@ MAX_ASPECT = {
     'hallway':        5.0,
     'foyer':          2.0,
     'porch':          2.5,
+    'wash_area':      3.5,
+    'passage':        20.0,
 }
 
 # Hard minimum areas in sqft
@@ -145,12 +149,14 @@ MIN_AREAS = {
     'store': 20, 'balcony': 15, 'utility': 16,
     'garage': 150, 'staircase': 36, 'hallway': 21,
     'foyer': 25, 'porch': 30,
+    'wash_area': 20, 'passage': 15,
 }
 
 # Hard maximum areas (prevent bloated service rooms)
 MAX_AREAS = {
     'bathroom': 60, 'toilet': 30, 'pooja': 42,
     'store': 50, 'utility': 40, 'balcony': 55,
+    'wash_area': 72,
 }
 
 # ===========================================================================
@@ -175,6 +181,8 @@ AREA_FRACTIONS = {
     'utility':        (0.015, 0.02, 0.03),
     'garage':         (0.08, 0.12, 0.16),
     'staircase':      (0.03, 0.045, 0.06),
+    'wash_area':      (0.04, 0.05, 0.06),
+    'passage':        (0.05, 0.10, 0.15),
 }
 
 # ===========================================================================
@@ -200,6 +208,8 @@ ZONE_MAP = {
     'hallway': 'circulation',
     'foyer': 'public',
     'porch': 'public',
+    'wash_area': 'service',
+    'passage': 'circulation',
 }
 
 # Room placement priority (higher = placed first, gets better position)
@@ -210,6 +220,7 @@ PRIORITY = {
     'staircase': 40, 'balcony': 35, 'store': 30,
     'utility': 25, 'garage': 20, 'foyer': 65,
     'porch': 18, 'hallway': 15,
+    'wash_area': 40, 'passage': 10,
 }
 
 # ===========================================================================

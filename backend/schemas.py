@@ -119,11 +119,11 @@ class SetbackRequest(BaseModel):
 # ---------- Requirements ----------
 class RequirementsIn(BaseModel):
     # Hard constraints
-    floors: int
-    bedrooms: int
-    bathrooms: int
-    kitchen: int
-    max_area: float
+    floors: int = 1
+    bedrooms: int = 2
+    bathrooms: int = 1
+    kitchen: int = 1
+    max_area: float = 0
 
     # Soft constraints (optional)
     balcony: bool = False

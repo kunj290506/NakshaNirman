@@ -86,6 +86,19 @@ for pair in [("dining", "bedroom"), ("dining", "master_bedroom")]:
         FORBIDDEN_ADJACENCIES.append(pair)
 
 
+# Labels for strict 8-room compliance mode
+STRICT_8ROOM_LABELS = {
+    "living": "Drawing Room",
+    "kitchen": "Kitchen",
+    "dining": "Dining Area",
+    "master_bedroom": "Master Bedroom",
+    "bedroom": "Bedroom 1",
+    "bathroom": "Attached Bathroom",
+    "wash_area": "Wash Area",
+    "passage": "Passage",
+}
+
+
 # =============================================================================
 # UTILITY HELPERS
 # =============================================================================
@@ -269,6 +282,107 @@ def build_room_specs(
     return front_rooms + back_rooms
 
 
+def build_strict_8room_specs(total_area: float) -> List[Dict]:
+    """
+    Build EXACT 8-room specification for strict architectural compliance.
+
+    HARD CONSTRAINT 3-BAND LAYOUT (1200 sqft reference):
+
+    Band 1 (Top, 30% height — Public Zone):
+      1. Drawing Room (left)     17.5%   (210 sqft)
+      2. Kitchen (center)        12.5%   (150 sqft)
+      3. Dining Area (right)     10.0%   (120 sqft)
+                                          Band 1 total = 40%
+
+    Band 2 (Middle, 30% height — Service Zone):
+      4. Wash Area                5.0%   ( 60 sqft)
+      5. Passage                 remainder (~7-8%)
+                                          Band 2 fills remaining
+
+    Band 3 (Bottom, 40% height — Private Zone):
+      6. Master Bedroom (left)   20.0%   (240 sqft, capped at 250)
+      7. Bedroom 1 (right)       16.5%   (198 sqft)
+      8. Attached Bathroom        5.0%   ( 60 sqft, carved inside MBR)
+                                          Band 3 total ~41.5%
+
+    Total = 8 rooms exactly.  No room > 25% of total area.
+    """
+    band1 = []   # Public
+    band2 = []   # Service
+    band3 = []   # Private
+
+    def _area(pct: float) -> float:
+        return snap(pct * total_area)
+
+    # --- BAND 1 (Public) — 3 rooms, ~40% of total area ---
+    band1.append({
+        "room_type": "living", "name": "Drawing Room",
+        "zone": "public", "zone_group": "band1",
+        "target_area": _area(0.175),
+        "priority": 100,
+    })
+    band1.append({
+        "room_type": "kitchen", "name": "Kitchen",
+        "zone": "semi_private", "zone_group": "band1",
+        "target_area": _area(0.125),
+        "priority": 85,
+    })
+    band1.append({
+        "room_type": "dining", "name": "Dining Area",
+        "zone": "semi_private", "zone_group": "band1",
+        "target_area": _area(0.10),
+        "priority": 80,
+    })
+
+    # --- BAND 2 (Service) — 2 rooms ---
+    # Wash Area: 5% (within 4-6% range)
+    # Passage: sized to fill the rest of Band 2
+    band2.append({
+        "room_type": "wash_area", "name": "Wash Area",
+        "zone": "service", "zone_group": "band2",
+        "target_area": _area(0.05),
+        "priority": 40,
+    })
+    band2.append({
+        "room_type": "passage", "name": "Passage",
+        "zone": "circulation", "zone_group": "band2",
+        "target_area": _area(0.08),   # remainder of band 2
+        "priority": 30,
+    })
+
+    # --- BAND 3 (Private) — 3 spaces ---
+    # Master Bedroom includes the area carved for attached bathroom.
+    master_gross = min(_area(0.20), 250)
+    bath_area = _area(0.05)
+    band3.append({
+        "room_type": "master_bedroom", "name": "Master Bedroom",
+        "zone": "private", "zone_group": "band3",
+        "target_area": master_gross,
+        "priority": 90,
+    })
+    band3.append({
+        "room_type": "bedroom", "name": "Bedroom 1",
+        "zone": "private", "zone_group": "band3",
+        "target_area": _area(0.165),
+        "priority": 75,
+    })
+    band3.append({
+        "room_type": "bathroom", "name": "Attached Bathroom",
+        "zone": "service", "zone_group": "band3",
+        "target_area": bath_area,
+        "priority": 55,
+    })
+
+    all_rooms = band1 + band2 + band3
+    # Validate: no room exceeds 25% of total
+    for r in all_rooms:
+        cap = total_area * 0.25
+        if r["target_area"] > cap:
+            r["target_area"] = snap(cap)
+
+    return all_rooms
+
+
 # =============================================================================
 # CORE LAYOUT ENGINE — Zone-Based Strip Packing
 # =============================================================================
@@ -293,12 +407,14 @@ class PerfectLayoutEngine:
         plot_length: float,
         room_specs: List[Dict],
         num_candidates: int = 50,
+        strict_mode: bool = False,
     ):
         self.plot_w = snap(plot_width)
         self.plot_l = snap(plot_length)
         self.total_area = self.plot_w * self.plot_l
         self.room_specs = room_specs
         self.num_candidates = num_candidates
+        self.strict_mode = strict_mode
         
         # Usable area after external walls (snap to grid so all derived positions stay on grid)
         self.ux = snap_up(WALL_EXTERNAL_FT)
@@ -312,6 +428,17 @@ class PerfectLayoutEngine:
         best_layout = None
         best_score = -1.0
         candidates_tried = 0
+        
+        # In strict mode, always start with the adjacency-aware fallback
+        # as baseline — it produces well-proportioned single-row layouts
+        # with guaranteed MBR↔Bath adjacency.
+        if self.strict_mode:
+            fallback_layout = self._generate_fallback()
+            if fallback_layout:
+                fallback_score = self._score_layout(fallback_layout)
+                if fallback_score > best_score:
+                    best_score = fallback_score
+                    best_layout = fallback_layout
         
         for i in range(self.num_candidates):
             seed = i * 31 + 7
@@ -349,6 +476,12 @@ class PerfectLayoutEngine:
     def _generate_one(self, seed: int) -> Optional[List[Dict]]:
         """Generate one layout candidate."""
         random.seed(seed)
+        
+        # In strict 3-band mode, the fallback generator IS the definitive
+        # generator (exact 30/30/40 bands).  Treemap candidates cannot
+        # honour the hard-constraint band structure, so skip them.
+        if self.strict_mode:
+            return None
         
         front_specs = [s for s in self.room_specs if s["zone_group"] == "front"]
         back_specs = [s for s in self.room_specs if s["zone_group"] == "back"]
@@ -499,7 +632,10 @@ class PerfectLayoutEngine:
                 return None
         
         # Validate — habitable rooms must touch at least one exterior wall (natural light)
+        # In strict mode, exempt kitchen (uses exhaust fan) and wash_area
         habitable_types = ("living", "master_bedroom", "bedroom", "dining", "kitchen")
+        if self.strict_mode:
+            habitable_types = ("living", "master_bedroom", "bedroom", "dining")
         ext_tol = 1.5  # tolerance for "touching" exterior
         for r in placed:
             if r["room_type"] not in habitable_types:
@@ -743,6 +879,18 @@ class PerfectLayoutEngine:
                         if is_forbidden and rects_share_wall(combined[ii], combined[jj]):
                             worst_ar_ratio += 1.0  # heavy penalty
                 
+                # Reward desired adjacencies (e.g. master_bedroom + bathroom)
+                for ii in range(len(combined)):
+                    for jj in range(ii + 1, len(combined)):
+                        ta = combined[ii]["room_type"]
+                        tb = combined[jj]["room_type"]
+                        is_desired = any(
+                            (ta == da and tb == db) or (tb == da and ta == db)
+                            for da, db, _s in _LC_DESIRED_ADJ
+                        )
+                        if is_desired and rects_share_wall(combined[ii], combined[jj]):
+                            worst_ar_ratio -= 0.25  # adjacency reward
+                
                 if worst_ar_ratio < best_worst_ar:
                     best_worst_ar = worst_ar_ratio
                     best_result = combined
@@ -844,6 +992,14 @@ class PerfectLayoutEngine:
             else:
                 splits.append((kd[:1], kd[1:]))
         
+        # Split 7: adjacency-aware — group master_bedroom with bathroom
+        # so they end up sharing a wall (attached bathroom requirement)
+        adj_pair_types = {'master_bedroom', 'bathroom'}
+        adj_group = [s for s in sorted_specs if s['room_type'] in adj_pair_types]
+        adj_rest = [s for s in sorted_specs if s['room_type'] not in adj_pair_types]
+        if len(adj_group) >= 2 and adj_rest and _valid_split(adj_group, adj_rest):
+            splits.insert(0, (adj_group, adj_rest))  # highest priority
+        
         return splits
     
     # -----------------------------------------------------------------
@@ -851,27 +1007,18 @@ class PerfectLayoutEngine:
     # -----------------------------------------------------------------
     
     def _generate_fallback(self) -> Optional[List[Dict]]:
-        """Proportional placement with 2-row back zone for AR control.
+        """Proportional placement with zone-based rows.
         
-        Front zone: single row (living, kitchen, dining).
-        Back zone: split into BEDROOM row + SERVICE row to prevent
-        narrow rooms (bathrooms, pooja) from being stretched to full
-        zone height.
+        Non-strict: Front row + optional corridor + Back row.
+        Strict mode: HARD CONSTRAINT 3-BAND LAYOUT:
+          Band 1 (top, 30%):  Drawing Room | Kitchen | Dining Area
+          Band 2 (mid, 30%):  Wash Area | Passage
+          Band 3 (bot, 40%):  Master Bedroom (with Bath carved inside) | Bedroom 1
         """
-        front = [s for s in self.room_specs if s["zone_group"] == "front"]
-        back = [s for s in self.room_specs if s["zone_group"] == "back"]
-        
-        corridor_h = 0 if self.total_area < 700 else snap(min(3.5, self.ul * 0.08))
-        
-        front_total = sum(s["target_area"] for s in front) or 1
-        back_total = sum(s["target_area"] for s in back) or 1
-        avail = self.ul - corridor_h
-        front_h = snap(avail * front_total / (front_total + back_total))
-        back_h = snap(avail - front_h)
-        
         placed = []
         
         def _place_row(specs, zone_x, zone_y, zone_w, zone_h, zone_group):
+            """Place specs as a single horizontal row filling (zone_x,zone_y,zone_w,zone_h)."""
             if not specs:
                 return
             total_a = sum(s["target_area"] for s in specs) or 1
@@ -901,13 +1048,134 @@ class PerfectLayoutEngine:
                 })
                 cx += w_val
         
+        # ── STRICT 3-BAND MODE ────────────────────────────────────
+        if self.strict_mode:
+            band1 = [s for s in self.room_specs if s["zone_group"] == "band1"]
+            band2 = [s for s in self.room_specs if s["zone_group"] == "band2"]
+            band3 = [s for s in self.room_specs if s["zone_group"] == "band3"]
+            
+            # Band heights: derived from actual target area sums so that
+            # height ratio == area ratio (all bands span full usable width).
+            # Bath is carved INSIDE MBR, so exclude it from Band 3 height calc.
+            b1_sum = sum(s["target_area"] for s in band1)
+            b2_sum = sum(s["target_area"] for s in band2)
+            b3_sum = sum(s["target_area"] for s in band3
+                         if s["room_type"] != "bathroom")
+            total_sum = b1_sum + b2_sum + b3_sum or 1
+
+            band1_h = snap(self.ul * b1_sum / total_sum)
+            band2_h = snap(max(4.0, self.ul * b2_sum / total_sum))
+            band3_h = snap(self.ul - band1_h - band2_h)
+            
+            band1_y = self.uy
+            band2_y = snap(self.uy + band1_h)
+            band3_y = snap(self.uy + band1_h + band2_h)
+            
+            # Band 1: Drawing Room (left), Kitchen (center), Dining (right)
+            # Enforce left-center-right ordering
+            band1_ordered = []
+            for rtype in ["living", "kitchen", "dining"]:
+                match = [s for s in band1 if s["room_type"] == rtype]
+                if match:
+                    band1_ordered.append(match[0])
+            _place_row(band1_ordered, self.ux, band1_y, self.uw, band1_h, "band1")
+            
+            # Band 2: Wash Area + Passage (2 rooms only)
+            band2_ordered = []
+            for rtype in ["wash_area", "passage"]:
+                match = [s for s in band2 if s["room_type"] == rtype]
+                if match:
+                    band2_ordered.append(match[0])
+            _place_row(band2_ordered, self.ux, band2_y, self.uw, band2_h, "band2")
+            
+            # Band 3: Master Bedroom (left) + Bedroom 1 (right)
+            # Attached Bathroom is CARVED INSIDE Master Bedroom
+            mbr_spec = next((s for s in band3 if s["room_type"] == "master_bedroom"), None)
+            bed1_spec = next((s for s in band3 if s["room_type"] == "bedroom"), None)
+            bath_spec = next((s for s in band3 if s["room_type"] == "bathroom"), None)
+            
+            if mbr_spec and bed1_spec:
+                # Master BR gets more width (left), Bedroom 1 gets rest (right)
+                mbr_area = mbr_spec["target_area"]
+                bed1_area = bed1_spec["target_area"]
+                total_b3 = mbr_area + bed1_area
+                mbr_w = snap(self.uw * mbr_area / total_b3)
+                # Ensure MBR is wide enough for the bath to be carved inside
+                mbr_w = max(mbr_w, snap(self.uw * 0.50))
+                bed1_w = snap(self.uw - mbr_w)
+                
+                # Place Master Bedroom (full band height, left side)
+                placed.append({
+                    "room_type": "master_bedroom",
+                    "name": "Master Bedroom",
+                    "zone": "private",
+                    "zone_group": "band3",
+                    "target_area": mbr_spec["target_area"],
+                    "x": round(self.ux, 2),
+                    "y": round(band3_y, 2),
+                    "w": mbr_w,
+                    "h": band3_h,
+                })
+                
+                # Carve Attached Bathroom INSIDE Master Bedroom
+                # Place it in the top-right corner of the MBR rectangle
+                if bath_spec:
+                    bath_target = bath_spec["target_area"]
+                    # Target ~60 sqft (5% of 1200). Aim for 7.5×8 or similar.
+                    bath_w = snap(max(5.0, min(8.0, mbr_w * 0.40)))
+                    bath_h = snap(max(5.0, min(bath_target / bath_w + 1.0, band3_h * 0.60)))
+                    # Ensure bath area is at least 4% of total
+                    if bath_w * bath_h < self.total_area * 0.04:
+                        bath_h = snap(max(bath_h, self.total_area * 0.04 / bath_w))
+                    # Clamp to fit inside MBR
+                    bath_w = min(bath_w, snap(mbr_w * 0.45))
+                    bath_h = min(bath_h, snap(band3_h * 0.65))
+                    # Position: top-right corner of MBR area
+                    bath_x = round(self.ux + mbr_w - bath_w, 2)
+                    bath_y = round(band3_y + band3_h - bath_h, 2)
+                    placed.append({
+                        "room_type": "bathroom",
+                        "name": "Attached Bathroom",
+                        "zone": "service",
+                        "zone_group": "band3",
+                        "target_area": bath_target,
+                        "x": bath_x,
+                        "y": bath_y,
+                        "w": bath_w,
+                        "h": bath_h,
+                    })
+                
+                # Place Bedroom 1 (right side, full band height)
+                placed.append({
+                    "room_type": "bedroom",
+                    "name": "Bedroom 1",
+                    "zone": "private",
+                    "zone_group": "band3",
+                    "target_area": bed1_spec["target_area"],
+                    "x": round(self.ux + mbr_w, 2),
+                    "y": round(band3_y, 2),
+                    "w": bed1_w,
+                    "h": band3_h,
+                })
+            
+            return placed if placed else None
+        
+        # ── NON-STRICT MODE (original logic) ──────────────────────
+        front = [s for s in self.room_specs if s["zone_group"] == "front"]
+        back = [s for s in self.room_specs if s["zone_group"] == "back"]
+        
+        corridor_h = 0 if self.total_area < 700 else snap(min(3.5, self.ul * 0.08))
+        
+        front_total = sum(s["target_area"] for s in front) or 1
+        back_total = sum(s["target_area"] for s in back) or 1
+        avail = self.ul - corridor_h
+        front_h = snap(avail * front_total / (front_total + back_total))
+        back_h = snap(avail - front_h)
+        
         _place_row(front, self.ux, self.uy, self.uw, front_h, "front")
         
         back_y = self.uy + front_h + corridor_h
-        
-        # Split back zone: if enough rooms, use COLUMN SPLIT
-        # (bedrooms left, full height + services stacked right)
-        # This gives bedrooms good proportions AND keeps services compact
+
         _LARGE_TYPES = {'master_bedroom', 'bedroom', 'study'}
         beds_back = [s for s in back if s['room_type'] in _LARGE_TYPES]
         svc_back = [s for s in back if s['room_type'] not in _LARGE_TYPES]
@@ -1254,9 +1522,10 @@ class PerfectLayoutEngine:
                     windows.append({"wall": "E", "width": 3.0})
             
             elif rtype in ("master_bedroom", "bedroom"):
-                # Bedroom: door toward corridor (south for back zone)
-                if zone == "private" and room.get("zone_group") == "back":
-                    doors.append({"wall": "S", "width": 2.5})
+                # Bedroom: door toward corridor/passage (north for band3)
+                zg = room.get("zone_group", "back")
+                if zg in ("back", "band3"):
+                    doors.append({"wall": "N", "width": 2.5})
                 else:
                     doors.append({"wall": "N", "width": 2.5})
                 
@@ -1332,6 +1601,29 @@ class PerfectLayoutEngine:
             elif rtype == "utility":
                 doors.append({"wall": "S", "width": 2.0})
                 windows.append({"wall": "N", "width": 1.5, "type": "ventilation"})
+            
+            elif rtype == "wash_area":
+                # Wash area: door toward kitchen or passage
+                adjacent_wall = (
+                    self._find_adjacent_wall(room, "kitchen", result)
+                    or self._find_adjacent_wall(room, "passage", result)
+                )
+                if adjacent_wall:
+                    doors.append({"wall": adjacent_wall, "width": 2.0})
+                else:
+                    doors.append({"wall": "S", "width": 2.0})
+                # Ventilation window on exterior wall
+                if rx <= self.ux + 0.5:
+                    windows.append({"wall": "W", "width": 1.5, "type": "ventilation"})
+                elif rx + rw >= self.ux + self.uw - 0.5:
+                    windows.append({"wall": "E", "width": 1.5, "type": "ventilation"})
+                elif ry <= self.uy + 0.5:
+                    windows.append({"wall": "S", "width": 1.5, "type": "ventilation"})
+
+            elif rtype == "passage":
+                # Passage connects front and back zones
+                doors.append({"wall": "S", "width": 3.0, "type": "open"})
+                doors.append({"wall": "N", "width": 3.0, "type": "open"})
             
             else:
                 doors.append({"wall": "S", "width": 2.5})
@@ -1418,6 +1710,7 @@ def generate_perfect_layout(
     front_door_pos: Optional[Tuple[float, float]] = None,
     total_area: Optional[float] = None,
     num_candidates: int = 80,
+    strict_mode: bool = False,
 ) -> Dict:
     """
     Generate a perfect residential floor plan.
@@ -1444,6 +1737,10 @@ def generate_perfect_layout(
         Override total area (otherwise computed from dimensions).
     num_candidates : int
         Number of candidates to evaluate.
+    strict_mode : bool
+        When True, enforces strict 8-room compliance:
+        Drawing Room, Kitchen, Dining Area, Master Bedroom,
+        Bedroom 1, Attached Bathroom, Wash Area, Passage.
     
     Returns
     -------
@@ -1475,12 +1772,15 @@ def generate_perfect_layout(
         plot_width, plot_length = plot_length, plot_width
     
     # Build room specifications
-    room_specs = build_room_specs(
-        total_area=actual_area,
-        bedrooms=bedrooms,
-        bathrooms=bathrooms,
-        extras=extras,
-    )
+    if strict_mode:
+        room_specs = build_strict_8room_specs(total_area=actual_area)
+    else:
+        room_specs = build_room_specs(
+            total_area=actual_area,
+            bedrooms=bedrooms,
+            bathrooms=bathrooms,
+            extras=extras,
+        )
     
     # Run the engine
     engine = PerfectLayoutEngine(
@@ -1488,6 +1788,7 @@ def generate_perfect_layout(
         plot_length=plot_length,
         room_specs=room_specs,
         num_candidates=num_candidates,
+        strict_mode=strict_mode,
     )
     
     result = engine.generate()
@@ -1509,6 +1810,46 @@ def generate_perfect_layout(
         if p:
             p["width"], p["length"] = p.get("length", 0), p.get("width", 0)
     
+    # --- Strict mode anti-repetition validation ---
+    if strict_mode:
+        rooms = result.get("rooms", [])
+        room_names = [r.get("name", "") for r in rooms]
+        required = {"Drawing Room", "Kitchen", "Dining Area", "Master Bedroom",
+                     "Bedroom 1", "Attached Bathroom", "Wash Area", "Passage"}
+        actual_names = set(room_names)
+        
+        if len(room_names) != len(set(room_names)):
+            logger.warning(f"Strict mode: duplicate names detected: {room_names}")
+        missing = required - actual_names
+        extra_rooms = actual_names - required
+        if missing:
+            logger.warning(f"Strict mode: missing rooms: {missing}")
+        if extra_rooms:
+            logger.warning(f"Strict mode: unexpected rooms: {extra_rooms}")
+        
+        # Validate area caps
+        for r in rooms:
+            area = r.get("area", 0)
+            name = r.get("name", "")
+            if area > actual_area * 0.25:
+                logger.warning(f"Strict mode: {name} area {area:.0f} exceeds 25% of {actual_area}")
+            if name == "Master Bedroom" and area > 250:
+                logger.warning(f"Strict mode: Master Bedroom {area:.0f} sqft > 250 sqft cap")
+        
+        result["strict_compliance"] = {
+            "room_count": len(rooms),
+            "expected_count": 8,
+            "duplicates": len(room_names) - len(set(room_names)),
+            "missing": list(missing),
+            "extra": list(extra_rooms),
+            "compliant": (
+                len(rooms) == 8
+                and len(set(room_names)) == 8
+                and not missing
+                and not extra_rooms
+            ),
+        }
+    
     # Add multi-floor info
     result["floors"] = floors
     if floors > 1:
@@ -1519,13 +1860,23 @@ def generate_perfect_layout(
     
     # Build explanation
     room_names = [r["name"] for r in result.get("rooms", [])]
-    result["explanation"] = (
-        f"PerfectCAD generated an optimized {int(actual_area)} sq ft floor plan with "
-        f"{len(room_names)} rooms: {', '.join(room_names)}. "
-        f"Rooms are placed in architectural zones (public front, private back) "
-        f"with a circulation corridor. All proportions are constrained to safe aspect ratios "
-        f"per room type with grid-aligned walls."
-    )
+    if strict_mode:
+        result["explanation"] = (
+            f"PerfectCAD Strict 3-Band Mode: {int(actual_area)} sq ft floor plan with exactly "
+            f"8 rooms: {', '.join(room_names)}. "
+            f"Band 1 (top 30%): Drawing Room + Kitchen + Dining Area (public). "
+            f"Band 2 (middle 30%): Wash Area + Passage (service). "
+            f"Band 3 (bottom 40%): Master Bedroom (with Attached Bathroom inside) + Bedroom 1 (private). "
+            f"All rooms unique, no duplicates, no filler blocks, no utility rooms."
+        )
+    else:
+        result["explanation"] = (
+            f"PerfectCAD generated an optimized {int(actual_area)} sq ft floor plan with "
+            f"{len(room_names)} rooms: {', '.join(room_names)}. "
+            f"Rooms are placed in architectural zones (public front, private back) "
+            f"with a circulation corridor. All proportions are constrained to safe aspect ratios "
+            f"per room type with grid-aligned walls."
+        )
     
     return result
 

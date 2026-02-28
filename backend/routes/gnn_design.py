@@ -226,7 +226,6 @@ async def _generate_dxf(project_id: str, layout: Dict) -> Optional[str]:
     """Generate DXF file for the layout."""
     try:
         rooms = layout.get('rooms', [])
-        plot = layout.get('plot', {})
 
         # Convert to format expected by DXF exporter
         boundary_coords = layout.get('boundary', [[0, 0], [30, 0], [30, 40], [0, 40], [0, 0]])
@@ -234,11 +233,14 @@ async def _generate_dxf(project_id: str, layout: Dict) -> Optional[str]:
             'boundary': boundary_coords,
             'rooms': rooms,
             'total_area': layout.get('total_area', 0),
+            'doors': layout.get('doors', []),
+            'windows': layout.get('windows', []),
         }
 
-        dxf_path = generate_dxf(project_id, plan_data, str(EXPORT_DIR))
-        if dxf_path and os.path.exists(dxf_path):
-            filename = os.path.basename(dxf_path)
+        dxf_path = os.path.join(str(EXPORT_DIR), f"{project_id}.dxf")
+        result_path = generate_dxf(plan_data, dxf_path)
+        if result_path and os.path.exists(result_path):
+            filename = os.path.basename(result_path)
             return f"/exports/{filename}"
     except Exception as e:
         logger.error(f"DXF export error: {e}")
