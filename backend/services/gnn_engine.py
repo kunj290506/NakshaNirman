@@ -83,133 +83,58 @@ ROOM_EMBEDDINGS = {
 
 NUM_ROOM_TYPES = 7  # one-hot encoding dimension
 
-WALL_EXTERNAL_FT = 9 / 12  # 0.75 ft
-WALL_INTERNAL_FT = 4.5 / 12  # 0.375 ft
+# Import shared constants from centralized module
+from services.layout_constants import (
+    GRID_SNAP,
+    WALL_EXTERNAL_FT, WALL_INTERNAL_FT,
+    MIN_DIMS as MIN_ROOM_DIMS,
+    MAX_ASPECT,
+    AREA_FRACTIONS as _LC_AREA_FRACTIONS,
+    MIN_AREAS, MAX_AREAS,
+    ZONE_MAP as _LC_ZONE_MAP,
+    PRIORITY,
+    VASTU_PREFS as VASTU_PLACEMENT,
+    DESIRED_ADJACENCIES as _LC_DESIRED_ADJ,
+    FORBIDDEN_ADJACENCIES as _LC_FORBIDDEN_ADJ,
+    get_standard_room_sizes,
+)
 
-# =========================================================================
-# INDIAN RESIDENTIAL STANDARDS — Vastu Shastra + NBC 2016 compliant
-# =========================================================================
+# Derive ROOM_AREA_RATIOS from layout_constants (min, max) format
+ROOM_AREA_RATIOS = {k: (v[0], v[2]) for k, v in _LC_AREA_FRACTIONS.items()}
 
-# Room area ratios tuned for Indian BHK-style homes
-# Source: Indian National Building Code 2016, IS 1893, common practice
-ROOM_AREA_RATIOS = {
-    'living':         (0.15, 0.20),   # drawing/living room
-    'master_bedroom': (0.12, 0.15),   # owner's bedroom
-    'bedroom':        (0.09, 0.12),   # additional bedrooms
-    'kitchen':        (0.07, 0.10),   # cooking area
-    'bathroom':       (0.03, 0.05),   # attached bath
-    'toilet':         (0.02, 0.03),   # WC only
-    'dining':         (0.07, 0.10),   # dining area
-    'study':          (0.04, 0.06),   # study/home office
-    'pooja':          (0.015, 0.025), # prayer room
-    'store':          (0.02, 0.035),  # storage
-    'balcony':        (0.03, 0.05),   # sit-out / balcony
-    'utility':        (0.015, 0.025), # washing/utility
-    'garage':         (0.10, 0.14),   # car parking
-    'porch':          (0.03, 0.05),   # entrance vestibule
-    'foyer':          (0.02, 0.04),   # entrance lobby
-    'staircase':      (0.04, 0.06),   # staircase well
-}
+# Standard room sizes — prefer JSON config, fallback to built-in
+_json_sizes = get_standard_room_sizes()
+if _json_sizes:
+    STANDARD_ROOM_SIZES_FT = {
+        k: tuple(v.get('ideal', [10, 10]))
+        for k, v in _json_sizes.items()
+        if isinstance(v, dict) and 'ideal' in v
+    }
+else:
+    STANDARD_ROOM_SIZES_FT = {
+        'living': (14, 16), 'master_bedroom': (12, 14), 'bedroom': (10, 12),
+        'kitchen': (8, 10), 'bathroom': (5, 8), 'toilet': (4, 5),
+        'dining': (10, 12), 'study': (10, 10), 'pooja': (5, 5),
+        'store': (6, 6), 'balcony': (4, 10), 'utility': (5, 6),
+        'garage': (10, 18), 'porch': (10, 8), 'foyer': (6, 6),
+        'staircase': (5, 10),
+    }
 
-# Standard room sizes (width x length) in feet — Indian residential
-# These represent ideal proportions for typical Indian homes
-STANDARD_ROOM_SIZES_FT = {
-    'living':         (14, 16),
-    'master_bedroom': (12, 14),
-    'bedroom':        (10, 12),
-    'kitchen':        (8, 10),
-    'bathroom':       (5, 8),
-    'toilet':         (4, 5),
-    'dining':         (10, 12),
-    'study':          (10, 10),
-    'pooja':          (5, 5),
-    'store':          (6, 6),
-    'balcony':        (4, 10),
-    'utility':        (5, 6),
-    'garage':         (10, 18),
-    'porch':          (10, 8),
-    'foyer':          (6, 6),
-    'staircase':      (5, 10),
-}
+# Zone map — gnn_engine distinguishes semi_private
+ZONE_MAP = dict(_LC_ZONE_MAP)
+ZONE_MAP['dining'] = 'semi_private'
+ZONE_MAP['kitchen'] = 'semi_private'
+ZONE_MAP.setdefault('porch', 'public')
+ZONE_MAP.setdefault('foyer', 'public')
 
-# Min room dimensions (width, length) in feet
-MIN_ROOM_DIMS = {
-    'living':         (12, 14),
-    'master_bedroom': (12, 12),
-    'bedroom':        (10, 10),
-    'kitchen':        (7, 8),
-    'bathroom':       (5, 7),
-    'toilet':         (3, 4),
-    'dining':         (10, 10),
-    'study':          (8, 8),
-    'pooja':          (4, 4),
-    'store':          (5, 5),
-    'balcony':        (4, 8),
-    'utility':        (4, 5),
-    'garage':         (10, 18),
-    'porch':          (6, 5),
-    'foyer':          (5, 5),
-    'staircase':      (4, 8),
-}
-
-ZONE_MAP = {
-    'living': 'public',
-    'porch': 'public',
-    'foyer': 'public',
-    'dining': 'semi_private',
-    'kitchen': 'semi_private',
-    'master_bedroom': 'private',
-    'bedroom': 'private',
-    'bathroom': 'service',
-    'toilet': 'service',
-    'study': 'private',
-    'pooja': 'private',
-    'store': 'service',
-    'balcony': 'public',
-    'utility': 'service',
-    'garage': 'public',
-    'staircase': 'circulation',
-}
-
-# =========================================================================
-# VASTU SHASTRA PLACEMENT RULES
-# =========================================================================
-# Quadrant preference for each room type (priority order)
-# Quadrants: NE (top-left in screen), NW (top-right), SE (bottom-left), SW (bottom-right)
-# In our coordinate system: (0,0) = bottom-left of plot
-#   SW = bottom-left, SE = bottom-right, NW = top-left, NE = top-right
-VASTU_PLACEMENT = {
-    'living':         ['NE', 'N', 'E'],         # NE corner, open, welcoming
-    'kitchen':        ['SE', 'S', 'E'],          # SE = Agni (fire) corner
-    'dining':         ['W', 'NW', 'S'],          # West or near kitchen
-    'master_bedroom': ['SW', 'S', 'W'],          # SW = Earth, stability
-    'bedroom':        ['NW', 'W', 'S'],          # NW = guest/children
-    'bathroom':       ['NW', 'W', 'S'],          # West side, attached to bedroom
-    'toilet':         ['NW', 'W'],               # Never NE
-    'study':          ['NE', 'E', 'N', 'W'],     # NE = concentration
-    'pooja':          ['NE', 'E', 'N'],           # NE = most auspicious
-    'store':          ['NW', 'SW', 'W'],          # NW = Vayu (air, dryness)
-    'utility':        ['NW', 'SE', 'W'],          # Near kitchen or store
-    'balcony':        ['N', 'E', 'NE'],           # North/East for light
-    'garage':         ['NW', 'SE'],               # Near entrance
-    'porch':          ['E', 'N', 'NE'],           # Entrance side
-    'foyer':          ['E', 'N', 'NE'],           # Entrance side
-    'staircase':      ['S', 'W', 'SW'],           # South or West
-}
-
-# Adjacency requirements (architectural + Vastu)
-# (room_a, room_b) -> 'required' | 'preferred' | 'avoid'
-ADJACENCY_RULES = {
-    ('kitchen', 'dining'):          'required',
-    ('master_bedroom', 'bathroom'): 'required',   # attached bath
-    ('bedroom', 'bathroom'):        'preferred',   # attached or nearby
-    ('living', 'dining'):           'preferred',
-    ('kitchen', 'utility'):         'preferred',   # shared plumbing
-    ('living', 'porch'):            'preferred',
-    ('pooja', 'kitchen'):           'avoid',       # fire near sacred
-    ('toilet', 'kitchen'):          'avoid',
-    ('toilet', 'pooja'):            'avoid',
-}
+# Adjacency rules — gnn_engine uses dict format
+ADJACENCY_RULES = {}
+for (a, b, strength) in _LC_DESIRED_ADJ:
+    ADJACENCY_RULES[(a, b)] = strength
+for (a, b) in _LC_FORBIDDEN_ADJ:
+    ADJACENCY_RULES[(a, b)] = 'avoid'
+# Add gnn-specific rules
+ADJACENCY_RULES.setdefault(('living', 'porch'), 'preferred')
 
 
 # ===========================================================================
@@ -1402,12 +1327,41 @@ def generate_room_plan(
       • Vastu Shastra directional compliance
       • Structural grid alignment (0.5ft snap)
     """
+    # ── 0. Detect very wide plots and transpose for vertical bands ──────
+    # For plots where width > length × 1.5 (extreme wide), horizontal bands
+    # create narrow strip rooms. Transpose to vertical bands, then rotate back.
+    xs_raw = [c[0] for c in boundary_coords]
+    ys_raw = [c[1] for c in boundary_coords]
+    raw_w = max(xs_raw) - min(xs_raw)
+    raw_l = max(ys_raw) - min(ys_raw)
+    transposed = False
+    if raw_w > raw_l * 1.5 and raw_l < 15:
+        # Transpose: swap x↔y in boundary coordinates
+        transposed = True
+        boundary_coords = [(y, x) for x, y in boundary_coords]
+        total_area = raw_w * raw_l  # unchanged
+        logger.info("Wide plot detected (%.0f×%.0f), using transposed layout", raw_w, raw_l)
+
     # ── 1. Try Professional Layout Engine first ─────────────────────────
     try:
         from services.pro_layout_engine import generate_professional_plan
         logger.info("Using Professional Layout Engine (architect-grade)")
-        return generate_professional_plan(
+        result = generate_professional_plan(
             boundary_coords, rooms_config, total_area, front_door_pos)
+
+        # If transposed, rotate room coordinates back
+        if transposed and result and 'rooms' in result:
+            for room in result['rooms']:
+                pos = room.get('position', {})
+                old_x, old_y = pos.get('x', 0), pos.get('y', 0)
+                old_w, old_h = room.get('width', 0), room.get('length', 0)
+                pos['x'] = old_y
+                pos['y'] = old_x
+                room['width'] = old_h
+                room['length'] = old_w
+                room['area'] = old_w * old_h
+
+        return result
     except Exception as e:
         logger.warning(f"Pro Layout Engine failed ({e}), falling back to legacy")
 
@@ -1779,6 +1733,93 @@ class FloorPlanBuilder:
             'method': 'model' if TORCH_AVAILABLE and TORCH_GEO_AVAILABLE else 'heuristic',
         }
 
+    @staticmethod
+    def _snap(val, grid=0.5):
+        """Snap a value to the nearest grid increment (default 0.5ft)."""
+        return round(val / grid) * grid
+
+    @staticmethod
+    def _ensure_natural_light(rooms, minx, miny, maxx, maxy):
+        """
+        Swap interior habitable rooms with exterior service rooms.
+
+        Architect's rule: Every bedroom, living room, and study MUST have
+        at least one exterior wall (window for natural light/ventilation).
+        Service rooms (bathrooms, stores, utility) can be interior.
+        """
+        EXT_TOL = 1.75  # Wall thickness + tolerance
+
+        def _touches_ext(r):
+            rx, ry = r['position']['x'], r['position']['y']
+            rw, rl = r['width'], r['length']
+            return (rx <= minx + EXT_TOL or
+                    rx + rw >= maxx - EXT_TOL or
+                    ry <= miny + EXT_TOL or
+                    ry + rl >= maxy - EXT_TOL)
+
+        habitable = ('living', 'master_bedroom', 'bedroom', 'dining', 'study')
+        swappable = ('bathroom', 'toilet', 'store', 'utility', 'pooja')
+
+        # Min areas — don't swap if it would make a bedroom undersized
+        min_areas = {
+            'living': 80, 'master_bedroom': 80, 'bedroom': 60,
+            'dining': 50, 'study': 36,
+        }
+
+        # Find interior habitable rooms and exterior swappable rooms
+        interior_hab = [i for i, r in enumerate(rooms)
+                        if r['room_type'] in habitable and not _touches_ext(r)]
+        exterior_svc = [i for i, r in enumerate(rooms)
+                        if r['room_type'] in swappable and _touches_ext(r)]
+
+        # Swap positions — move bedroom to exterior, service room to interior
+        # BUT only if the bedroom gets a BIGGER or equal area (never shrink)
+        for hi in interior_hab:
+            if not exterior_svc:
+                break
+
+            # Find the best exterior service room to swap with:
+            # prefer one with area >= bedroom's current area
+            h_room = rooms[hi]
+            h_area = h_room['width'] * h_room['length']
+            min_a = min_areas.get(h_room['room_type'], 50)
+
+            best_si = None
+            for idx, si in enumerate(exterior_svc):
+                s_room = rooms[si]
+                s_area = s_room['width'] * s_room['length']
+                # Only swap if bedroom would get >= its current area
+                # AND won't go below minimum
+                if s_area >= h_area and s_area >= min_a:
+                    best_si = idx
+                    break
+
+            if best_si is None:
+                continue  # No suitable swap partner — skip
+
+            si = exterior_svc.pop(best_si)
+            s_room = rooms[si]
+
+            # Swap positions and dimensions
+            h_pos = dict(h_room['position'])
+            h_w, h_l = h_room['width'], h_room['length']
+            s_pos = dict(s_room['position'])
+            s_w, s_l = s_room['width'], s_room['length']
+
+            h_room['position'] = s_pos
+            h_room['width'] = s_w
+            h_room['length'] = s_l
+            h_room['area'] = round(s_w * s_l, 1)
+            h_room['actual_area'] = round(s_w * s_l, 1)
+
+            s_room['position'] = h_pos
+            s_room['width'] = h_w
+            s_room['length'] = h_l
+            s_room['area'] = round(h_w * h_l, 1)
+            s_room['actual_area'] = round(h_w * h_l, 1)
+
+        return rooms
+
     def build_layout_from_specs(
         self,
         room_specs: List[Dict],
@@ -1790,10 +1831,14 @@ class FloorPlanBuilder:
 
         Each spec has '_placed' dict with x, y, w, h already computed
         with guaranteed non-overlapping positions.
+
+        Post-processing:
+          - Ensure habitable rooms touch exterior walls (natural light)
         """
         minx, miny, maxx, maxy = self.bounds
         plot_w = round(maxx - minx, 1)
         plot_l = round(maxy - miny, 1)
+        snap = self._snap
 
         rooms = []
         for spec in room_specs:
@@ -1813,11 +1858,11 @@ class FloorPlanBuilder:
                 'name': spec.get('name', rtype.replace('_', ' ').title()),
                 'zone': zone,
                 'zone_group': spec.get('zone_group', ''),
-                'position': {'x': round(rx, 1), 'y': round(ry, 1)},
-                'width': round(rw, 1),
-                'length': round(rl, 1),
-                'area': round(rw * rl, 1),
-                'actual_area': round(rw * rl, 1),
+                'position': {'x': snap(rx), 'y': snap(ry)},
+                'width': snap(rw),
+                'length': snap(rl),
+                'area': round(snap(rw) * snap(rl), 1),
+                'actual_area': round(snap(rw) * snap(rl), 1),
                 'doors': [],
                 'windows': [],
             }
@@ -1825,6 +1870,9 @@ class FloorPlanBuilder:
             if spec.get('_attached_to'):
                 room['_attached_to'] = spec['_attached_to']
             rooms.append(room)
+
+        # ── Post-process: swap interior bedrooms with exterior service rooms ──
+        rooms = self._ensure_natural_light(rooms, minx, miny, maxx, maxy)
 
         # Assign doors and windows
         rooms = self._assign_doors_windows(rooms, plot_w, plot_l)
@@ -2199,16 +2247,20 @@ class FloorPlanBuilder:
             else:
                 # Habitable rooms: windows on ALL external walls
                 # Larger windows on front-facing walls, standard on others
+                # Window sizing follows NBC 2016: min 1/6th of floor area
+                room_area = rw * rl
                 for wall in ext_walls:
+                    wall_length = rw if wall in ('N', 'S') else rl
                     if wall == 'S':  # Road-facing = large window
                         win_w = 5 if rtype == 'living' else 4
                     elif wall in ('E', 'W'):
+                        win_w = 4 if rtype in ('living', 'master_bedroom') else 3.5
+                    else:  # North — good diffused light
                         win_w = 4
-                    else:  # North
-                        win_w = 4
-                    # Don't place window wider than the wall
-                    max_win_w = (rw if wall in ('N', 'S') else rl) * 0.6
+                    # Don't place window wider than 60% of the wall
+                    max_win_w = wall_length * 0.6
                     win_w = min(win_w, max_win_w)
+                    # Ensure at least 2ft wide for meaningful light
                     if win_w >= 2:
                         windows.append({'wall': wall, 'width': round(win_w, 1),
                                         'type': 'standard'})
@@ -2432,11 +2484,17 @@ def generate_gnn_floor_plan(
         front_door_pos = ((bounds[0] + bounds[2]) / 2, bounds[1])
 
     # Step 2: Build room configuration — strictly from user input
-    # Master bedrooms each auto-get an attached bathroom.
-    # 'bathrooms' from user = EXTRA common bathrooms beyond attached ones.
+    # Architect's rule: Only the PRIMARY bedroom is a "master" bedroom.
+    # Master bedrooms auto-get one attached bathroom from the total count.
+    # In India, standard layout: 1 master + (N-1) regular bedrooms.
+    # Premium homes (≥1500sqft, 3+ beds) get 2 masters.
     if master_bedrooms is None:
-        # Backward compat: default all bedrooms to master bedrooms
-        master_bedrooms = bedrooms
+        if effective_area >= 1500 and bedrooms >= 3:
+            master_bedrooms = 2   # Premium: 2 masters
+        elif bedrooms >= 1:
+            master_bedrooms = 1   # Standard: 1 master
+        else:
+            master_bedrooms = 0
     master_bed_count = min(master_bedrooms, bedrooms) if bedrooms > 0 else 0
     regular_bed_count = max(bedrooms - master_bed_count, 0)
 
@@ -2445,15 +2503,19 @@ def generate_gnn_floor_plan(
         rooms_config['master_bedroom'] = master_bed_count
     if regular_bed_count > 0:
         rooms_config['bedroom'] = regular_bed_count
-    # Total bathrooms = max of user-requested and attached (one per master)
-    # User says "1 bathroom" meaning 1 total, not 1 extra beyond attached.
-    attached_bath_count = master_bed_count
-    rooms_config['bathroom'] = max(bathrooms, attached_bath_count, 1)
+    # Bathroom count = exactly what user requested (pro engine assigns attached)
+    rooms_config['bathroom'] = max(bathrooms, 1)
     rooms_config['kitchen'] = max(kitchens, 1)
 
+    # Pre-scan extras so we don't auto-add rooms the user already requested
+    extras_lower = set(e.lower().replace(' ', '_') for e in extras)
+
     # Auto-add dining for 2BHK+ plans with enough area
+    # BUT skip if user already put 'dining' in extras (prevents duplication)
     total_beds = master_bed_count + regular_bed_count
-    if 'dining' not in rooms_config and total_beds >= 2 and effective_area >= 900:
+    if ('dining' not in extras_lower and
+        'dining' not in rooms_config and
+        total_beds >= 2 and effective_area >= 900):
         rooms_config['dining'] = 1
 
     # Only add extras the user explicitly selected

@@ -31,134 +31,59 @@ from typing import List, Dict, Optional, Tuple, Any
 from collections import defaultdict
 from copy import deepcopy
 
+from services.layout_constants import (
+    GRID_SNAP,
+    WALL_EXTERNAL_FT, WALL_INTERNAL_FT,
+    MIN_DIMS as _LC_MIN_DIMS,
+    MAX_ASPECT as _LC_MAX_ASPECT,
+    AREA_FRACTIONS as _LC_AREA_FRACTIONS,
+    MIN_AREAS as _LC_MIN_AREAS,
+    MAX_AREAS as _LC_MAX_AREAS,
+    ZONE_MAP as _LC_ZONE_MAP,
+    PRIORITY as _LC_PRIORITY,
+    DESIRED_ADJACENCIES as _LC_DESIRED_ADJ,
+    FORBIDDEN_ADJACENCIES as _LC_FORBIDDEN_ADJ,
+)
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# CONSTANTS — Architectural Standards (Indian Residential)
+# CONSTANTS — Derived from layout_constants (single source of truth)
 # =============================================================================
 
-GRID_SNAP = 0.5  # 6-inch grid snap for wall alignment
+# Perfect-layout uses float min dims; convert from layout_constants
+MIN_DIMS = {k: (float(v[0]), float(v[1])) for k, v in _LC_MIN_DIMS.items()}
 
-WALL_EXTERNAL_FT = 0.75   # 9 inches
-WALL_INTERNAL_FT = 0.375  # 4.5 inches
-
-# Minimum room dimensions (width, length) in feet
-MIN_DIMS = {
-    "living":         (10.0, 10.0),
-    "master_bedroom": (10.0, 10.0),
-    "bedroom":        (9.0,  9.0),
-    "kitchen":        (6.0,  7.0),
-    "bathroom":       (5.0,  5.0),
-    "toilet":         (4.0,  4.0),
-    "dining":         (8.0,  8.0),
-    "study":          (7.0,  7.0),
-    "pooja":          (4.0,  4.0),
-    "store":          (4.0,  4.0),
-    "balcony":        (3.0,  3.0),   # balconies can be shallow or narrow
-    "utility":        (4.0,  4.0),
-    "garage":         (10.0, 18.0),
-    "hallway":        (3.0,  3.0),
-    "staircase":      (5.0,  8.0),
-    "corridor":       (3.0,  3.0),
-}
-
-# Maximum aspect ratio per room type (width/height or height/width)
-# These are the IDEAL maximums for scoring. Validation uses these +0.5 tolerance.
-MAX_ASPECT_RATIOS = {
-    "living":         2.0,   # living rooms can be mildly rectangular
-    "master_bedroom": 1.8,
-    "bedroom":        1.8,
-    "kitchen":        3.0,   # galley kitchens are very common
-    "bathroom":       3.0,   # narrow bathrooms are normal
-    "toilet":         3.0,
-    "dining":         2.5,   # dining rooms can be elongated
-    "study":          2.0,
-    "pooja":          2.5,
-    "store":          3.0,   # storage rooms can be narrow
-    "balcony":        6.0,   # balconies are strips
-    "utility":        3.0,
-    "garage":         2.5,
-    "hallway":        5.0,
-    "staircase":      2.5,
-    "corridor":       8.0,
-}
+# Perfect-layout uses its own naming for aspect ratios; add a few extras
+MAX_ASPECT_RATIOS = dict(_LC_MAX_ASPECT)
+MAX_ASPECT_RATIOS.setdefault("hallway", 5.0)
 MAX_ASPECT_RATIO = 2.0  # default fallback
 
-# Target area percentages of total usable area  (min, max)
-AREA_TARGETS = {
-    "living":         (0.16, 0.22),
-    "master_bedroom": (0.12, 0.16),
-    "bedroom":        (0.09, 0.13),
-    "kitchen":        (0.08, 0.12),
-    "bathroom":       (0.04, 0.06),   # slightly larger for usable proportions
-    "toilet":         (0.025, 0.04),
-    "dining":         (0.08, 0.12),
-    "study":          (0.05, 0.08),
-    "pooja":          (0.015, 0.03),
-    "store":          (0.02, 0.035),
-    "balcony":        (0.03, 0.05),
-    "utility":        (0.02, 0.03),
-    "garage":         (0.10, 0.15),
-    "staircase":      (0.04, 0.06),
-}
+# Derive (min, max) area targets from layout_constants (min, ideal, max) fractions
+AREA_TARGETS = {k: (v[0], v[2]) for k, v in _LC_AREA_FRACTIONS.items()}
 
-# Min areas in sq ft
-MIN_AREAS = {
-    "living": 100, "master_bedroom": 120, "bedroom": 90,
-    "kitchen": 56, "bathroom": 40, "toilet": 20,
-    "dining": 64, "study": 48, "pooja": 25,
-    "store": 25, "balcony": 20, "utility": 20,
-    "garage": 150, "staircase": 45, "hallway": 21,
-}
+# Use shared min/max areas
+MIN_AREAS = dict(_LC_MIN_AREAS)
+MAX_AREAS = dict(_LC_MAX_AREAS)
 
-# Max areas (prevent bloated service rooms)
-MAX_AREAS = {
-    "bathroom": 60, "toilet": 36, "pooja": 42,
-    "store": 45, "utility": 35, "balcony": 50,
-}
+# Zone classification — perfect_layout distinguishes semi_private
+ZONE_MAP = dict(_LC_ZONE_MAP)
+ZONE_MAP["dining"] = "semi_private"
+ZONE_MAP["kitchen"] = "semi_private"
+ZONE_MAP["hallway"] = "circulation"
 
-# Zone classification
-ZONE_MAP = {
-    "living": "public", "dining": "semi_private", "kitchen": "semi_private",
-    "master_bedroom": "private", "bedroom": "private",
-    "bathroom": "service", "toilet": "service",
-    "study": "private", "pooja": "private",
-    "store": "service", "utility": "service",
-    "balcony": "public", "garage": "public",
-    "staircase": "circulation", "hallway": "circulation",
-}
+# Priority
+PRIORITY = dict(_LC_PRIORITY)
 
-# Room placement priority (higher = placed first, gets better position)
-PRIORITY = {
-    "living": 100, "master_bedroom": 90, "kitchen": 85,
-    "dining": 80, "bedroom": 75, "study": 60,
-    "bathroom": 55, "toilet": 50, "pooja": 45,
-    "staircase": 40, "balcony": 35, "store": 30,
-    "utility": 25, "garage": 20, "hallway": 15,
-}
+# Desired adjacencies — strip strength for perfect_layout format
+DESIRED_ADJACENCIES = [(a, b) for (a, b, _strength) in _LC_DESIRED_ADJ]
 
-# Desired adjacencies (room_type_a, room_type_b)
-# Kitchen must be accessible from Living/Drawing room.
-# Dining must be accessible ONLY from Kitchen (not directly from Living).
-DESIRED_ADJACENCIES = [
-    ("master_bedroom", "bathroom"),
-    ("bedroom", "bathroom"),
-    ("living", "kitchen"),
-    ("kitchen", "dining"),
-    ("kitchen", "utility"),
-]
-
-# Forbidden adjacencies
-FORBIDDEN_ADJACENCIES = [
-    ("bedroom", "kitchen"),
-    ("master_bedroom", "kitchen"),
-    ("bathroom", "living"),
-    ("toilet", "living"),
-    ("toilet", "kitchen"),
-    ("dining", "living"),       # Dining must NOT open directly to living
-    ("dining", "bedroom"),      # Dining accessed only from kitchen
-    ("dining", "master_bedroom"),
-]
+# Forbidden adjacencies — same format
+FORBIDDEN_ADJACENCIES = list(_LC_FORBIDDEN_ADJ)
+# Also forbid dining adjacent to bedrooms (perfect_layout specific)
+for pair in [("dining", "bedroom"), ("dining", "master_bedroom")]:
+    if pair not in FORBIDDEN_ADJACENCIES:
+        FORBIDDEN_ADJACENCIES.append(pair)
 
 
 # =============================================================================
@@ -166,8 +91,10 @@ FORBIDDEN_ADJACENCIES = [
 # =============================================================================
 
 def snap(val: float) -> float:
-    """Snap a value to the nearest GRID_SNAP increment."""
-    return round(val / GRID_SNAP) * GRID_SNAP
+    """Snap a value to the nearest GRID_SNAP increment.
+    Uses floor(x+0.5) instead of round() to avoid Python's banker's rounding
+    which causes coordinate drift (e.g., round(62.5) = 62 instead of 63)."""
+    return math.floor(val / GRID_SNAP + 0.5) * GRID_SNAP
 
 
 def snap_down(val: float) -> float:
@@ -254,7 +181,13 @@ def build_room_specs(
     def _target(rtype: str) -> float:
         lo, hi = AREA_TARGETS.get(rtype, (0.04, 0.06))
         area = ((lo + hi) / 2) * total_area
-        area = max(area, MIN_AREAS.get(rtype, 20))
+        min_area = MIN_AREAS.get(rtype, 20)
+        # For compact plots (< 600sqft), scale down min areas proportionally
+        # A 100sqft living room in a 300sqft home is unrealistic
+        if total_area < 600:
+            area_scale = max(0.5, total_area / 600)
+            min_area = round(min_area * area_scale, 1)
+        area = max(area, min_area)
         mx = MAX_AREAS.get(rtype)
         if mx:
             area = min(area, mx)
@@ -378,6 +311,7 @@ class PerfectLayoutEngine:
         """Generate the best floor plan from multiple candidates."""
         best_layout = None
         best_score = -1.0
+        candidates_tried = 0
         
         for i in range(self.num_candidates):
             seed = i * 31 + 7
@@ -387,6 +321,7 @@ class PerfectLayoutEngine:
                 layout = self._generate_one(seed)
                 if layout is None:
                     continue
+                candidates_tried += 1
                 
                 score = self._score_layout(layout)
                 if score > best_score:
@@ -397,13 +332,14 @@ class PerfectLayoutEngine:
                 continue
         
         if best_layout is None:
-            # Fallback: proportional single-row per zone
+            logger.warning(f"All {self.num_candidates} candidates failed AR validation, using fallback")
             best_layout = self._generate_fallback()
             best_score = self._score_layout(best_layout) if best_layout else 0.0
         
         if best_layout is None:
             return self._empty_result()
         
+        logger.info(f"Best layout score: {best_score:.1f}/100, candidates tried: {candidates_tried}")
         return self._build_output(best_layout, best_score)
     
     # -----------------------------------------------------------------
@@ -433,32 +369,81 @@ class PerfectLayoutEngine:
         back_total = sum(s["target_area"] for s in back_specs) or 1
         all_total = front_total + back_total
         
-        # Corridor width (varies per candidate for diversity)
+        # Corridor width — architect's rule: MINIMAL passage, just enough
+        # for circulation. Every extra foot steals from bedrooms.
         has_back = len(back_specs) > 0
         if not has_back:
             corridor_h = 0
         elif self.total_area < 700:
             corridor_h = 0
         elif self.total_area < 1000:
-            corridor_h = snap(2.0 + random.uniform(0, 1.0))
+            corridor_h = snap(2.5 + random.uniform(0, 0.5))
         else:
-            corridor_h = snap(3.0 + random.uniform(0, 1.5))
+            # Wide range for diversity: some candidates get shallow corridors
+            # (more room for back zone), others get deeper corridors.
+            corridor_h = snap(2.5 + random.uniform(0, 2.0))
         
         avail_l = self.ul - corridor_h
         
-        # Front/back zone heights proportional to area
+        # Front/back zone heights proportional to area, but private zone
+        # should be at least as deep as public zone for 2BHK+ homes
+        # (bedrooms need more depth than living rooms for furniture)
         front_ratio = front_total / all_total
         front_h = snap(avail_l * front_ratio)
         back_h = snap(avail_l - front_h) if has_back else 0
         
-        # Clamp zones to reasonable sizes
-        min_zone = snap(max(8.0, avail_l * 0.2))
+        # Enforce balanced zone depths: for multi-bedroom layouts, ensure
+        # back zone has adequate depth (at least 60% of front). Don't force
+        # back >= front as that creates overly deep back zones.
+        if has_back and len(back_specs) >= 3 and back_h < front_h * 0.6:
+            # Back zone is too shallow — rebalance
+            mid = snap(avail_l / 2)
+            front_h = mid
+            back_h = snap(avail_l - mid)
+        
+        # Clamp zones to reasonable sizes.
+        # For small plots (< 600sqft), relax minimums since the total depth
+        # is limited and both zones need to fit.
+        if self.total_area < 600:
+            min_zone = snap(max(5.0, avail_l * 0.30))
+        else:
+            min_zone = snap(max(8.0, avail_l * 0.20))
+        
         if has_back:
-            if front_h < min_zone:
-                front_h = min_zone
+            # Both zones must meet min_zone. If total depth can't support
+            # both, split proportionally instead of ping-ponging.
+            if front_h < min_zone or back_h < min_zone:
+                if min_zone * 2 > avail_l:
+                    # Can't fit both at min_zone — split proportionally
+                    front_h = snap(avail_l * front_ratio)
+                    back_h = snap(avail_l - front_h)
+                else:
+                    if front_h < min_zone:
+                        front_h = min_zone
+                        back_h = snap(avail_l - front_h)
+                    if back_h < min_zone:
+                        back_h = min_zone
+                        front_h = snap(avail_l - back_h)
+        
+        # Ensure zones are deep enough for their rooms' minimum dimensions.
+        # For small plots, scale down min dims requirements proportionally
+        # (a 300sqft home can't have 10ft minimum room dimensions).
+        dim_scale = 1.0 if self.total_area >= 600 else max(0.6, self.total_area / 600)
+        
+        if front_specs:
+            min_front = max(
+                min(MIN_DIMS.get(s["room_type"], (4, 4))) for s in front_specs
+            ) * dim_scale
+            # Only enforce if it won't make the other zone unusable (< 4ft)
+            if front_h < min_front and (avail_l - snap_up(min_front)) >= 4.0:
+                front_h = snap_up(min_front)
                 back_h = snap(avail_l - front_h)
-            if back_h < min_zone:
-                back_h = min_zone
+        if has_back and back_specs:
+            min_back = max(
+                min(MIN_DIMS.get(s["room_type"], (4, 4))) for s in back_specs
+            ) * dim_scale
+            if back_h < min_back and (avail_l - snap_up(min_back)) >= 4.0:
+                back_h = snap_up(min_back)
                 front_h = snap(avail_l - back_h)
         
         placed = []
@@ -474,9 +459,20 @@ class PerfectLayoutEngine:
         # Place back zone rooms
         if has_back and back_specs:
             back_y = snap(self.uy + front_h + corridor_h)
-            back_placed = self._tile_zone(
-                back_specs, self.ux, back_y, self.uw, back_h
-            )
+            
+            # For back zones with mixed room sizes (beds + small service rooms),
+            # try column split first: beds on left (full height), small rooms
+            # on right (full height, stacked via treemap).
+            back_placed = None
+            if len(back_specs) >= 4:
+                back_placed = self._try_column_split_back(
+                    back_specs, self.ux, back_y, self.uw, back_h
+                )
+            
+            if back_placed is None:
+                back_placed = self._tile_zone(
+                    back_specs, self.ux, back_y, self.uw, back_h
+                )
             if back_placed is None:
                 return None
             placed.extend(back_placed)
@@ -485,18 +481,100 @@ class PerfectLayoutEngine:
         for i in range(len(placed)):
             for j in range(i + 1, len(placed)):
                 if rects_overlap(placed[i], placed[j]):
+                    logger.debug(f"Overlap detected: {placed[i]['room_type']} ({placed[i]['x']:.1f},{placed[i]['y']:.1f},{placed[i]['w']:.1f},{placed[i]['h']:.1f}) vs {placed[j]['room_type']} ({placed[j]['x']:.1f},{placed[j]['y']:.1f},{placed[j]['w']:.1f},{placed[j]['h']:.1f})")
                     return None
         
         # Validate — all rooms have sane proportions
         for r in placed:
-            if aspect_ratio(r["w"], r["h"]) > max_ar_for(r["room_type"]) + 1.0:
+            ar = aspect_ratio(r["w"], r["h"])
+            limit = max_ar_for(r["room_type"])
+            # Reject only if AR is egregiously bad (limit + 1.0).
+            # Mildly off-ratio rooms are penalized in scoring instead.
+            if ar > limit + 1.0:
+                logger.debug(f"Candidate rejected: {r['room_type']} AR={ar:.2f} > {limit}+1.0, dims={r['w']:.1f}x{r['h']:.1f}")
                 return None
-            # Check minimum dimensions
-            min_w, min_h = MIN_DIMS.get(r["room_type"], (4, 4))
-            if r["w"] < min_w - 1.0 or r["h"] < min_h - 1.0:
+            # Only reject rooms that are impossibly small (< 3ft shortest side)
+            short_side = min(r["w"], r["h"])
+            if short_side < 3.0:
+                logger.debug(f"Candidate rejected: {r['room_type']} impossibly small {short_side:.1f}ft, dims={r['w']:.1f}x{r['h']:.1f}")
                 return None
         
         return placed
+    
+    # -----------------------------------------------------------------
+    # Column-split back zone: separates large rooms (beds) from small
+    # service rooms using a VERTICAL split so both groups get full height
+    # -----------------------------------------------------------------
+    
+    def _try_column_split_back(
+        self, specs: List[Dict], zone_x: float, zone_y: float,
+        zone_w: float, zone_h: float
+    ) -> Optional[List[Dict]]:
+        """Split back zone into 2 vertical columns for better proportions.
+        
+        Column 1 (left, wider):  large rooms (bedrooms, master_bedroom, study)
+        Column 2 (right, narrower): small rooms (bathroom, pooja, store, utility)
+        
+        Both columns get the FULL zone height, preventing the AR problems
+        caused by horizontal row splits which squash rooms into shallow bands.
+        """
+        large_types = {'master_bedroom', 'bedroom', 'study'}
+        col1 = [s for s in specs if s['room_type'] in large_types]
+        col2 = [s for s in specs if s['room_type'] not in large_types]
+        
+        if not col1 or not col2:
+            return None  # Can't split meaningfully
+        
+        col1_area = sum(s['target_area'] for s in col1)
+        col2_area = sum(s['target_area'] for s in col2)
+        total = col1_area + col2_area
+        if total <= 0:
+            return None
+        
+        # Width proportional to area, but ensure small rooms get enough width
+        col1_w = snap(zone_w * col1_area / total)
+        col2_w = snap(zone_w - col1_w)
+        
+        # Ensure minimum widths for both columns
+        min_col2_w = snap(max(6.0, zone_w * 0.15))  # small rooms need at least 6ft
+        if col2_w < min_col2_w:
+            col2_w = min_col2_w
+            col1_w = snap(zone_w - col2_w)
+        
+        # Ensure beds still have enough width per room
+        min_col1_per_room = 7.0
+        min_col1_w = snap(len(col1) * min_col1_per_room)
+        if col1_w < min_col1_w:
+            logger.debug(f"Column-split rejected: col1_w={col1_w} < needed {min_col1_w} for {len(col1)} large rooms")
+            return None
+        
+        logger.debug(f"Column-split: col1({len(col1)} large, w={col1_w}), col2({len(col2)} small, w={col2_w}), h={zone_h}")
+        
+        # Tile each column independently — both get full zone height
+        col1_placed = self._tile_zone(col1, zone_x, zone_y, col1_w, zone_h)
+        if col1_placed is None:
+            logger.debug("Column-split: col1 tile failed")
+            return None
+        
+        # Use exact boundary (no re-snapping) to prevent banker's rounding
+        # overlap: snap(0.75+30.5) = snap(31.25) → 31.0 (wrong!), exact = 31.25
+        col2_x = zone_x + col1_w
+        col2_placed = self._tile_zone(col2, col2_x, zone_y, col2_w, zone_h)
+        if col2_placed is None:
+            logger.debug("Column-split: col2 tile failed")
+            return None
+        
+        # Validate AR for both columns
+        combined = col1_placed + col2_placed
+        for r in combined:
+            ar = aspect_ratio(r['w'], r['h'])
+            limit = max_ar_for(r['room_type'])
+            if ar > limit + 1.0:
+                logger.debug(f"Column-split AR fail: {r['room_type']} ar={ar:.2f} > limit={limit}+1.0, dims={r['w']:.1f}x{r['h']:.1f}")
+                return None
+        
+        logger.debug(f"Column-split SUCCESS: {len(combined)} rooms placed")
+        return combined
     
     # -----------------------------------------------------------------
     # Adjacency-aware ordering
@@ -584,6 +662,11 @@ class PerfectLayoutEngine:
         best_result = None
         best_worst_ar = float("inf")
         
+        # Dynamic minimum sub-zone: allow smaller splits when rooms are small
+        # (e.g., pooja at 16sqft needs ~3ft slices, not the default 4ft)
+        smallest_area = min(s["target_area"] for s in specs)
+        min_sub = 3.0 if smallest_area < 30 else 4.0
+        
         # Generate candidate splits
         sorted_specs = sorted(specs, key=lambda s: s["target_area"], reverse=True)
         
@@ -601,14 +684,14 @@ class PerfectLayoutEngine:
                 if vertical_cut:
                     w_a = snap(zone_w * ratio)
                     w_b = snap(zone_w - w_a)
-                    if w_a < 4.0 or w_b < 4.0:
+                    if w_a < min_sub or w_b < min_sub:
                         continue
                     left = self._tile_zone(group_a, zone_x, zone_y, w_a, zone_h)
                     right = self._tile_zone(group_b, zone_x + w_a, zone_y, w_b, zone_h)
                 else:
                     h_a = snap(zone_h * ratio)
                     h_b = snap(zone_h - h_a)
-                    if h_a < 4.0 or h_b < 4.0:
+                    if h_a < min_sub or h_b < min_sub:
                         continue
                     left = self._tile_zone(group_a, zone_x, zone_y, zone_w, h_a)
                     right = self._tile_zone(group_b, zone_x, zone_y + h_a, zone_w, h_b)
@@ -720,6 +803,15 @@ class PerfectLayoutEngine:
             if _valid_split(odds, evens):
                 splits.append((odds, evens))
         
+        # Split 6: type-aware split — large habitable rooms vs small service rooms
+        # This ensures bedrooms get proper proportions (full zone height via
+        # vertical cut) instead of being squashed by horizontal splits.
+        _large_types = {'master_bedroom', 'bedroom', 'study', 'living', 'dining'}
+        large_g = [s for s in sorted_specs if s['room_type'] in _large_types]
+        small_g = [s for s in sorted_specs if s['room_type'] not in _large_types]
+        if large_g and small_g and _valid_split(large_g, small_g):
+            splits.append((large_g, small_g))
+        
         # Fallback split: if must_pair and all splits were rejected,
         # force kitchen+dining together vs everything else
         if not splits and must_pair:
@@ -737,11 +829,17 @@ class PerfectLayoutEngine:
     # -----------------------------------------------------------------
     
     def _generate_fallback(self) -> Optional[List[Dict]]:
-        """Simple proportional placement — no snap drift."""
+        """Proportional placement with 2-row back zone for AR control.
+        
+        Front zone: single row (living, kitchen, dining).
+        Back zone: split into BEDROOM row + SERVICE row to prevent
+        narrow rooms (bathrooms, pooja) from being stretched to full
+        zone height.
+        """
         front = [s for s in self.room_specs if s["zone_group"] == "front"]
         back = [s for s in self.room_specs if s["zone_group"] == "back"]
         
-        corridor_h = snap(min(3.5, self.ul * 0.08))
+        corridor_h = 0 if self.total_area < 700 else snap(min(3.5, self.ul * 0.08))
         
         front_total = sum(s["target_area"] for s in front) or 1
         back_total = sum(s["target_area"] for s in back) or 1
@@ -782,8 +880,57 @@ class PerfectLayoutEngine:
                 cx += w_val
         
         _place_row(front, self.ux, self.uy, self.uw, front_h, "front")
+        
         back_y = self.uy + front_h + corridor_h
-        _place_row(back, self.ux, back_y, self.uw, back_h, "back")
+        
+        # Split back zone: if enough rooms, use COLUMN SPLIT
+        # (bedrooms left, full height + services stacked right)
+        # This gives bedrooms good proportions AND keeps services compact
+        _LARGE_TYPES = {'master_bedroom', 'bedroom', 'study'}
+        beds_back = [s for s in back if s['room_type'] in _LARGE_TYPES]
+        svc_back = [s for s in back if s['room_type'] not in _LARGE_TYPES]
+        
+        if beds_back and svc_back and back_h >= 8.0:
+            # Column-split: bedrooms in left column (full height, wide),
+            # service rooms stacked vertically in right column (narrow)
+            svc_total_area = sum(s['target_area'] for s in svc_back)
+            svc_w = snap(max(5.0, min(7.0, svc_total_area / back_h + 1.0)))
+            bed_w = snap(self.uw - svc_w)
+            
+            # Ensure bedrooms have enough minimum width
+            min_bed_w = snap(len(beds_back) * 7.0)
+            if bed_w < min_bed_w:
+                svc_w = snap(max(4.5, self.uw - min_bed_w))
+                bed_w = snap(self.uw - svc_w)
+            
+            # Place bedrooms horizontally in left column
+            _place_row(beds_back, self.ux, back_y, bed_w, back_h, "back")
+            
+            # Stack service rooms vertically in right column
+            svc_x = self.ux + bed_w
+            svc_total_ta = sum(s['target_area'] for s in svc_back) or 1
+            cy = back_y
+            for j, spec in enumerate(svc_back):
+                if j == len(svc_back) - 1:
+                    sh = snap((back_y + back_h) - cy)
+                else:
+                    sh = snap(back_h * spec['target_area'] / svc_total_ta)
+                    sh = max(sh, 3.5)
+                placed.append({
+                    "room_type": spec["room_type"],
+                    "name": spec["name"],
+                    "zone": spec["zone"],
+                    "zone_group": "back",
+                    "target_area": spec["target_area"],
+                    "x": round(svc_x, 2),
+                    "y": round(cy, 2),
+                    "w": svc_w,
+                    "h": sh,
+                })
+                cy += sh
+        else:
+            # Simple single-row (1BHK or shallow back zone)
+            _place_row(back, self.ux, back_y, self.uw, back_h, "back")
         
         return placed if placed else None
     
@@ -792,13 +939,23 @@ class PerfectLayoutEngine:
     # -----------------------------------------------------------------
     
     def _score_layout(self, rooms: List[Dict]) -> float:
-        """Score a layout candidate on multiple criteria (0-100)."""
+        """Score a layout candidate on multiple criteria (0-100).
+        
+        Metrics (total 100 points):
+        1. Area accuracy (20 points): rooms close to target areas
+        2. Aspect ratio quality (20 points): rooms are usable shapes
+        3. Adjacency satisfaction (20 points): desired pairs sharing walls
+        4. Coverage (10 points): how much usable area is covered
+        5. No forbidden adjacencies (10 points): penalty for bad neighbors
+        6. Natural light access (10 points): habitable rooms on exterior walls
+        7. Minimum dimensions (10 points): rooms meet NBC min dimension standards
+        """
         if not rooms:
             return 0.0
         
         scores = {}
         
-        # 1. Area accuracy (30 points)
+        # 1. Area accuracy (20 points)
         area_errors = []
         for r in rooms:
             actual = r["w"] * r["h"]
@@ -807,7 +964,7 @@ class PerfectLayoutEngine:
                 err = abs(actual - target) / target
                 area_errors.append(min(err, 1.0))
         avg_err = sum(area_errors) / len(area_errors) if area_errors else 1.0
-        scores["area"] = (1.0 - avg_err) * 30
+        scores["area"] = (1.0 - avg_err) * 20
         
         # 2. Aspect ratio quality (20 points)
         ratio_scores = []
@@ -815,15 +972,17 @@ class PerfectLayoutEngine:
             ar = aspect_ratio(r["w"], r["h"])
             limit = max_ar_for(r["room_type"])
             if ar <= 1.5:
-                ratio_scores.append(1.0)
-            elif ar <= limit * 0.7:
-                ratio_scores.append(0.8)
+                ratio_scores.append(1.0)     # Excellent: near-square
+            elif ar <= limit * 0.6:
+                ratio_scores.append(0.9)     # Very good
+            elif ar <= limit * 0.8:
+                ratio_scores.append(0.7)     # Good
             elif ar <= limit:
-                ratio_scores.append(0.6)
+                ratio_scores.append(0.5)     # Acceptable
             elif ar <= limit + 0.5:
-                ratio_scores.append(0.3)
+                ratio_scores.append(0.2)     # Poor but tolerable
             else:
-                ratio_scores.append(0.0)
+                ratio_scores.append(0.0)     # Unusable shape
         scores["proportion"] = (sum(ratio_scores) / len(ratio_scores)) * 20
         
         # 3. Adjacency satisfaction (20 points)
@@ -844,11 +1003,11 @@ class PerfectLayoutEngine:
                     break
         scores["adjacency"] = (adj_satisfied / adj_total * 20) if adj_total > 0 else 20
         
-        # 4. Coverage (15 points) — how much of usable area is covered
+        # 4. Coverage (10 points) — how much of usable area is covered
         total_placed = sum(r["w"] * r["h"] for r in rooms)
         coverage = total_placed / self.usable_area if self.usable_area > 0 else 0
         coverage = min(coverage, 1.0)
-        scores["coverage"] = coverage * 15
+        scores["coverage"] = coverage * 10
         
         # 5. No forbidden adjacencies (15 points)
         forbidden_count = 0
@@ -859,7 +1018,53 @@ class PerfectLayoutEngine:
                 for rb in rooms_b:
                     if rects_share_wall(ra, rb):
                         forbidden_count += 1
-        scores["forbidden"] = max(0, 15 - forbidden_count * 8)
+        scores["forbidden"] = max(0, 10 - forbidden_count * 5)
+        
+        # 6. Natural light access (10 points)
+        # Habitable rooms should touch at least one exterior wall
+        light_score = 0.0
+        light_checks = 0
+        ext_tol = WALL_EXTERNAL_FT + 1.0
+        for r in rooms:
+            rtype = r["room_type"]
+            if rtype in ("corridor", "utility", "store"):
+                continue
+            light_checks += 1
+            rx, ry = r["x"], r["y"]
+            rw, rh = r["w"], r["h"]
+            touches_ext = (
+                rx <= self.ux + ext_tol or
+                rx + rw >= self.ux + self.uw - ext_tol or
+                ry <= self.uy + ext_tol or
+                ry + rh >= self.uy + self.ul - ext_tol
+            )
+            if touches_ext:
+                light_score += 1.0
+            elif rtype in ("bathroom", "toilet", "pooja"):
+                light_score += 0.6  # These can be interior
+            else:
+                light_score += 0.0  # Habitable interior room is bad
+        if light_checks > 0:
+            scores["light"] = (light_score / light_checks) * 10
+        else:
+            scores["light"] = 5.0
+        
+        # 7. Minimum dimensions (10 points)
+        # Penalize rooms whose shortest side is below NBC minimums
+        dim_scores = []
+        for r in rooms:
+            min_w, min_h = MIN_DIMS.get(r["room_type"], (4, 4))
+            min_short = min(min_w, min_h)
+            short_side = min(r["w"], r["h"])
+            if short_side >= min_short:
+                dim_scores.append(1.0)      # Meets standard
+            elif short_side >= min_short - 1.0:
+                dim_scores.append(0.7)      # Slightly under
+            elif short_side >= min_short - 2.0:
+                dim_scores.append(0.4)      # Notably under
+            else:
+                dim_scores.append(0.1)      # Significantly under
+        scores["min_dims"] = (sum(dim_scores) / len(dim_scores)) * 10 if dim_scores else 10.0
         
         total = sum(scores.values())
         return round(total, 2)
@@ -982,7 +1187,7 @@ class PerfectLayoutEngine:
             "score": {
                 "total": round(score, 2),
                 "max": 100,
-                "breakdown": "area(30) + proportion(20) + adjacency(20) + coverage(15) + zoning(15)",
+                "breakdown": "area(20) + proportion(20) + adjacency(20) + forbidden(10) + coverage(10) + light(10) + min_dims(10)",
             },
             "validation": {
                 "overlap": False,
