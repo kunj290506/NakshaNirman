@@ -460,7 +460,7 @@ export default function Workspace() {
                             )
                         )
                     ) : (
-                        projectId ? <Viewer3D projectId={projectId} /> : (
+                        (projectId && plan) ? <Viewer3D projectId={projectId} /> : (
                             !loading && (
                                 <div className="preview-empty">
                                     <div className="preview-empty-icon">

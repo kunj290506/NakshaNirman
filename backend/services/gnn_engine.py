@@ -64,24 +64,35 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ===========================================================================
 
+# ---------------------------------------------------------------------------
+# Room Type Embeddings for GNN node features
+# Unique integer per functional category (used as one-hot in GATNet)
+# Based on Graph2Plan paper: distinct embeddings for rooms with different
+# spatial/functional requirements produce better graph attention weights.
+# ---------------------------------------------------------------------------
 ROOM_EMBEDDINGS = {
     'living': 0,
     'room': 1,       # generic bedroom
     'kitchen': 2,
     'bathroom': 3,
-    'master_bedroom': 1,  # maps to same as room
+    'master_bedroom': 1,  # maps to same as room (bed category)
     'bedroom': 1,
     'dining': 4,
     'study': 5,
     'pooja': 6,
-    'store': 5,
-    'balcony': 5,
-    'utility': 5,
+    'store': 7,       # distinct from study — different access patterns
+    'balcony': 8,     # distinct — exterior, not enclosed
+    'utility': 7,
     'toilet': 3,
-    'garage': 5,
+    'garage': 9,
+    'corridor': 10,
+    'foyer': 10,
+    'staircase': 11,
+    'porch': 8,
+    'wash_area': 3,
 }
 
-NUM_ROOM_TYPES = 7  # one-hot encoding dimension
+NUM_ROOM_TYPES = 12  # one-hot encoding dimension (expanded for better embeddings)
 
 # Import shared constants from centralized module
 from services.layout_constants import (
@@ -101,6 +112,121 @@ from services.layout_constants import (
 
 # Derive ROOM_AREA_RATIOS from layout_constants (min, max) format
 ROOM_AREA_RATIOS = {k: (v[0], v[2]) for k, v in _LC_AREA_FRACTIONS.items()}
+
+# ---------------------------------------------------------------------------
+# NEUFERT-INSPIRED ROOM PROPORTIONS (from Architects' Data, 4th Ed.)
+# Each room type has ideal width:length ratios and minimum furniture
+# clearance dimensions. These ensure rooms are usable, not just sized.
+# ---------------------------------------------------------------------------
+NEUFERT_PROPORTIONS = {
+    # room_type: (min_w, min_l, ideal_ratio, max_ratio, furniture_clearance_ft)
+    'living':          (11, 13, 1.25, 1.8, 3.0),   # sofa + TV distance
+    'master_bedroom':  (11, 12, 1.15, 1.6, 2.5),   # queen bed + wardrobe + walk
+    'bedroom':         (9,  10, 1.15, 1.6, 2.0),    # single/double bed + study
+    'kitchen':         (7,  8,  1.2,  1.8, 2.5),    # work triangle (sink-stove-fridge)
+    'bathroom':        (5,  7,  1.3,  2.0, 1.5),    # WC + shower/bath + basin
+    'toilet':          (3.5, 4, 1.1,  1.8, 1.0),    # WC + basin
+    'dining':          (9,  10, 1.15, 1.7, 3.0),    # table + chair clearance
+    'study':           (8,  9,  1.1,  1.5, 2.0),    # desk + bookshelf
+    'pooja':           (4,  5,  1.1,  1.5, 1.5),    # altar + sitting
+    'store':           (4,  5,  1.0,  2.0, 0.5),    # shelves
+    'balcony':         (3.5, 4, 1.0,  4.0, 1.0),    # chairs
+    'utility':         (4,  5,  1.0,  2.0, 1.0),    # washing machine
+    'garage':          (10, 18, 1.6,  2.5, 1.0),    # car + door swing
+    'staircase':       (4,  8,  1.5,  2.5, 0.0),    # treads 10" + risings
+    'corridor':        (3.5, 6, 1.5,  8.0, 0.0),    # walk width
+    'foyer':           (5,  6,  1.0,  1.5, 1.5),    # entry, shoe rack
+    'porch':           (6,  5,  1.0,  2.0, 1.0),    # sit-out
+    'wash_area':       (4,  5,  1.1,  2.0, 1.0),    # basin + counter
+}
+
+# ---------------------------------------------------------------------------
+# FUNCTIONAL ADJACENCY GRAPH (from architectural programming)
+# Unlike the simple star topology, this defines zone-based connectivity
+# based on how architects actually plan homes:
+#   - Bubble diagram methodology
+#   - Functional flow: entry→living→kitchen→dining (serving flow)
+#   - Privacy gradient: public→semi-private→private
+#   - Wet wall clustering: bath/kitchen/utility share plumbing walls
+# ---------------------------------------------------------------------------
+FUNCTIONAL_ADJACENCY = {
+    # (room_a, room_b): (strength, reason)
+    # strength: 'required' > 'strong' > 'preferred' > 'weak' > 'avoid'
+    ('living', 'dining'):       ('required',  'social flow'),
+    ('living', 'foyer'):        ('required',  'entry sequence'),
+    ('living', 'porch'):        ('required',  'outdoor access'),
+    ('kitchen', 'dining'):      ('required',  'serving flow'),
+    ('kitchen', 'utility'):     ('strong',    'wet wall cluster'),
+    ('kitchen', 'store'):       ('strong',    'pantry access'),
+    ('master_bedroom', 'bathroom'): ('required', 'en-suite'),
+    ('bedroom', 'bathroom'):    ('preferred', 'shared bath access'),
+    ('bedroom', 'study'):       ('preferred', 'study/work proximity'),
+    ('living', 'kitchen'):      ('strong',    'visual connection'),
+    ('living', 'staircase'):    ('preferred', 'vertical circulation'),
+    ('pooja', 'living'):        ('preferred', 'spiritual access'),
+    ('pooja', 'kitchen'):       ('weak',      'prasad prep'),
+    ('balcony', 'living'):      ('preferred', 'outdoor extension'),
+    ('balcony', 'bedroom'):     ('preferred', 'private outdoor'),
+    ('bathroom', 'utility'):    ('preferred', 'wet wall cluster'),
+    # Forbidden
+    ('kitchen', 'bedroom'):     ('avoid', 'smell/noise isolation'),
+    ('kitchen', 'master_bedroom'): ('avoid', 'smell/noise isolation'),
+    ('toilet', 'kitchen'):      ('avoid', 'hygiene'),
+    ('toilet', 'dining'):       ('avoid', 'hygiene'),
+    ('toilet', 'living'):       ('avoid', 'privacy'),
+    ('bathroom', 'living'):     ('avoid', 'privacy'),
+    ('bathroom', 'dining'):     ('avoid', 'hygiene'),
+    ('pooja', 'toilet'):        ('avoid', 'sanctity'),
+    ('pooja', 'bathroom'):      ('avoid', 'sanctity'),
+    ('garage', 'bedroom'):      ('avoid', 'noise/fumes'),
+}
+
+# ---------------------------------------------------------------------------
+# PRIVACY GRADIENT — depth-based zone ordering (Graph2Plan concept)
+# Front of house (road-facing) → Back of house
+# This creates the "privacy gradient" that architects always design:
+#   Depth 0: Entry, Porch, Foyer (most public)
+#   Depth 1: Living, Dining (social/public)
+#   Depth 2: Kitchen, Corridor (semi-private transition)
+#   Depth 3: Bedrooms, Study (private)
+#   Depth 4: Attached Bathrooms (most private)
+# ---------------------------------------------------------------------------
+PRIVACY_DEPTH = {
+    'porch': 0, 'foyer': 0,
+    'living': 1, 'dining': 1, 'balcony': 1,
+    'kitchen': 2, 'corridor': 2, 'staircase': 2,
+    'study': 3, 'bedroom': 3, 'master_bedroom': 3,
+    'pooja': 3,
+    'bathroom': 4, 'toilet': 4, 'wash_area': 4,
+    'store': 3, 'utility': 3, 'garage': 1,
+}
+
+# ---------------------------------------------------------------------------
+# KITCHEN WORK TRIANGLE (Neufert/NBC standard)
+# The three vertices of the work triangle (sink–stove–fridge) should have
+# total perimeter between 12-26 ft, with each leg 4-9 ft.
+# This affects kitchen minimum dimensions.
+# ---------------------------------------------------------------------------
+KITCHEN_WORK_TRIANGLE = {
+    'min_perimeter_ft': 12,
+    'max_perimeter_ft': 26,
+    'min_leg_ft': 4,
+    'max_leg_ft': 9,
+    'min_counter_length_ft': 6,  # minimum continuous counter
+}
+
+# ---------------------------------------------------------------------------
+# CROSS-VENTILATION RULES (NBC 2016 / tropical architecture best practice)
+# Habitable rooms MUST have at least one external wall for natural light.
+# Ideally two opposite external walls for cross-ventilation.
+# ---------------------------------------------------------------------------
+NATURAL_LIGHT_RULES = {
+    'must_have_external_wall': {'living', 'master_bedroom', 'bedroom', 'dining',
+                                 'study', 'kitchen', 'balcony', 'porch'},
+    'prefer_cross_ventilation': {'living', 'master_bedroom', 'bedroom'},
+    'min_window_area_ratio': 0.10,  # min 10% of floor area = window area
+    'min_ventilation_area_ratio': 0.05,  # min 5% openable area
+}
 
 # Standard room sizes — prefer JSON config, fallback to built-in
 _json_sizes = get_standard_room_sizes()
@@ -127,13 +253,15 @@ ZONE_MAP['kitchen'] = 'semi_private'
 ZONE_MAP.setdefault('porch', 'public')
 ZONE_MAP.setdefault('foyer', 'public')
 
-# Adjacency rules — gnn_engine uses dict format
+# Adjacency rules — gnn_engine uses dict format (legacy compat)
 ADJACENCY_RULES = {}
 for (a, b, strength) in _LC_DESIRED_ADJ:
     ADJACENCY_RULES[(a, b)] = strength
 for (a, b) in _LC_FORBIDDEN_ADJ:
     ADJACENCY_RULES[(a, b)] = 'avoid'
-# Add gnn-specific rules
+# Merge functional adjacency into legacy format
+for (a, b), (strength, _reason) in FUNCTIONAL_ADJACENCY.items():
+    ADJACENCY_RULES.setdefault((a, b), strength)
 ADJACENCY_RULES.setdefault(('living', 'porch'), 'preferred')
 
 
@@ -345,13 +473,18 @@ def build_boundary_graph(boundary_coords: List[Tuple[float, float]],
 def build_room_graph(room_centroids: Dict[str, List[Tuple[float, float]]],
                      living_to_all: bool = True) -> Any:
     """
-    Build the room graph from centroids.
+    Build the room graph from centroids using zone-aware functional connectivity.
 
-    Each room becomes a node with features:
-      - roomType_embd: integer embedding of room type
-      - actualCentroid_x, actualCentroid_y: position
+    Unlike a simple star topology (living→all), this builds edges based on:
+      1. FUNCTIONAL_ADJACENCY rules (required/strong/preferred connections)
+      2. Privacy depth proximity (rooms at adjacent depth levels connect)
+      3. Zone clustering (rooms in same zone connect to nearest neighbor)
+      4. Spatial proximity (rooms within threshold distance connect)
 
-    Edges connect living room to all other rooms (living-to-all pattern).
+    Based on Graph2Plan & House-GAN architecture:
+      - Each room node has features: one-hot type + centroid + zone + depth
+      - Edges have weights proportional to adjacency priority
+      - The resulting graph captures architectural intent, not just geometry
 
     Returns: nx.Graph or dict
     """
@@ -365,6 +498,8 @@ def build_room_graph(room_centroids: Dict[str, List[Tuple[float, float]]],
                     'roomType_name': rtype,
                     'roomType_embd': ROOM_EMBEDDINGS.get(rtype, 1),
                     'centroid': c,
+                    'zone': ZONE_MAP.get(rtype, 'private'),
+                    'privacy_depth': PRIVACY_DEPTH.get(rtype, 3),
                 })
                 idx += 1
         return {'nodes': nodes, 'type': 'room'}
@@ -377,18 +512,86 @@ def build_room_graph(room_centroids: Dict[str, List[Tuple[float, float]]],
                        roomType_name=rtype,
                        roomType_embd=ROOM_EMBEDDINGS.get(rtype, 1),
                        actualCentroid_x=centroid[0],
-                       actualCentroid_y=centroid[1])
+                       actualCentroid_y=centroid[1],
+                       zone=ZONE_MAP.get(rtype, 'private'),
+                       privacy_depth=PRIVACY_DEPTH.get(rtype, 3))
 
-    # Living-to-all edges
+    nodes_list = list(G.nodes())
+    _strength_weight = {'required': 1.0, 'strong': 0.8, 'preferred': 0.5, 'weak': 0.2}
+
+    # 1) FUNCTIONAL ADJACENCY EDGES — based on architectural programming
+    for na in nodes_list:
+        ta = G.nodes[na]['roomType_name']
+        for nb in nodes_list:
+            if na >= nb:
+                continue
+            tb = G.nodes[nb]['roomType_name']
+            # Check both orderings in FUNCTIONAL_ADJACENCY
+            adj_info = FUNCTIONAL_ADJACENCY.get((ta, tb)) or FUNCTIONAL_ADJACENCY.get((tb, ta))
+            if adj_info and adj_info[0] != 'avoid':
+                strength, reason = adj_info
+                ax = G.nodes[na]['actualCentroid_x']
+                ay = G.nodes[na]['actualCentroid_y']
+                bx = G.nodes[nb]['actualCentroid_x']
+                by = G.nodes[nb]['actualCentroid_y']
+                dist = math.hypot(ax - bx, ay - by)
+                weight = _strength_weight.get(strength, 0.3)
+                G.add_edge(na, nb, distance=round(dist, 3),
+                           weight=weight, edge_type='functional',
+                           reason=reason)
+
+    # 2) PRIVACY DEPTH EDGES — connect rooms at adjacent depth levels
+    for na in nodes_list:
+        da = G.nodes[na]['privacy_depth']
+        for nb in nodes_list:
+            if na >= nb or G.has_edge(na, nb):
+                continue
+            db = G.nodes[nb]['privacy_depth']
+            if abs(da - db) <= 1:
+                ax = G.nodes[na]['actualCentroid_x']
+                ay = G.nodes[na]['actualCentroid_y']
+                bx = G.nodes[nb]['actualCentroid_x']
+                by = G.nodes[nb]['actualCentroid_y']
+                dist = math.hypot(ax - bx, ay - by)
+                if dist < 30:  # only nearby rooms
+                    G.add_edge(na, nb, distance=round(dist, 3),
+                               weight=0.3, edge_type='depth_proximity')
+
+    # 3) ZONE CLUSTERING — rooms in same zone connect to nearest neighbor
+    zone_groups = defaultdict(list)
+    for n in nodes_list:
+        zone_groups[G.nodes[n]['zone']].append(n)
+
+    for zone, members in zone_groups.items():
+        if len(members) < 2:
+            continue
+        for m in members:
+            mx = G.nodes[m]['actualCentroid_x']
+            my = G.nodes[m]['actualCentroid_y']
+            # Connect to nearest 2 in same zone
+            dists = []
+            for o in members:
+                if o == m or G.has_edge(m, o):
+                    continue
+                ox = G.nodes[o]['actualCentroid_x']
+                oy = G.nodes[o]['actualCentroid_y']
+                dists.append((o, math.hypot(mx - ox, my - oy)))
+            dists.sort(key=lambda x: x[1])
+            for o, d in dists[:2]:
+                G.add_edge(m, o, distance=round(d, 3),
+                           weight=0.4, edge_type='zone_cluster')
+
+    # 4) LIVING-TO-ALL fallback — ensure connectivity (legacy compat)
     if living_to_all and 'living_0' in G.nodes:
         lx = G.nodes['living_0']['actualCentroid_x']
         ly = G.nodes['living_0']['actualCentroid_y']
-        for node in G.nodes():
-            if node != 'living_0':
+        for node in nodes_list:
+            if node != 'living_0' and not G.has_edge('living_0', node):
                 nx_ = G.nodes[node]['actualCentroid_x']
                 ny_ = G.nodes[node]['actualCentroid_y']
                 dis = math.hypot(lx - nx_, ly - ny_)
-                G.add_edge('living_0', node, distance=round(dis, 3))
+                G.add_edge('living_0', node, distance=round(dis, 3),
+                           weight=0.1, edge_type='hub_connection')
 
     return G
 
@@ -566,32 +769,142 @@ _MAX_AREAS = {
 }
 
 
+def _compute_neufert_dimensions(rtype: str, target_area: float) -> Tuple[float, float]:
+    """
+    Compute room width × height from Neufert-inspired proportions.
+
+    Instead of just dividing area arbitrarily, this uses:
+    1. Ideal aspect ratio from NEUFERT_PROPORTIONS
+    2. Minimum dimension constraints (furniture clearance)
+    3. Work triangle for kitchens
+    4. Bed placement for bedrooms
+
+    Returns: (width, height) in feet
+    """
+    props = NEUFERT_PROPORTIONS.get(rtype, (8, 8, 1.2, 2.0, 1.5))
+    min_w, min_h, ideal_ratio, max_ratio, furniture_clr = props
+
+    # Solve: w * h = area, w/h = ideal_ratio → w = sqrt(area * ratio)
+    w = math.sqrt(target_area * ideal_ratio)
+    h = target_area / w if w > 0 else min_h
+
+    # Enforce minimum dimensions (furniture clearance)
+    if w < min_w:
+        w = min_w
+        h = max(target_area / w, min_h)
+    if h < min_h:
+        h = min_h
+        w = max(target_area / h, min_w)
+
+    # Enforce aspect ratio limits
+    ar = max(w / h, h / w) if min(w, h) > 0 else 1.0
+    if ar > max_ratio:
+        # Redistribute: make more square while keeping area
+        if w > h:
+            w = math.sqrt(target_area * max_ratio)
+            h = target_area / w
+        else:
+            h = math.sqrt(target_area * max_ratio)
+            w = target_area / h
+
+    # Kitchen: ensure work triangle fits
+    if rtype == 'kitchen':
+        min_counter = KITCHEN_WORK_TRIANGLE['min_counter_length_ft']
+        if w < min_counter and h < min_counter:
+            if target_area / min_counter >= 5:
+                w = min_counter
+                h = target_area / w
+
+    # Bedroom: ensure bed + walking space
+    if rtype in ('master_bedroom', 'bedroom'):
+        bed_w = 5.5 if rtype == 'master_bedroom' else 4.5  # queen vs single
+        bed_l = 6.5
+        min_walk = furniture_clr
+        needed_w = bed_w + min_walk * 2  # walking space both sides
+        needed_l = bed_l + min_walk      # walking at foot
+        w = max(w, needed_w)
+        h = max(h, needed_l)
+
+    return (round(w, 1), round(h, 1))
+
+
+def _get_bhk_aware_fraction(rtype: str, total_area: float, n_rooms: int) -> float:
+    """
+    BHK-aware area fraction that scales with plot size and room count.
+
+    Based on professional architect allocation patterns:
+    - Small homes (≤600 sqft): Bedrooms get more share, living is compact
+    - Medium homes (600-1200): Balanced distribution
+    - Large homes (1200+): Living/dining get generous share
+    - More rooms → each gets proportionally less, but minima enforced
+    """
+    lo, hi = ROOM_AREA_RATIOS.get(rtype, (0.04, 0.06))
+    ideal = (lo + hi) / 2
+
+    # Scale by room count — more rooms means less per room
+    if n_rooms > 6:
+        scale = max(0.72, math.sqrt(6.0 / n_rooms))
+        ideal *= scale
+
+    # BHK-aware adjustments
+    if total_area < 400:
+        # Tiny (1BHK studio): bedroom dominates
+        if rtype in ('master_bedroom', 'bedroom'):
+            ideal = max(ideal, 0.25)
+        elif rtype == 'living':
+            ideal = min(ideal, 0.12)
+    elif total_area < 700:
+        # Small (1-2BHK): balanced with bedroom priority
+        if rtype in ('master_bedroom', 'bedroom'):
+            ideal = max(ideal, 0.18)
+        elif rtype == 'living':
+            ideal = max(ideal, 0.12)
+    elif total_area < 1200:
+        # Medium (2-3BHK): standard distribution
+        if rtype in ('master_bedroom',):
+            ideal = max(ideal, 0.16)
+    else:
+        # Large (3-4BHK): generous living/dining
+        if rtype in ('living', 'dining'):
+            ideal = max(ideal, 0.12)
+
+    # Cap service rooms on large plots
+    if total_area > 1500 and rtype in ('bathroom', 'toilet', 'utility', 'store'):
+        ideal = min(ideal, hi)
+
+    return ideal
+
+
 def _build_room_list(rooms_config, total_area):
     """Build canonical room list with Indian naming from rooms_config dict.
     
+    Uses BHK-aware area allocation and Neufert-inspired proportions.
     Strictly follows user's rooms_config — does NOT auto-add rooms.
-    Master bedrooms (rooms_config['master_bedroom']) each get an attached bathroom
-    auto-created. The 'bathroom' count = EXTRA common bathrooms.
+    Master bedrooms each get an attached bathroom auto-created.
     """
     total_beds = rooms_config.get('master_bedroom', 0) + rooms_config.get('bedroom', 0)
-
-    # Respect user's bathroom count — do NOT override
     total_baths = rooms_config.get('bathroom', 0) + rooms_config.get('toilet', 0)
 
-    def _pct(rtype):
-        lo, hi = ROOM_AREA_RATIOS.get(rtype, (0.04, 0.06))
-        return (lo + hi) / 2
+    # Count total rooms for BHK-aware scaling
+    n_total = sum(rooms_config.values())
+    if 'living' not in rooms_config:
+        n_total += 1
 
     def _make(rtype, name):
-        target = _pct(rtype) * total_area
+        ideal_frac = _get_bhk_aware_fraction(rtype, total_area, n_total)
+        target = ideal_frac * total_area
         target = max(target, _MIN_AREAS.get(rtype, 20))
         mx = _MAX_AREAS.get(rtype)
         if mx:
             target = min(target, mx)
+        # Compute Neufert dimensions for this room
+        dims = _compute_neufert_dimensions(rtype, target)
         return {
             'room_type': rtype, 'name': name,
             'zone': ZONE_MAP.get(rtype, 'private'),
             'target_area': target,
+            'privacy_depth': PRIVACY_DEPTH.get(rtype, 3),
+            '_ideal_dims': dims,  # (w, h) from Neufert proportions
         }
 
     # Named rooms (Indian style)
@@ -1301,6 +1614,158 @@ def _layout_column_3(rl, ux, uy, uw, ul, place_fn):
 
 # ---- Main entry point ----------------------------------------------------
 
+def _score_candidate_layout(room_specs, ux, uy, uw, ul, plot_w, plot_l):
+    """
+    Score a candidate layout on multiple architectural quality metrics.
+
+    Based on professional architectural evaluation criteria:
+      1. Adjacency satisfaction (40%) — required/preferred pairs actually adjacent
+      2. Room proportions (20%) — aspect ratios within Neufert limits
+      3. Privacy gradient (15%) — public rooms near front, private near back
+      4. Natural light access (10%) — habitable rooms touching external walls
+      5. Vastu compliance (10%) — rooms in preferred directional quadrants
+      6. Area efficiency (5%) — actual vs target area match
+
+    Returns: float score in [0, 1]
+    """
+    if not room_specs:
+        return 0.0
+
+    plot_cx = ux + uw / 2
+    plot_cy = uy + ul / 2
+    results = {}
+
+    # --- 1. Adjacency satisfaction (40 weight) ---
+    adj_score = 0
+    adj_total = 0
+    placed_rooms = {r.get('room_type'): r for r in room_specs if r.get('_placed')}
+
+    def _rooms_adjacent(r1, r2, tol=1.5):
+        p1, p2 = r1.get('_placed', {}), r2.get('_placed', {})
+        if not p1 or not p2:
+            return False
+        x1, y1, w1, h1 = p1['x'], p1['y'], p1['w'], p1['h']
+        x2, y2, w2, h2 = p2['x'], p2['y'], p2['w'], p2['h']
+        # Check shared wall (horizontal or vertical)
+        if abs((x1 + w1) - x2) < tol or abs((x2 + w2) - x1) < tol:
+            overlap = min(y1 + h1, y2 + h2) - max(y1, y2)
+            return overlap > 2
+        if abs((y1 + h1) - y2) < tol or abs((y2 + h2) - y1) < tol:
+            overlap = min(x1 + w1, x2 + w2) - max(x1, x2)
+            return overlap > 2
+        return False
+
+    for (ta, tb), (strength, _reason) in FUNCTIONAL_ADJACENCY.items():
+        if strength == 'avoid':
+            continue
+        r_a = next((r for r in room_specs if r.get('room_type') == ta and r.get('_placed')), None)
+        r_b = next((r for r in room_specs if r.get('room_type') == tb and r.get('_placed')), None)
+        if not r_a or not r_b:
+            continue
+        weight = {'required': 3, 'strong': 2, 'preferred': 1, 'weak': 0.5}.get(strength, 0.5)
+        adj_total += weight
+        if _rooms_adjacent(r_a, r_b):
+            adj_score += weight
+
+    # Forbidden adjacency check — penalty
+    for (ta, tb), (strength, _) in FUNCTIONAL_ADJACENCY.items():
+        if strength != 'avoid':
+            continue
+        r_a = next((r for r in room_specs if r.get('room_type') == ta and r.get('_placed')), None)
+        r_b = next((r for r in room_specs if r.get('room_type') == tb and r.get('_placed')), None)
+        if r_a and r_b and _rooms_adjacent(r_a, r_b):
+            adj_score -= 2
+            adj_total += 2
+
+    results['adjacency'] = max(0, adj_score / max(adj_total, 1))
+
+    # --- 2. Room proportions (20 weight) ---
+    prop_scores = []
+    for r in room_specs:
+        if not r.get('_placed'):
+            continue
+        w, h = r['_placed']['w'], r['_placed']['h']
+        rtype = r['room_type']
+        max_ar = MAX_ASPECT.get(rtype, 2.0)
+        ar = max(w / h, h / w) if min(w, h) > 0 else 999
+        if ar <= max_ar:
+            prop_scores.append(1.0)
+        elif ar <= max_ar * 1.3:
+            prop_scores.append(0.5)
+        else:
+            prop_scores.append(0.1)
+    results['proportions'] = sum(prop_scores) / max(len(prop_scores), 1)
+
+    # --- 3. Privacy gradient (15 weight) ---
+    gradient_scores = []
+    for r in room_specs:
+        if not r.get('_placed'):
+            continue
+        depth = PRIVACY_DEPTH.get(r['room_type'], 3)
+        ry = r['_placed']['y']
+        # Normalize position: 0 = front (min y), 1 = back (max y)
+        norm_y = (ry - uy) / max(ul, 1)
+        # Public (depth 0-1) should be near front (norm_y < 0.4)
+        # Private (depth 3-4) should be near back (norm_y > 0.5)
+        if depth <= 1:
+            gradient_scores.append(1.0 if norm_y < 0.5 else 0.3)
+        elif depth >= 3:
+            gradient_scores.append(1.0 if norm_y > 0.3 else 0.3)
+        else:
+            gradient_scores.append(0.7)  # transition zone is flexible
+    results['privacy_gradient'] = sum(gradient_scores) / max(len(gradient_scores), 1)
+
+    # --- 4. Natural light access (10 weight) ---
+    ext_tol = WALL_EXTERNAL_FT + 1.5
+    light_scores = []
+    for r in room_specs:
+        if not r.get('_placed'):
+            continue
+        rtype = r['room_type']
+        if rtype not in NATURAL_LIGHT_RULES['must_have_external_wall']:
+            continue
+        p = r['_placed']
+        touches_ext = (p['x'] <= ux + ext_tol or
+                       p['x'] + p['w'] >= ux + uw - ext_tol or
+                       p['y'] <= uy + ext_tol or
+                       p['y'] + p['h'] >= uy + ul - ext_tol)
+        light_scores.append(1.0 if touches_ext else 0.0)
+    results['natural_light'] = sum(light_scores) / max(len(light_scores), 1)
+
+    # --- 5. Vastu compliance (10 weight) ---
+    vastu_scores = []
+    for r in room_specs:
+        if not r.get('_placed'):
+            continue
+        p = r['_placed']
+        q = _get_vastu_quadrant(p['x'], p['y'], p['w'], p['h'], plot_cx, plot_cy)
+        score = _vastu_score(r['room_type'], q)
+        vastu_scores.append(score / 10.0)
+    results['vastu'] = sum(vastu_scores) / max(len(vastu_scores), 1)
+
+    # --- 6. Area efficiency (5 weight) ---
+    area_scores = []
+    for r in room_specs:
+        if not r.get('_placed'):
+            continue
+        actual = r['_placed']['w'] * r['_placed']['h']
+        target = r.get('target_area', actual)
+        if target > 0:
+            ratio = min(actual / target, target / actual) if actual > 0 else 0
+            area_scores.append(ratio)
+    results['area_efficiency'] = sum(area_scores) / max(len(area_scores), 1)
+
+    # Weighted total
+    total = (0.40 * results['adjacency'] +
+             0.20 * results['proportions'] +
+             0.15 * results['privacy_gradient'] +
+             0.10 * results['natural_light'] +
+             0.10 * results['vastu'] +
+             0.05 * results['area_efficiency'])
+
+    return total
+
+
 def generate_room_plan(
     boundary_coords: List[Tuple[float, float]],
     rooms_config: Dict[str, int],
@@ -1365,8 +1830,10 @@ def generate_room_plan(
     except Exception as e:
         logger.warning(f"Pro Layout Engine failed ({e}), falling back to legacy")
 
-    # ── LEGACY FALLBACK ─────────────────────────────────────────────────
-    # Only reached if the professional engine is unavailable or errors out.
+    # ── LEGACY FALLBACK WITH MULTI-CANDIDATE GENERATION ──────────────
+    # Generates multiple layout candidates using different strategies,
+    # scores each on architectural quality metrics, returns the best.
+    # Based on Graph2Plan / House-GAN approach: generate → evaluate → select.
     if SHAPELY_AVAILABLE:
         boundary_poly = Polygon(boundary_coords)
         minx, miny, maxx, maxy = boundary_poly.bounds
@@ -1397,40 +1864,113 @@ def generate_room_plan(
                  rl['staircases'] + rl['balconies'])
     n_rooms = len(all_rooms)
 
-    strategy = _choose_strategy(aspect, n_rooms, total_area)
-
-    centroids_out = defaultdict(list)
-    sizes_out = defaultdict(list)
-    room_specs = []
-
-    def _place(room, rx, ry, rw, rh):
-        room['_placed'] = {
-            'x': round(rx, 2), 'y': round(ry, 2),
-            'w': round(rw, 2), 'h': round(rh, 2),
-        }
-        room['zone_group'] = strategy
-        centroids_out[room['room_type']].append(
-            (round(rx + rw / 2, 2), round(ry + rh / 2, 2)))
-        sizes_out[room['room_type']].append(
-            (round(rw, 2), round(rh, 2)))
-        room_specs.append(room)
-
-    if strategy == 'GRID_2x3':
-        _layout_grid_2x3(rl, ux, uy, uw, ul, _place)
-    elif strategy == 'GRID_3x2':
-        _layout_grid_3x2(rl, ux, uy, uw, ul, _place)
-    elif strategy == 'WRAP':
-        _layout_wrap(rl, ux, uy, uw, ul, _place)
-    elif strategy == 'COLUMN_3':
-        _layout_column_3(rl, ux, uy, uw, ul, _place)
-    elif strategy == 'GRID_2x2_WIDE':
-        _layout_grid_2x2(rl, ux, uy, uw, ul, _place, wide=True)
-    elif strategy == 'GRID_2x2_TALL':
-        _layout_grid_2x2(rl, ux, uy, uw, ul, _place, wide=False)
+    # --- Multi-candidate strategy evaluation ---
+    # Try ALL applicable strategies and score each, pick the best.
+    # This is the key improvement: instead of randomly picking one strategy,
+    # generate candidates and evaluate architecturally (like Graph2Plan).
+    strategies_to_try = []
+    if n_rooms <= 4:
+        strategies_to_try = ['GRID_2x2_WIDE', 'GRID_2x2_TALL']
+    elif aspect > 1.15:
+        strategies_to_try = ['GRID_2x3']
+        if total_area > 1800 and aspect < 1.4:
+            strategies_to_try.append('WRAP')
+    elif aspect < 0.85:
+        strategies_to_try = ['GRID_3x2', 'COLUMN_3']
     else:
-        _layout_grid_2x3(rl, ux, uy, uw, ul, _place)
+        strategies_to_try = ['GRID_2x3', 'GRID_3x2', 'WRAP']
 
-    return dict(centroids_out), dict(sizes_out), room_specs
+    # Always include the primary strategy
+    primary = _choose_strategy(aspect, n_rooms, total_area)
+    if primary not in strategies_to_try:
+        strategies_to_try.insert(0, primary)
+
+    best_score = -1
+    best_centroids = None
+    best_sizes = None
+    best_specs = None
+    best_strategy = primary
+
+    from copy import deepcopy
+
+    for strategy in strategies_to_try:
+        # Deep copy room list so each candidate starts fresh
+        rl_copy = deepcopy(rl)
+        centroids_out = defaultdict(list)
+        sizes_out = defaultdict(list)
+        room_specs = []
+
+        def _place(room, rx, ry, rw, rh):
+            room['_placed'] = {
+                'x': round(rx, 2), 'y': round(ry, 2),
+                'w': round(rw, 2), 'h': round(rh, 2),
+            }
+            room['zone_group'] = strategy
+            centroids_out[room['room_type']].append(
+                (round(rx + rw / 2, 2), round(ry + rh / 2, 2)))
+            sizes_out[room['room_type']].append(
+                (round(rw, 2), round(rh, 2)))
+            room_specs.append(room)
+
+        try:
+            if strategy == 'GRID_2x3':
+                _layout_grid_2x3(rl_copy, ux, uy, uw, ul, _place)
+            elif strategy == 'GRID_3x2':
+                _layout_grid_3x2(rl_copy, ux, uy, uw, ul, _place)
+            elif strategy == 'WRAP':
+                _layout_wrap(rl_copy, ux, uy, uw, ul, _place)
+            elif strategy == 'COLUMN_3':
+                _layout_column_3(rl_copy, ux, uy, uw, ul, _place)
+            elif strategy == 'GRID_2x2_WIDE':
+                _layout_grid_2x2(rl_copy, ux, uy, uw, ul, _place, wide=True)
+            elif strategy == 'GRID_2x2_TALL':
+                _layout_grid_2x2(rl_copy, ux, uy, uw, ul, _place, wide=False)
+            else:
+                _layout_grid_2x3(rl_copy, ux, uy, uw, ul, _place)
+        except Exception as e:
+            logger.debug(f"Strategy {strategy} failed: {e}")
+            continue
+
+        if not room_specs:
+            continue
+
+        # Score this candidate
+        score = _score_candidate_layout(room_specs, ux, uy, uw, ul, plot_w, plot_l)
+        logger.debug(f"Strategy {strategy}: score={score:.3f}, rooms={len(room_specs)}")
+
+        if score > best_score:
+            best_score = score
+            best_centroids = dict(centroids_out)
+            best_sizes = dict(sizes_out)
+            best_specs = room_specs
+            best_strategy = strategy
+
+    if best_specs is None:
+        # Absolute fallback — use primary strategy without scoring
+        rl = _build_room_list(rooms_config, total_area)
+        centroids_out = defaultdict(list)
+        sizes_out = defaultdict(list)
+        room_specs = []
+
+        def _place_fb(room, rx, ry, rw, rh):
+            room['_placed'] = {
+                'x': round(rx, 2), 'y': round(ry, 2),
+                'w': round(rw, 2), 'h': round(rh, 2),
+            }
+            room['zone_group'] = primary
+            centroids_out[room['room_type']].append(
+                (round(rx + rw / 2, 2), round(ry + rh / 2, 2)))
+            sizes_out[room['room_type']].append(
+                (round(rw, 2), round(rh, 2)))
+            room_specs.append(room)
+
+        _layout_grid_2x3(rl, ux, uy, uw, ul, _place_fb)
+        best_centroids = dict(centroids_out)
+        best_sizes = dict(sizes_out)
+        best_specs = room_specs
+
+    logger.info(f"Best layout strategy: {best_strategy} (score={best_score:.3f})")
+    return best_centroids, best_sizes, best_specs
 
 
 # ===========================================================================
@@ -1656,32 +2196,70 @@ class FloorPlanBuilder:
             room['actual_area'] = round(room.get('area', rw * rl), 1)
 
             # Build door entries for PlanPreview
+            # Neufert's Architects' Data — Door placement rules:
+            #   - Doors should be placed NEAR CORNERS (4-6" from wall corner)
+            #     to maximize usable wall space opposite the door
+            #   - Main entrance: centered or near corner (per architect judgment)
+            #   - Interior doors: corner placement (hinge at corner side)
+            #   - Door widths: 3.5ft main entrance, 3ft bedroom, 2.5ft bathroom
+            #   - Door swing: into the room, opening against nearest wall
+            CORNER_OFFSET_FT = 0.5  # Half-foot from corner
             for door in room.get('doors', []):
                 wall = door.get('wall', 'S')
                 dw = door.get('width', 2.5)
+                dtype = door.get('type', 'default')
+
+                # Choose offset: main entrance centered, others near corner
+                if dtype == 'main_entrance':
+                    # Centered on wall for visual impact
+                    if wall in ('S', 'N', 'bottom', 'top'):
+                        offset_x = (rw - dw) / 2
+                    else:
+                        offset_y = (rl - dw) / 2
+                else:
+                    # Near corner — professional standard
+                    # Place near the LEFT/BOTTOM corner of the wall
+                    pass
+
                 if wall in ('S', 'bottom'):
-                    hx, hy = round(rx + rw * 0.3, 1), round(ry, 1)
+                    if dtype == 'main_entrance':
+                        hx = round(rx + (rw - dw) / 2, 1)
+                    else:
+                        hx = round(rx + CORNER_OFFSET_FT, 1)
+                    hy = round(ry, 1)
                     doors_list.append({
                         'position': [hx, hy], 'width': dw,
                         'hinge': [hx, hy], 'door_end': [round(hx + dw, 1), hy],
                         'swing_dir': [0, 1],
                     })
                 elif wall in ('N', 'top'):
-                    hx, hy = round(rx + rw * 0.3, 1), round(ry + rl, 1)
+                    if dtype == 'main_entrance':
+                        hx = round(rx + (rw - dw) / 2, 1)
+                    else:
+                        hx = round(rx + CORNER_OFFSET_FT, 1)
+                    hy = round(ry + rl, 1)
                     doors_list.append({
                         'position': [hx, hy], 'width': dw,
                         'hinge': [hx, hy], 'door_end': [round(hx + dw, 1), hy],
                         'swing_dir': [0, -1],
                     })
                 elif wall in ('W', 'left'):
-                    hx, hy = round(rx, 1), round(ry + rl * 0.3, 1)
+                    hx = round(rx, 1)
+                    if dtype == 'main_entrance':
+                        hy = round(ry + (rl - dw) / 2, 1)
+                    else:
+                        hy = round(ry + CORNER_OFFSET_FT, 1)
                     doors_list.append({
                         'position': [hx, hy], 'width': dw,
                         'hinge': [hx, hy], 'door_end': [hx, round(hy + dw, 1)],
                         'swing_dir': [1, 0],
                     })
                 elif wall in ('E', 'right'):
-                    hx, hy = round(rx + rw, 1), round(ry + rl * 0.3, 1)
+                    hx = round(rx + rw, 1)
+                    if dtype == 'main_entrance':
+                        hy = round(ry + (rl - dw) / 2, 1)
+                    else:
+                        hy = round(ry + CORNER_OFFSET_FT, 1)
                     doors_list.append({
                         'position': [hx, hy], 'width': dw,
                         'hinge': [hx, hy], 'door_end': [hx, round(hy + dw, 1)],
@@ -1741,11 +2319,21 @@ class FloorPlanBuilder:
     @staticmethod
     def _ensure_natural_light(rooms, minx, miny, maxx, maxy):
         """
-        Swap interior habitable rooms with exterior service rooms.
+        Ensure habitable rooms have natural light access (NBC 2016 / Neufert).
+
+        Two-pass approach:
+        1. SWAP: Interior habitable rooms ↔ exterior service rooms
+        2. CROSS-VENTILATION BOOST: For rooms touching 2 external walls,
+           mark them for double window placement
 
         Architect's rule: Every bedroom, living room, and study MUST have
         at least one exterior wall (window for natural light/ventilation).
         Service rooms (bathrooms, stores, utility) can be interior.
+
+        NBC 2016 requires:
+        - Minimum 10% of floor area as window area for habitable rooms
+        - Minimum 5% as openable ventilation area
+        - Cross-ventilation preferred for all sleeping rooms
         """
         EXT_TOL = 1.75  # Wall thickness + tolerance
 
@@ -1757,6 +2345,28 @@ class FloorPlanBuilder:
                     ry <= miny + EXT_TOL or
                     ry + rl >= maxy - EXT_TOL)
 
+        def _count_ext_walls(r):
+            """Count how many external walls a room touches (0-4)."""
+            rx, ry = r['position']['x'], r['position']['y']
+            rw, rl = r['width'], r['length']
+            count = 0
+            if rx <= minx + EXT_TOL: count += 1       # W wall
+            if rx + rw >= maxx - EXT_TOL: count += 1   # E wall
+            if ry <= miny + EXT_TOL: count += 1         # S wall
+            if ry + rl >= maxy - EXT_TOL: count += 1    # N wall
+            return count
+
+        def _get_ext_walls(r):
+            """Get list of external wall directions."""
+            rx, ry = r['position']['x'], r['position']['y']
+            rw, rl = r['width'], r['length']
+            walls = []
+            if rx <= minx + EXT_TOL: walls.append('W')
+            if rx + rw >= maxx - EXT_TOL: walls.append('E')
+            if ry <= miny + EXT_TOL: walls.append('S')
+            if ry + rl >= maxy - EXT_TOL: walls.append('N')
+            return walls
+
         habitable = ('living', 'master_bedroom', 'bedroom', 'dining', 'study')
         swappable = ('bathroom', 'toilet', 'store', 'utility', 'pooja')
 
@@ -1766,20 +2376,16 @@ class FloorPlanBuilder:
             'dining': 50, 'study': 36,
         }
 
-        # Find interior habitable rooms and exterior swappable rooms
+        # Pass 1: Swap interior habitable rooms with exterior service rooms
         interior_hab = [i for i, r in enumerate(rooms)
                         if r['room_type'] in habitable and not _touches_ext(r)]
         exterior_svc = [i for i, r in enumerate(rooms)
                         if r['room_type'] in swappable and _touches_ext(r)]
 
-        # Swap positions — move bedroom to exterior, service room to interior
-        # BUT only if the bedroom gets a BIGGER or equal area (never shrink)
         for hi in interior_hab:
             if not exterior_svc:
                 break
 
-            # Find the best exterior service room to swap with:
-            # prefer one with area >= bedroom's current area
             h_room = rooms[hi]
             h_area = h_room['width'] * h_room['length']
             min_a = min_areas.get(h_room['room_type'], 50)
@@ -1788,19 +2394,16 @@ class FloorPlanBuilder:
             for idx, si in enumerate(exterior_svc):
                 s_room = rooms[si]
                 s_area = s_room['width'] * s_room['length']
-                # Only swap if bedroom would get >= its current area
-                # AND won't go below minimum
                 if s_area >= h_area and s_area >= min_a:
                     best_si = idx
                     break
 
             if best_si is None:
-                continue  # No suitable swap partner — skip
+                continue
 
             si = exterior_svc.pop(best_si)
             s_room = rooms[si]
 
-            # Swap positions and dimensions
             h_pos = dict(h_room['position'])
             h_w, h_l = h_room['width'], h_room['length']
             s_pos = dict(s_room['position'])
@@ -1817,6 +2420,22 @@ class FloorPlanBuilder:
             s_room['length'] = h_l
             s_room['area'] = round(h_w * h_l, 1)
             s_room['actual_area'] = round(h_w * h_l, 1)
+
+        # Pass 2: Mark cross-ventilation potential
+        # Rooms touching 2+ external walls get '_cross_ventilation' flag
+        # This affects window placement later (windows on opposite walls)
+        cross_vent_types = NATURAL_LIGHT_RULES.get('prefer_cross_ventilation', set())
+        for room in rooms:
+            if room['room_type'] in cross_vent_types:
+                ext_walls = _get_ext_walls(room)
+                # Cross-ventilation: opposite walls (N-S or E-W)
+                has_ns = 'N' in ext_walls and 'S' in ext_walls
+                has_ew = 'E' in ext_walls and 'W' in ext_walls
+                room['_cross_ventilation'] = has_ns or has_ew
+                room['_ext_wall_count'] = len(ext_walls)
+            else:
+                room['_cross_ventilation'] = False
+                room['_ext_wall_count'] = _count_ext_walls(room)
 
         return rooms
 
@@ -2221,49 +2840,100 @@ class FloorPlanBuilder:
                            ('N' if dy > 0 else 'S')
                 doors.append({'wall': wall, 'width': 3, 'type': 'default'})
 
-            # ── Window placement (external walls, no neighbor) ────────
-            # Only place windows on walls that are external AND don't have
-            # a neighbor directly on the other side
-            neighbor_walls = set(wall for _, wall, _ in neighbors)
+            # ── Window placement (external walls, Neufert/NBC 2016) ────
+            #
+            # Neufert's Architects' Data — Window rules:
+            #   - Habitable room: min window area = 10% of floor area (NBC 2016)
+            #   - Openable ventilation area ≥ 5% of floor area
+            #   - Cross-ventilation strongly recommended for sleeping rooms
+            #   - Window sill height: 0.9m (living), 0.6m (bedroom bay)
+            #   - North light: preferred for studies/offices (diffused, glare-free)
+            #   - South/West: needs shading in hot climates
+            #
+            # Window width formula:
+            #   required_window_area = floor_area * 0.12 (≈1/8, above code min)
+            #   window_height ≈ 4ft standard → width = required_area / height
+            #   Distribute across available external walls
+            #
+            door_walls = set(d['wall'] for d in doors)
+            has_cross_vent = room.get('_cross_ventilation', False)
 
             if rtype in ('bathroom', 'toilet'):
-                # Small ventilation window on external wall (prefer wall without door)
-                door_walls = set(d['wall'] for d in doors)
+                # Small high-level ventilation window — frosted glass
+                # Neufert: 0.4 m² minimum for bathroom ventilation
                 for wall in ext_walls:
                     if wall not in door_walls:
-                        windows.append({'wall': wall, 'width': 2, 'type': 'ventilation'})
+                        windows.append({'wall': wall, 'width': 2,
+                                        'type': 'ventilation', 'sill_height': 5.0})
                         break
                 else:
-                    # All external walls have doors — use any external wall
                     if ext_walls:
                         windows.append({'wall': ext_walls[0], 'width': 2,
-                                        'type': 'ventilation'})
+                                        'type': 'ventilation', 'sill_height': 5.0})
 
             elif rtype in ('store', 'utility', 'corridor'):
-                # Minimal/no windows for service rooms
+                # Minimal window — 2ft for basic light/air
                 if ext_walls:
                     windows.append({'wall': ext_walls[0], 'width': 2, 'type': 'small'})
 
             else:
-                # Habitable rooms: windows on ALL external walls
-                # Larger windows on front-facing walls, standard on others
-                # Window sizing follows NBC 2016: min 1/6th of floor area
+                # ── Habitable rooms: Neufert/NBC window sizing ────────
                 room_area = rw * rl
+                # Target: 12% of floor area as glazing (exceeds NBC 10% min)
+                # Standard window height = 4ft
+                WIN_H = 4.0
+                required_glass_area = room_area * 0.12
+                n_ext = len(ext_walls) or 1
+                area_per_wall = required_glass_area / n_ext
+
                 for wall in ext_walls:
                     wall_length = rw if wall in ('N', 'S') else rl
-                    if wall == 'S':  # Road-facing = large window
-                        win_w = 5 if rtype == 'living' else 4
+
+                    # Base width from required glass area
+                    base_w = area_per_wall / WIN_H
+
+                    # Directional adjustments (Neufert recommendations)
+                    if wall == 'S':
+                        # South (road-facing in India): generous window
+                        base_w = max(base_w, 4.5 if rtype == 'living' else 3.5)
+                    elif wall == 'N':
+                        # North: diffused light, great for study/work
+                        if rtype in ('study', 'living'):
+                            base_w = max(base_w, 4.0)
+                        else:
+                            base_w = max(base_w, 3.5)
                     elif wall in ('E', 'W'):
-                        win_w = 4 if rtype in ('living', 'master_bedroom') else 3.5
-                    else:  # North — good diffused light
-                        win_w = 4
-                    # Don't place window wider than 60% of the wall
+                        # East: morning sun, West: harsh afternoon sun
+                        if wall == 'E':
+                            base_w = max(base_w, 3.5)
+                        else:
+                            # West windows slightly smaller (heat gain)
+                            base_w = max(base_w, 3.0)
+
+                    # Room-type adjustments
+                    if rtype == 'living':
+                        base_w = max(base_w, 4.5)  # Living = generous glazing
+                    elif rtype == 'master_bedroom':
+                        base_w = max(base_w, 4.0)
+
+                    # Constraint: window ≤ 60% of wall length
                     max_win_w = wall_length * 0.6
-                    win_w = min(win_w, max_win_w)
-                    # Ensure at least 2ft wide for meaningful light
+                    win_w = min(base_w, max_win_w)
+
+                    # Min 2ft for meaningful light
                     if win_w >= 2:
+                        w_type = 'picture' if win_w >= 5.0 else 'standard'
                         windows.append({'wall': wall, 'width': round(win_w, 1),
-                                        'type': 'standard'})
+                                        'type': w_type})
+
+                # ── Cross-ventilation: ensure windows on opposite walls ──
+                if has_cross_vent and len(windows) >= 2:
+                    win_walls = set(w['wall'] for w in windows)
+                    has_ns = 'N' in win_walls and 'S' in win_walls
+                    has_ew = 'E' in win_walls and 'W' in win_walls
+                    if has_ns or has_ew:
+                        for w in windows:
+                            w['_cross_ventilation'] = True
 
             room['doors'] = doors
             room['windows'] = windows
@@ -2575,19 +3245,33 @@ def generate_gnn_floor_plan(
 
 
 def validate_gnn_layout(layout: Dict) -> Dict:
-    """Validate the generated layout for architectural compliance."""
+    """
+    Validate the generated layout for architectural compliance.
+
+    Enhanced checks based on Neufert's Architects' Data, NBC 2016, and
+    Graph2Plan privacy-gradient principles:
+      1. Room overlaps
+      2. Minimum room sizes (NBC 2016 / Neufert)
+      3. Boundary fit
+      4. Neufert proportion compliance (aspect ratio)
+      5. Privacy gradient (public front → private back)
+      6. Natural light access (habitable rooms on external walls)
+      7. Adjacency satisfaction (FUNCTIONAL_ADJACENCY rules)
+      8. Vastu directional compliance
+    """
     rooms = layout.get('rooms', [])
     plot = layout.get('plot', {})
     plot_w = plot.get('width', 0)
     plot_l = plot.get('length', 0)
 
     issues = []
+    warnings = []
     overlap_count = 0
     min_size_ok = True
     zoning_ok = True
     boundary_ok = True
 
-    # Check overlaps
+    # ── 1. Check overlaps ────────────────────────────────────────
     for i, r1 in enumerate(rooms):
         p1 = r1.get('position', {})
         x1, y1 = p1.get('x', 0), p1.get('y', 0)
@@ -2604,7 +3288,7 @@ def validate_gnn_layout(layout: Dict) -> Dict:
                 overlap_count += 1
                 issues.append(f"Overlap: {r1.get('name')} and {r2.get('name')}")
 
-    # Check minimum sizes
+    # ── 2. Check minimum sizes (NBC 2016 / Neufert) ─────────────
     for room in rooms:
         rtype = room.get('room_type', 'other')
         area = room.get('area', 0)
@@ -2612,9 +3296,9 @@ def validate_gnn_layout(layout: Dict) -> Dict:
         min_area = min_dims[0] * min_dims[1] * 0.6
         if area < min_area:
             min_size_ok = False
-            issues.append(f"{room.get('name')}: {area} sqft too small")
+            issues.append(f"{room.get('name')}: {area} sqft too small (min {round(min_area, 1)})")
 
-    # Check boundary fit
+    # ── 3. Check boundary fit ────────────────────────────────────
     for room in rooms:
         pos = room.get('position', {})
         if pos.get('x', 0) < -1 or pos.get('y', 0) < -1:
@@ -2624,6 +3308,106 @@ def validate_gnn_layout(layout: Dict) -> Dict:
         if pos.get('y', 0) + room.get('length', 0) > plot_l + 1:
             boundary_ok = False
 
+    # ── 4. Neufert proportion compliance ─────────────────────────
+    proportion_issues = 0
+    for room in rooms:
+        rtype = room.get('room_type', 'other')
+        w, l = room.get('width', 1), room.get('length', 1)
+        ratio = max(w, l) / max(min(w, l), 0.1)
+        max_ratio = MAX_ASPECT.get(rtype, 2.5)
+        if ratio > max_ratio + 0.3:  # Small tolerance
+            proportion_issues += 1
+            warnings.append(
+                f"{room.get('name')}: aspect ratio {ratio:.1f} exceeds "
+                f"recommended {max_ratio:.1f}"
+            )
+    proportion_ok = proportion_issues == 0
+
+    # ── 5. Privacy gradient check ────────────────────────────────
+    privacy_ok = True
+    living = next((r for r in rooms if r['room_type'] == 'living'), None)
+    bedrooms = [r for r in rooms if r['room_type'] in ('master_bedroom', 'bedroom')]
+    if living and bedrooms and plot_l > 0:
+        living_y = living['position']['y']
+        # Bedrooms should be further from front (higher y or lower y depending on orientation)
+        # We check: bedrooms' average y should differ from living's y
+        avg_bed_y = sum(b['position']['y'] for b in bedrooms) / len(bedrooms)
+        # Privacy gradient exists if bedrooms are not on same row as living
+        if abs(avg_bed_y - living_y) < 1.0 and plot_l > 20:
+            privacy_ok = False
+            warnings.append("Privacy gradient is weak: bedrooms at same depth as living room")
+
+    # ── 6. Natural light access ──────────────────────────────────
+    habitable_types = NATURAL_LIGHT_RULES.get('requires_external_wall', set())
+    light_issues = 0
+    EXT_TOL = 1.75
+    for room in rooms:
+        if room.get('room_type') not in habitable_types:
+            continue
+        pos = room.get('position', {})
+        rx, ry = pos.get('x', 0), pos.get('y', 0)
+        rw, rl = room.get('width', 0), room.get('length', 0)
+        touches_ext = (rx <= EXT_TOL or rx + rw >= plot_w - EXT_TOL or
+                       ry <= EXT_TOL or ry + rl >= plot_l - EXT_TOL)
+        if not touches_ext:
+            light_issues += 1
+            warnings.append(f"{room.get('name')}: no external wall (natural light required)")
+    natural_light_ok = light_issues == 0
+
+    # ── 7. Adjacency satisfaction ────────────────────────────────
+    adj_satisfied = 0
+    adj_total = 0
+    required_pairs = [(k, v) for k, v in FUNCTIONAL_ADJACENCY.items()
+                      if v[0] in ('required', 'strong')]
+    for (rt1, rt2), (strength, reason) in required_pairs:
+        r1_list = [r for r in rooms if r['room_type'] == rt1]
+        r2_list = [r for r in rooms if r['room_type'] == rt2]
+        if not r1_list or not r2_list:
+            continue
+        adj_total += 1
+        # Check if any pair is actually adjacent (shared wall within tolerance)
+        found = False
+        for r1 in r1_list:
+            for r2 in r2_list:
+                p1, p2 = r1['position'], r2['position']
+                x1, y1, w1, l1 = p1['x'], p1['y'], r1['width'], r1['length']
+                x2, y2, w2, l2 = p2['x'], p2['y'], r2['width'], r2['length']
+                # Check for shared wall
+                tol = 1.5
+                shared_ns = (abs((y1 + l1) - y2) < tol or abs((y2 + l2) - y1) < tol)
+                shared_ew = (abs((x1 + w1) - x2) < tol or abs((x2 + w2) - x1) < tol)
+                y_overlap = min(y1 + l1, y2 + l2) - max(y1, y2)
+                x_overlap = min(x1 + w1, x2 + w2) - max(x1, x2)
+                if (shared_ns and x_overlap > 2) or (shared_ew and y_overlap > 2):
+                    found = True
+                    break
+            if found:
+                break
+        if found:
+            adj_satisfied += 1
+    adjacency_score = round(adj_satisfied / max(adj_total, 1) * 100, 1)
+
+    # ── 8. Vastu directional check ─────────────────────────────
+    vastu_matches = 0
+    vastu_total = 0
+    for room in rooms:
+        rtype = room.get('room_type', '')
+        if rtype not in VASTU_PLACEMENT:
+            continue
+        vastu_total += 1
+        preferred_list = VASTU_PLACEMENT[rtype]  # e.g. ['NE', 'N', 'E']
+        pos = room.get('position', {})
+        cx = pos.get('x', 0) + room.get('width', 0) / 2
+        cy = pos.get('y', 0) + room.get('length', 0) / 2
+        # Determine quadrant
+        ns = 'N' if cy >= plot_l / 2 else 'S'
+        ew = 'E' if cx >= plot_w / 2 else 'W'
+        quad = ns + ew  # e.g. 'NE', 'SW'
+        # Check if room quadrant matches any preferred direction
+        if quad in preferred_list or ns in preferred_list or ew in preferred_list:
+            vastu_matches += 1
+    vastu_score = round(vastu_matches / max(vastu_total, 1) * 100, 1)
+
     compliant = overlap_count == 0 and min_size_ok and boundary_ok
     return {
         'compliant': compliant,
@@ -2632,12 +3416,27 @@ def validate_gnn_layout(layout: Dict) -> Dict:
         'zoning_ok': zoning_ok,
         'min_size_ok': min_size_ok,
         'boundary_ok': boundary_ok,
+        'proportion_ok': proportion_ok,
+        'privacy_gradient_ok': privacy_ok,
+        'natural_light_ok': natural_light_ok,
+        'adjacency_score': f'{adjacency_score}%',
+        'vastu_score': f'{vastu_score}%',
         'issues': issues,
+        'warnings': warnings,
     }
 
 
 def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> str:
-    """Build a professional explanation of the generated layout."""
+    """
+    Build a professional explanation of the generated layout.
+
+    Includes:
+    - Layout strategy and method
+    - Room configuration summary
+    - Architectural features analysis
+    - Neufert/NBC/Vastu compliance summary
+    - Multi-candidate scoring details (if available)
+    """
     plot = layout.get('plot', {})
     area = layout.get('area_summary', {})
     rooms = layout.get('rooms', [])
@@ -2671,7 +3470,7 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
         lines.append(f"Layout: {strategy_names.get(strategy, strategy)}")
     else:
         lines.append(
-            f"Method: {'GAT-Net model inference' if method == 'model' else 'Heuristic layout'}."
+            f"Method: {'GAT-Net model inference' if method == 'model' else 'Heuristic multi-candidate layout'}."
         )
         lines.append(f"Layout strategy: {strategy_names.get(strategy, strategy)}.")
 
@@ -2719,7 +3518,45 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
             for f in features:
                 lines.append(f"  • {f}")
 
-    # Vastu summary
+    # ── Architectural compliance summary ─────────────────────────
+    lines.append("")
+    lines.append("Compliance summary:")
+
+    # Neufert proportions
+    if validation.get('proportion_ok'):
+        lines.append("  ✓ Neufert proportions: All rooms within recommended aspect ratios")
+    else:
+        nw = [w for w in validation.get('warnings', []) if 'aspect ratio' in w]
+        lines.append(f"  ⚠ Neufert proportions: {len(nw)} room(s) with non-ideal ratios")
+
+    # Privacy gradient
+    if validation.get('privacy_gradient_ok'):
+        lines.append("  ✓ Privacy gradient: Public→private depth planning achieved")
+    else:
+        lines.append("  ⚠ Privacy gradient: Bedrooms and living room at similar depth")
+
+    # Natural light
+    if validation.get('natural_light_ok'):
+        lines.append("  ✓ Natural light: All habitable rooms have external wall access")
+    else:
+        nl_issues = [w for w in validation.get('warnings', []) if 'natural light' in w]
+        lines.append(f"  ⚠ Natural light: {len(nl_issues)} room(s) lack external walls")
+
+    # Cross-ventilation
+    cross_vent_rooms = [r for r in rooms if r.get('_cross_ventilation')]
+    if cross_vent_rooms:
+        names = ', '.join(r.get('name', r['room_type']) for r in cross_vent_rooms)
+        lines.append(f"  ✓ Cross-ventilation: {names}")
+
+    # Adjacency
+    adj_score = validation.get('adjacency_score', '?')
+    lines.append(f"  • Adjacency satisfaction: {adj_score}")
+
+    # Vastu
+    vastu_score = validation.get('vastu_score', '?')
+    lines.append(f"  • Vastu compliance: {vastu_score}")
+
+    # Vastu details
     vastu_notes = []
     for r in rooms:
         rtype = r['room_type']
@@ -2737,12 +3574,15 @@ def _build_explanation(rooms_config: Dict, layout: Dict, validation: Dict) -> st
         f"Circulation: {area.get('circulation_percentage', '?')}."
     )
     lines.append("Walls: 9-inch external (brick), 4.5-inch internal (brick).")
+    lines.append("Room sizing: Neufert's Architects' Data proportions with furniture clearance.")
     lines.append("All dimensions on 6-inch structural grid. NBC 2016 compliant.")
 
     if validation.get('compliant'):
         lines.append("✓ All constraints validated. Layout is CAD-ready.")
     else:
-        lines.append(f"⚠ Found {len(validation.get('issues', []))} issue(s) to review.")
+        issue_count = len(validation.get('issues', []))
+        warn_count = len(validation.get('warnings', []))
+        lines.append(f"⚠ Found {issue_count} issue(s) and {warn_count} warning(s) to review.")
 
     return "\n".join(lines)
 

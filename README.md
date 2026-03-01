@@ -71,7 +71,7 @@ An end-to-end platform that generates architecturally-compliant 2D floor plans a
 - **React Router** — client-side routing
 
 ### Infrastructure
-- **Docker Compose** — multi-service orchestration (backend, frontend, Nginx, PostgreSQL, MinIO)
+- **Docker Compose** — multi-service orchestration (backend, frontend, Nginx)
 - **Nginx** — reverse proxy
 
 ---
@@ -79,37 +79,61 @@ An end-to-end platform that generates architecturally-compliant 2D floor plans a
 ## Quick Start
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- Git
+- **Python 3.11+** — [python.org](https://python.org)
+- **Node.js 20+** — [nodejs.org](https://nodejs.org)
+- **Git**
 
-### Local Development
+### One-Command Start (Windows)
+
+```powershell
+# Clone and start
+git clone <repo-url>
+cd CAD
+
+# Copy and edit your API keys
+copy .env.example .env
+notepad .env
+
+# Start everything
+.\start.bat
+```
+
+Or with PowerShell:
+```powershell
+.\start.ps1
+```
+
+This automatically:
+1. Creates a Python virtual environment
+2. Installs all backend dependencies
+3. Installs all frontend dependencies
+4. Starts backend (FastAPI) on **http://localhost:8000**
+5. Starts frontend (Vite) on **http://localhost:5173**
+6. Opens the browser
+
+### Manual Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/kunj290506/Real-Time_Fraud_Detection_Microservice.git
-cd Real-Time_Fraud_Detection_Microservice
-
-# Backend
+# Terminal 1 — Backend
 cd backend
+python -m venv .venv
+.venv\Scripts\activate    # Windows
 pip install -r requirements.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python main.py
 
-# Frontend (new terminal)
+# Terminal 2 — Frontend
 cd frontend
 npm install
 npm run dev
 ```
 
-The frontend runs on `http://localhost:5173` and the backend API on `http://localhost:8000`.
-
-### Docker
+### Docker (Production)
 
 ```bash
 docker-compose up --build
 ```
 
-Access the app at `http://localhost` (Nginx proxy).
+Access the app at `http://localhost` (Nginx reverse proxy).
 
 ---
 
@@ -248,8 +272,9 @@ curl -X POST http://localhost:8000/api/perfect/design \
 | `DATABASE_URL` | Database connection string | `sqlite+aiosqlite:///./floorplan.db` |
 | `GROQ_API_KEY` | Groq API key for LLM chat | — |
 | `SECRET_KEY` | App secret key | `change-me-in-production` |
-| `MINIO_ENDPOINT` | MinIO object storage endpoint | `localhost:9000` |
-| `CORS_ORIGINS` | Allowed CORS origins | `["*"]` |
+| `GROK_API_KEY` | xAI Grok API key (primary AI) | — |
+| `GROK_MODEL` | Grok model name | `grok-3-mini` |
+| `CORS_ORIGINS` | Allowed CORS origins | `localhost:5173,localhost:3000` |
 
 ---
 

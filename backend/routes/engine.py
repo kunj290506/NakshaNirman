@@ -16,6 +16,7 @@ from models import Project, ProjectStatus
 from services.arch_engine import (
     process, detect_mode, EngineMode,
     chat_response, form_validate, design_generate, validate_layout,
+    redesign_generate,
 )
 from services.floorplan import generate_floor_plan
 from services.cad_export import generate_dxf
@@ -124,7 +125,8 @@ async def engine_process(req: EngineRequest, db: AsyncSession = Depends(get_db))
             response.error = result.get("error")
             response.missing_fields = result.get("missing_fields")
 
-    elif mode == "design":
+    elif mode in ("design", "redesign"):
+        response.mode = "design"
         response.reply = result.get("explanation", "")
         response.layout = result.get("layout")
         response.validation = result.get("validation")
@@ -158,6 +160,8 @@ class DesignRequest(BaseModel):
     boundary_polygon: Optional[Any] = None
     plot_width: Optional[float] = None
     plot_length: Optional[float] = None
+    redesign: Optional[bool] = False
+    previous_strategy: Optional[str] = None
 
 
 @router.post("/design")
@@ -199,7 +203,11 @@ async def engine_design_direct(req: DesignRequest, db: AsyncSession = Depends(ge
 
     input_data["generatePlan"] = True
 
-    result = design_generate(input_data)
+    # Use redesign if requested (generates fresh layout with different strategy)
+    if req.redesign:
+        result = redesign_generate(input_data, req.previous_strategy)
+    else:
+        result = design_generate(input_data)
 
     if "error" in result:
         return result

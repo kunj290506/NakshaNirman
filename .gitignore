@@ -2,35 +2,41 @@
 node_modules/
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
 env/
+package-lock.json
 
 # Build output
 frontend/dist/
 *.egg-info/
+build/
+dist/
 
 # Environment
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.code-workspace
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+ehthumbs.db
 
 # Uploads & exports (runtime artifacts)
-backend/uploads/*.png
-backend/uploads/*.jpg
-backend/uploads/*.dxf
-backend/exports/*.dxf
-backend/exports/*.glb
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/exports/*
+!backend/exports/.gitkeep
 
 # Database (auto-created on startup)
 *.db
@@ -46,9 +52,16 @@ htmlcov/
 .coverage
 
 # ML pipeline artifacts
-backend/ml_pipeline/checkpoints/
-backend/ml_pipeline/logs/
-backend/ml_pipeline/datasets/
+backend/ml_pipeline/checkpoints/*
+!backend/ml_pipeline/checkpoints/.gitkeep
+backend/ml_pipeline/logs/*
+!backend/ml_pipeline/logs/.gitkeep
+backend/ml_pipeline/datasets/*
+!backend/ml_pipeline/datasets/.gitkeep
+
+# Backup files
+*_backup.py
+*.bak
 
 # Misc
 *.png
