@@ -23,6 +23,7 @@ from routes.engine import router as engine_router
 from routes.gnn_design import router as gnn_router
 from routes.perfect_design import router as perfect_router
 from routes.ml_design import router as ml_router
+from routes.architect import router as architect_router
 
 
 @asynccontextmanager
@@ -63,6 +64,7 @@ app.include_router(engine_router)
 app.include_router(gnn_router)
 app.include_router(perfect_router)
 app.include_router(ml_router)
+app.include_router(architect_router)
 
 
 @app.get("/api/health")

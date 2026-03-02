@@ -141,14 +141,25 @@ export default function Workspace() {
 
             console.log('[Design] Sending payload:', JSON.stringify(roomPayload, null, 2))
 
-            // Use GNN design engine
+            // Use Multi-Factor Architectural Reasoning Engine (primary)
+            // Falls back to GNN engine if architect engine is unavailable
             let data
             try {
-                const res = await fetch('/api/gnn/design', {
+                // Try multi-factor architect engine first
+                let res = await fetch('/api/architect/design', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(roomPayload),
                 })
+                if (!res.ok) {
+                    // Fallback to GNN engine
+                    console.warn('[Design] Architect engine failed, falling back to GNN')
+                    res = await fetch('/api/gnn/design', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(roomPayload),
+                    })
+                }
                 if (res.ok) {
                     const json = await res.json()
                     if (json.layout) {
