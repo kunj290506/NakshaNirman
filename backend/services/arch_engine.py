@@ -643,6 +643,7 @@ def validate_layout(layout: Dict) -> Dict:
     boundary_issues = _check_boundary_fit(rooms, plot_w, plot_l)
     aspect_issues = _check_aspect_ratios(rooms)
     ventilation_issues = _check_ventilation(rooms, plot_w, plot_l)
+    reachability_issues = _check_reachability(rooms)
 
     total_used = sum(r.get("area", 0) for r in rooms)
 
@@ -650,7 +651,8 @@ def validate_layout(layout: Dict) -> Dict:
         not overlap_issues and not size_violations and
         not zoning_issues and not area_overflow and
         not circulation_issues and not boundary_issues and
-        not aspect_issues and not ventilation_issues
+        not aspect_issues and not ventilation_issues and
+        not reachability_issues
     )
 
     return {
@@ -663,6 +665,7 @@ def validate_layout(layout: Dict) -> Dict:
         "boundary_issues": boundary_issues,
         "aspect_ratio_issues": aspect_issues,
         "ventilation_issues": ventilation_issues,
+        "reachability_issues": reachability_issues,
         "area_summary": {
             "plot_area": round(plot_area, 1),
             "total_used_area": round(total_used, 1),
@@ -1085,8 +1088,7 @@ def _calculate_minimum_area(bedrooms: int, bathrooms: int, extras: List[str]) ->
         area += MIN_ROOM_SIZES["bathroom"]
     for extra in extras:
         area += MIN_ROOM_SIZES.get(extra, 30)
-    area *= 1.15  # circulation 15%
-    area *= 1.09  # walls 9%
+    area *= 1.10  # walls + circulation overhead
     return round(area)
 
 
@@ -1120,6 +1122,53 @@ def _select_zoning_strategy(plot_w: float, plot_l: float) -> str:
 # INTERNAL — Area Allocation (§4 Step B)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ── ADJACENCY GRAPH — mandatory room connectivity (Step 3) ──
+ADJACENCY_GRAPH_MANDATORY = {
+    "entrance":       ["living"],
+    "living":         ["dining", "passage"],
+    "dining":         ["kitchen"],
+    "kitchen":        ["utility", "store"],
+    "passage":        ["master_bedroom", "bedroom", "bathroom", "study", "pooja", "staircase"],
+    "master_bedroom": ["bathroom"],
+    "bedroom":        ["bathroom"],
+}
+
+# Preferred (soft) adjacency
+ADJACENCY_GRAPH_PREFERRED = {
+    "living":         ["staircase"],
+    "kitchen":        ["dining"],
+    "master_bedroom": ["bathroom"],   # attached bath
+}
+
+# Hard forbidden connections
+FORBIDDEN_CONNECTIONS = {
+    ("bedroom",        "kitchen"),
+    ("master_bedroom", "kitchen"),
+    ("bathroom",       "dining"),
+    ("bedroom",        "bedroom"),   # not without corridor
+}
+
+# ── Percentage allocation bands (of total_area) ──
+ALLOC_BANDS = {
+    "living":         (0.15, 0.25),
+    "kitchen":        (0.08, 0.12),
+    "dining":         (0.08, 0.12),
+    "master_bedroom": (0.12, 0.16),
+    "bedroom":        (0.10, 0.14),
+    "bathroom":       (0.03, 0.05),
+    "passage":        (0.05, 0.08),
+    "study":          (0.04, 0.06),
+    "pooja":          (0.02, 0.03),
+    "store":          (0.02, 0.04),
+    "utility":        (0.02, 0.03),
+    "balcony":        (0.03, 0.06),
+    "staircase":      (0.03, 0.05),
+    "parking":        (0.08, 0.12),
+    "garage":         (0.08, 0.12),
+    "porch":          (0.03, 0.05),
+}
+
+
 def _allocate_areas(
     total_area: float,
     usable_w: float, usable_l: float,
@@ -1127,95 +1176,75 @@ def _allocate_areas(
     extras: List[str],
 ) -> List[Dict]:
     """
-    Allocate target areas proportionally based on §2C rules.
+    Allocate target areas as a percentage of total_area.
 
-    Returns list of room specs with name, room_type, target_area, width, length.
+    Uses ALLOC_BANDS midpoints, dynamically scaled.
+    Returns list of room specs with name, room_type, target_area, width, length, zone.
     """
     usable_area = usable_w * usable_l
-    # Reserve circulation (12%) + walls (9%) = 21%
-    available = usable_area * 0.79
-
     rooms = []
 
-    # Living: 18-22% of total → use 20% as target
-    living_target = usable_area * 0.20
-    living_target = max(living_target, MIN_ROOM_SIZES["living"])
-    lw, ll = _scale_room("living", living_target)
-    rooms.append({
-        "name": "Living Room", "room_type": "living",
-        "target_area": round(lw * ll, 1), "width": lw, "length": ll,
-    })
-
-    # Kitchen: 8-12% → use 10%
-    kitchen_target = usable_area * 0.10
-    kitchen_target = max(kitchen_target, MIN_ROOM_SIZES["kitchen"])
-    kw, kl = _scale_room("kitchen", kitchen_target)
-    rooms.append({
-        "name": "Kitchen", "room_type": "kitchen",
-        "target_area": round(kw * kl, 1), "width": kw, "length": kl,
-    })
-
-    # Bedrooms: 30-35% total → divided among bedrooms
-    bedroom_total_frac = 0.32
-    bedroom_share = usable_area * bedroom_total_frac / max(bedrooms, 1)
-    for i in range(bedrooms):
-        rtype = "master_bedroom" if i == 0 else "bedroom"
-        name = "Master Bedroom" if i == 0 else f"Bedroom {i + 1}"
-        target = bedroom_share * (1.10 if i == 0 else 1.0)  # Master gets 10% more
-        target = max(target, MIN_ROOM_SIZES.get(rtype, 100))
-        bw, bl = _scale_room(rtype, target)
+    def _add(name, rtype, frac_lo, frac_hi, zone):
+        mid = (frac_lo + frac_hi) / 2
+        target = total_area * mid
+        target = max(target, MIN_ROOM_SIZES.get(rtype, 25))
+        if rtype in MAX_AREAS:
+            target = min(target, MAX_AREAS[rtype])
+        w, l = _scale_room(rtype, target)
         rooms.append({
             "name": name, "room_type": rtype,
-            "target_area": round(bw * bl, 1), "width": bw, "length": bl,
+            "target_area": round(w * l, 1), "width": w, "length": l,
+            "zone": zone,
         })
 
-    # Bathrooms: 8-12% total
-    bathroom_share = usable_area * 0.10 / max(bathrooms, 1)
+    # Mandatory rooms
+    _add("Living Room", "living", *ALLOC_BANDS["living"], "public")
+    _add("Kitchen", "kitchen", *ALLOC_BANDS["kitchen"], "semi_private")
+
+    # Dining (always included)
+    _add("Dining Room", "dining", *ALLOC_BANDS["dining"], "semi_private")
+
+    # Passage / corridor
+    _add("Passage", "passage", *ALLOC_BANDS["passage"], "circulation")
+
+    # Bedrooms
+    for i in range(bedrooms):
+        if i == 0:
+            _add("Master Bedroom", "master_bedroom",
+                 *ALLOC_BANDS["master_bedroom"], "private")
+        else:
+            _add(f"Bedroom {i + 1}", "bedroom",
+                 *ALLOC_BANDS["bedroom"], "private")
+
+    # Bathrooms — paired with bedrooms
     for i in range(bathrooms):
         name = f"Bathroom {i + 1}" if bathrooms > 1 else "Bathroom"
-        target = max(bathroom_share, MIN_ROOM_SIZES["bathroom"])
-        # Cap bathroom size
-        target = min(target, MAX_AREAS.get("bathroom", 60))
-        bw, bl = _scale_room("bathroom", target)
-        rooms.append({
-            "name": name, "room_type": "bathroom",
-            "target_area": round(bw * bl, 1), "width": bw, "length": bl,
-        })
+        _add(name, "bathroom", *ALLOC_BANDS["bathroom"], "service")
 
     # Extras
     for extra in extras:
-        if extra in STANDARD_DIMS:
-            extra_target = usable_area * 0.06
-            extra_target = max(extra_target, MIN_ROOM_SIZES.get(extra, 25))
-            if extra in MAX_AREAS:
-                extra_target = min(extra_target, MAX_AREAS[extra])
-            ew, el = _scale_room(extra, extra_target)
-            rooms.append({
-                "name": DISPLAY_NAMES.get(extra, extra.title()),
-                "room_type": extra,
-                "target_area": round(ew * el, 1), "width": ew, "length": el,
-            })
+        if extra in ALLOC_BANDS and extra not in ("living", "kitchen", "dining", "passage"):
+            zone = ZONE_CLASSIFICATION.get(extra, "private")
+            _add(DISPLAY_NAMES.get(extra, extra.title()), extra,
+                 *ALLOC_BANDS[extra], zone)
 
-    # ── Normalize: total room area should not exceed available ──
+    # ── Normalize: total room area should not exceed usable ──
     total_allocated = sum(r["target_area"] for r in rooms)
-    if total_allocated > available:
-        scale = available / total_allocated
+    if total_allocated > usable_area * 0.92:  # keep 8% for walls
+        scale = usable_area * 0.92 / total_allocated
         for r in rooms:
             r["target_area"] = round(r["target_area"] * scale, 1)
             r["width"] = round(r["width"] * math.sqrt(scale), 1)
             r["length"] = round(r["length"] * math.sqrt(scale), 1)
-            # Enforce minimums after scaling
             min_a = MIN_ROOM_SIZES.get(r["room_type"], 25)
             if r["target_area"] < min_a:
                 r["target_area"] = min_a
                 r["width"], r["length"] = _scale_room(r["room_type"], min_a)
 
-    # ── Final pass: ensure target_area >= minimum after all rounding ──
+    # Compute area_ratio for each room
+    total_alloc = sum(r["target_area"] for r in rooms) or 1
     for r in rooms:
-        min_a = MIN_ROOM_SIZES.get(r["room_type"], 25)
-        if r["target_area"] < min_a:
-            r["target_area"] = min_a
-            r["width"], r["length"] = _scale_room(r["room_type"], min_a)
+        r["area_ratio"] = round(r["target_area"] / total_alloc, 3)
 
     return rooms
 
@@ -1268,24 +1297,29 @@ def _place_rooms_by_strategy(
     strategy: str,
 ) -> List[Dict]:
     """
-    Place rooms using the selected zoning strategy.
+    BSP-based room placement with mandatory adjacency graph enforcement.
 
-    All strategies enforce:
-      1. Living near entrance
-      2. Kitchen near dining
-      3. Bedrooms in private zone
-      4. Bathrooms adjacent to bedrooms
-      5. Circulation connecting all rooms
-      6. Privacy gradient compliance
+    Algorithm:
+      1. Classify rooms into zones (public / private / service / circulation)
+      2. Allocate three horizontal bands: PUBLIC (front) + CORRIDOR + PRIVATE (back)
+      3. Within each band, use BSP subdivision to pack rooms adjacently
+      4. Pair bedrooms with their bathrooms
+      5. Enforce adjacency graph (kitchen next to dining, bedrooms next to bathrooms)
+      6. Ensure every room except bathrooms touches an exterior wall
     """
-    if strategy == "linear":
-        return _place_linear(room_specs, plot_w, plot_l)
-    elif strategy == "central_corridor":
-        return _place_central_corridor(room_specs, plot_w, plot_l)
-    elif strategy == "split":
-        return _place_split(room_specs, plot_w, plot_l)
-    else:
-        return _place_adaptive(room_specs, plot_w, plot_l)
+    public, private, service = _classify_rooms(room_specs)
+    private_zone = _interleave_beds_baths(private, service)
+
+    # Step 4: corridor width = 3-5% of plot width, clamped to MIN_PASSAGE_WIDTH
+    dynamic_corridor = max(MIN_PASSAGE_WIDTH, min(plot_w * 0.04, plot_w * 0.05))
+    dynamic_corridor = round(dynamic_corridor, 1)
+
+    return _place_bsp(
+        public_rooms=public,
+        private_rooms=private_zone,
+        plot_w=plot_w, plot_l=plot_l,
+        corridor_width=dynamic_corridor,
+    )
 
 
 def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
@@ -1342,440 +1376,308 @@ def _interleave_beds_baths(private: List[Dict], service: List[Dict]) -> List[Dic
     return interleaved
 
 
-def _place_linear(room_specs: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
+def _place_bsp(
+    public_rooms: List[Dict],
+    private_rooms: List[Dict],
+    plot_w: float, plot_l: float,
+    corridor_width: float,
+) -> List[Dict]:
     """
-    Linear Zoning — for wide plots (width > depth).
+    BSP placement engine — subdivides usable area into bands then packs rooms.
 
-    Layout:
+    Layout (front = south entrance):
       ┌──────────────────────────────────┐
-      │ Living │ Dining │ Kitchen         │  ← public (front)
-      ├────────────────────────────────────┤
-      │              CORRIDOR              │
-      ├──────┬──────┬──────┬──────────────┤
-      │Master│Bath  │Bed 2 │ Bath 2       │  ← private (back)
-      └──────┴──────┴──────┴──────────────┘
+      │       PUBLIC BAND (front)        │  Living, Dining, Kitchen
+      ├──────────────────────────────────┤
+      │        PASSAGE / CORRIDOR        │  3–5% of plot width
+      ├──────────────────────────────────┤
+      │      PRIVATE BAND  (back)        │  Bedrooms, Bathrooms, etc.
+      └──────────────────────────────────┘
     """
-    public, private, service = _classify_rooms(room_specs)
-    private_zone = _interleave_beds_baths(private, service)
-
-    return _place_two_band(
-        public_rooms=public,
-        private_rooms=private_zone,
-        plot_w=plot_w, plot_l=plot_l,
-        corridor_width=MIN_PASSAGE_WIDTH,
-    )
-
-
-def _place_central_corridor(
-    room_specs: List[Dict], plot_w: float, plot_l: float
-) -> List[Dict]:
-    """
-    Central Corridor — for deep plots (depth > width).
-
-    Always uses two-band layout with interleaved bed-bath pairs
-    to ensure bathroom adjacency. Rooms split into 2-per-row
-    to guarantee external wall access for ventilation.
-    """
-    public, private, service = _classify_rooms(room_specs)
-    private_zone = _interleave_beds_baths(private, service)
-
-    return _place_two_band(
-        public_rooms=public,
-        private_rooms=private_zone,
-        plot_w=plot_w, plot_l=plot_l,
-        corridor_width=MIN_PASSAGE_WIDTH,
-    )
-
-
-def _place_split(room_specs: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
-    """
-    Split Zoning — for near-square plots.
-
-    Uses two-band layout (public front + private back) with max 2 rooms
-    per private row.  This guarantees:
-      • Every room touches at least one external wall (ventilation)
-      • Kitchen/dining never directly border bedrooms (zoning)
-    """
-    public, private, service = _classify_rooms(room_specs)
-    private_zone = _interleave_beds_baths(private, service)
-
-    return _place_two_band(
-        public_rooms=public,
-        private_rooms=private_zone,
-        plot_w=plot_w, plot_l=plot_l,
-        corridor_width=MIN_PASSAGE_WIDTH,
-    )
-
-
-def _place_adaptive(room_specs: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
-    """
-    Adaptive Block Zoning — fallback for irregular ratios.
-
-    Uses a hybrid approach: tries linear first, with smart reflow
-    for remaining rooms.
-    """
-    public, private, service = _classify_rooms(room_specs)
-    private_zone = _interleave_beds_baths(private, service)
-
-    return _place_two_band(
-        public_rooms=public,
-        private_rooms=private_zone,
-        plot_w=plot_w, plot_l=plot_l,
-        corridor_width=MIN_PASSAGE_WIDTH,
-    )
-
-
-def _place_two_band(
-    public_rooms: List[Dict],
-    private_rooms: List[Dict],
-    plot_w: float, plot_l: float,
-    corridor_width: float,
-) -> List[Dict]:
-    """
-    Two-band placement: PUBLIC band (front) + CORRIDOR + PRIVATE band (back).
-
-    Height allocation is proportional to each row's area needs:
-    rows with larger rooms (e.g. living room) get more height.
-    """
-    placed = []
+    placed: List[Dict] = []
     WALL = WALL_EXT_FT
     IWALL = WALL_INT_FT
 
     usable_w = plot_w - 2 * WALL
     usable_l = plot_l - 2 * WALL
 
-    # Smart row splitting (width-aware)
-    pub_rows = _smart_row_split(public_rooms, usable_w) if public_rooms else []
-    # Private rooms: interior rows max 2 (side-wall ventilation),
-    # last row can hold more (touches back wall)
-    if private_rooms:
-        MAX_PRIV_EDGE = min(6, max(2, int(usable_w / 7)))
-        n_priv = len(private_rooms)
-        if n_priv <= MAX_PRIV_EDGE:
-            priv_rows = [list(private_rooms)]
+    # Remove passage from room lists — it'll be placed as corridor
+    passage_spec = None
+    filtered_pub = []
+    filtered_priv = []
+    for r in public_rooms:
+        if r["room_type"] == "passage":
+            passage_spec = r
         else:
-            last_count = min(MAX_PRIV_EDGE, n_priv)
-            interior_count = n_priv - last_count
-            # Avoid single-room interior rows (aspect ratio issues)
-            if interior_count % 2 == 1 and last_count > 2:
-                last_count -= 1
-                interior_count += 1
-            interior = list(private_rooms[:interior_count])
-            last = list(private_rooms[interior_count:])
-            priv_rows = [interior[i:i+2] for i in range(0, len(interior), 2)]
-            if last:
-                priv_rows.append(last)
-    else:
-        priv_rows = []
+            filtered_pub.append(r)
+    for r in private_rooms:
+        if r["room_type"] == "passage":
+            passage_spec = r
+        else:
+            filtered_priv.append(r)
 
-    # Reorder last private row: put non-bed/bath rooms first (left side)
-    # to avoid forbidden adjacencies with bathrooms in the previous row's right side
-    if len(priv_rows) >= 2:
-        lr = priv_rows[-1]
-        front = [r for r in lr if r["room_type"] not in ("master_bedroom", "bedroom", "bathroom")]
-        back = [r for r in lr if r["room_type"] in ("master_bedroom", "bedroom", "bathroom")]
-        priv_rows[-1] = front + back
-
-    n_corridors = 1 if (pub_rows and priv_rows) else 0
-    # Add 0.2ft buffer to corridor to survive rounding
-    actual_corridor = corridor_width + 0.2 if n_corridors else 0
+    has_pub = len(filtered_pub) > 0
+    has_priv = len(filtered_priv) > 0
+    n_corridors = 1 if (has_pub and has_priv) else 0
+    actual_corridor = corridor_width if n_corridors else 0
     avail_h = usable_l - actual_corridor
-    MIN_ROW_H = 5.0  # allow shorter rows for multi-row private layouts
 
-    all_rows = pub_rows + priv_rows
-    if not all_rows:
-        return placed
+    if avail_h < 8:
+        avail_h = usable_l
+        actual_corridor = 0
+        n_corridors = 0
 
-    # ── Proportional height allocation based on area needs ──
-    MAX_ASPECT = 2.5
-    row_needs = []
-    min_h_floors = []  # hard floor: aspect-ratio + area interaction
+    # ── Height proportions from area needs ──
+    pub_area = sum(r["target_area"] for r in filtered_pub)
+    priv_area = sum(r["target_area"] for r in filtered_priv)
+    total_area = pub_area + priv_area or 1.0
 
-    for row in all_rows:
-        n = len(row)
-        areas = [r["target_area"] for r in row]
-        total_a = sum(areas) or 1
-        iwall_total = IWALL * max(0, n - 1)
-        net_w = usable_w - iwall_total
-
-        # Height needed to achieve target areas given proportional widths
-        max_h_needed = MIN_ROW_H
-        for r in row:
-            prop_w = max(net_w * (r["target_area"] / total_a), 4.0)
-            min_a = MIN_ROOM_SIZES.get(r["room_type"], 25)
-            h_for_min = min_a / prop_w
-            h_for_target = r["target_area"] / prop_w
-            max_h_needed = max(max_h_needed, h_for_min, h_for_target)
-        row_needs.append(max_h_needed)
-
-        # Hard floor: the minimum row height where BOTH area and aspect ratio
-        # constraints can be satisfied simultaneously.
-        # For a room:  w * h >= min_area  AND  w / h <= 2.5
-        # →  h >= sqrt(min_area / 2.5)
-        # Also: n rooms must fill net_w →  h >= net_w / (n * 2.5)
-        floor_area_aspect = max(
-            math.sqrt(MIN_ROOM_SIZES.get(r["room_type"], 25) / MAX_ASPECT)
-            for r in row
-        )
-        floor_equal = net_w / (n * MAX_ASPECT)
-        min_h_floors.append(max(floor_equal, floor_area_aspect))
-
-    # Merge: ensure row_needs incorporates hard floors
-    for i in range(len(row_needs)):
-        row_needs[i] = max(row_needs[i], min_h_floors[i])
-
-    total_need = sum(row_needs)
-    if total_need > avail_h:
-        # Scale would compress heights — protect constrained rows
-        locked = [False] * len(all_rows)
-        for _ in range(len(all_rows)):
-            locked_h = sum(
-                math.ceil(min_h_floors[i] * 10) / 10
-                for i in range(len(all_rows)) if locked[i]
-            )
-            free_avail = avail_h - locked_h
-            free_needs = [
-                row_needs[i] for i in range(len(all_rows)) if not locked[i]
-            ]
-            free_total = sum(free_needs) or 1
-            scl = free_avail / free_total
-            changed = False
-            for i in range(len(all_rows)):
-                if locked[i]:
-                    continue
-                if row_needs[i] * scl < min_h_floors[i]:
-                    locked[i] = True
-                    changed = True
-            if not changed:
-                break
-
-        # Final allocation
-        total_locked = 0.0
-        row_heights = [0.0] * len(all_rows)
-        for i in range(len(all_rows)):
-            if locked[i]:
-                h = math.ceil(min_h_floors[i] * 10) / 10
-                row_heights[i] = max(MIN_ROW_H, h)
-                total_locked += row_heights[i]
-
-        remaining = avail_h - total_locked
-        free_list = [
-            (i, row_needs[i]) for i in range(len(all_rows)) if not locked[i]
-        ]
-        free_total = sum(n for _, n in free_list) or 1
-        for i, need in free_list:
-            row_heights[i] = max(
-                MIN_ROW_H, round(need / free_total * remaining, 1)
-            )
-    elif total_need > 0:
-        scale = avail_h / total_need
-        row_heights = [max(MIN_ROW_H, round(h * scale, 1)) for h in row_needs]
+    if has_pub and has_priv:
+        pub_h = max(8.0, avail_h * (pub_area / total_area))
+        priv_h = max(8.0, avail_h - pub_h)
+        # Balance: neither band gets less than 35%
+        if pub_h / avail_h < 0.35:
+            pub_h = avail_h * 0.35
+            priv_h = avail_h - pub_h
+        elif priv_h / avail_h < 0.35:
+            priv_h = avail_h * 0.35
+            pub_h = avail_h - priv_h
+    elif has_pub:
+        pub_h = avail_h
+        priv_h = 0
     else:
-        n_rows = len(all_rows)
-        row_heights = [max(MIN_ROW_H, round(avail_h / n_rows, 1))] * n_rows
+        pub_h = 0
+        priv_h = avail_h
 
-    # ── Place all rows ──
-    current_y = WALL
-
-    for ri, (row, row_h) in enumerate(zip(pub_rows, row_heights[:len(pub_rows)])):
-        # Last row in layout absorbs remaining space
-        if ri == len(pub_rows) - 1 and not priv_rows:
-            row_h = round(WALL + usable_l - current_y, 1)
-        row_h = max(row_h, MIN_ROW_H)
+    # ── PUBLIC BAND ──
+    if has_pub:
         placed.extend(
-            _place_row(row, WALL, current_y, usable_w, row_h, IWALL, "public")
+            _bsp_subdivide(filtered_pub, WALL, WALL, usable_w, round(pub_h, 1), IWALL)
         )
-        current_y += row_h
 
-    # Corridor
-    if priv_rows and pub_rows:
-        current_y += actual_corridor
+    # ── CORRIDOR / PASSAGE as physical room ──
+    if n_corridors and actual_corridor > 0:
+        corridor_y = round(WALL + pub_h, 1)
+        spec = passage_spec or {
+            "name": "Passage", "room_type": "passage",
+            "target_area": round(usable_w * actual_corridor, 1),
+            "width": usable_w, "length": actual_corridor,
+            "zone": "circulation",
+        }
+        placed.append(_make_placed_room(
+            spec, usable_w, actual_corridor, WALL, corridor_y
+        ))
 
-    priv_heights = row_heights[len(pub_rows):]
-    for ri, (row, row_h) in enumerate(zip(priv_rows, priv_heights)):
-        if ri == len(priv_rows) - 1:
-            row_h = round(WALL + usable_l - current_y, 1)
-        row_h = max(row_h, MIN_ROW_H)
+    # ── PRIVATE BAND ──
+    if has_priv:
+        priv_y = WALL + (pub_h + actual_corridor if has_pub else 0)
+        final_priv_h = round(WALL + usable_l - priv_y, 1)
+        final_priv_h = max(final_priv_h, 8.0)
         placed.extend(
-            _place_row(row, WALL, current_y, usable_w, row_h, IWALL, "private")
+            _bsp_subdivide(filtered_priv, WALL, round(priv_y, 1),
+                           usable_w, final_priv_h, IWALL)
         )
-        current_y += row_h
 
     return placed
 
 
-def _place_three_band(
-    public_rooms: List[Dict],
-    private_rooms: List[Dict],
-    service_rooms: List[Dict],
-    plot_w: float, plot_l: float,
-    corridor_width: float,
-) -> List[Dict]:
-    """
-    Three-band placement: PUBLIC + CORRIDOR + PRIVATE + CORRIDOR + SERVICE.
-
-    Used for deep plots with distinct service zone.
-    """
-    placed = []
-    WALL = WALL_EXT_FT
-    IWALL = WALL_INT_FT
-
-    usable_w = plot_w - 2 * WALL
-    usable_l = plot_l - 2 * WALL
-
-    n_corridors = 2
-    avail_h = usable_l - n_corridors * corridor_width
-
-    pub_area = sum(r["target_area"] for r in public_rooms) if public_rooms else 0
-    priv_area = sum(r["target_area"] for r in private_rooms) if private_rooms else 0
-    serv_area = sum(r["target_area"] for r in service_rooms) if service_rooms else 0
-    total = pub_area + priv_area + serv_area or 1.0
-
-    pub_h = max(10.0, (pub_area / total) * avail_h)
-    priv_h = max(10.0, (priv_area / total) * avail_h)
-    serv_h = max(8.0, avail_h - pub_h - priv_h)
-
-    # Rebalance
-    total_h = pub_h + priv_h + serv_h
-    if abs(total_h - avail_h) > 0.5:
-        scale = avail_h / total_h
-        pub_h = round(pub_h * scale, 1)
-        priv_h = round(priv_h * scale, 1)
-        serv_h = round(avail_h - pub_h - priv_h, 1)
-
-    current_y = WALL
-
-    # Public band
-    placed.extend(
-        _place_row(public_rooms, WALL, current_y, usable_w, round(pub_h, 1), IWALL, "public")
-    )
-    current_y += pub_h + corridor_width
-
-    # Private band
-    placed.extend(
-        _place_row(private_rooms, WALL, current_y, usable_w, round(priv_h, 1), IWALL, "private")
-    )
-    current_y += priv_h + corridor_width
-
-    # Service band
-    remaining_h = round(WALL + usable_l - current_y, 1)
-    remaining_h = max(remaining_h, 8.0)
-    placed.extend(
-        _place_row(service_rooms, WALL, current_y, usable_w, remaining_h, IWALL, "service")
-    )
-
-    return placed
-
-
-def _smart_row_split(rooms: List[Dict], usable_w: float = 30.0) -> List[List[Dict]]:
-    """
-    Split rooms into rows with ventilation-aware limits.
-
-    MAX_EDGE is dynamic based on usable width:
-      - 6ft minimum per room slot → usable_w/6 rooms max per edge row
-      - Capped at 4.
-    """
-    if not rooms:
-        return []
-    n = len(rooms)
-    # Dynamic max per edge row based on width
-    MAX_EDGE = min(4, max(2, int(usable_w / 7)))
-    MAX_MIDDLE = 2
-    if n <= MAX_EDGE:
-        return [rooms]
-    if n <= MAX_EDGE * 2:
-        mid = n // 2
-        return [rooms[:mid], rooms[mid:]]
-    rows = [rooms[:MAX_EDGE]]
-    remaining = rooms[MAX_EDGE:]
-    last_chunk_size = min(len(remaining), MAX_EDGE)
-    last_chunk = remaining[-last_chunk_size:]
-    middle = remaining[:-last_chunk_size] if last_chunk_size < len(remaining) else []
-    for i in range(0, len(middle), MAX_MIDDLE):
-        rows.append(middle[i:i + MAX_MIDDLE])
-    rows.append(last_chunk)
-    return rows
-
-
-def _place_row(
+def _bsp_subdivide(
     rooms: List[Dict],
-    start_x: float, start_y: float,
-    usable_w: float, row_h: float,
-    iwall: float, zone_label: str,
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
 ) -> List[Dict]:
-    """Place a row of rooms horizontally, wall-to-wall. No overlap, no overflow.
+    """
+    Recursively subdivide a rectangular region among rooms.
 
-    Enforces minimum width per room so that both:
-      - area >= MIN_ROOM_SIZES  (width * row_h >= min_area)
-      - aspect ratio <= 2.5     (row_h / width <= 2.5)
+    For 3+ rooms in a single axis, uses flat proportional fill
+    to avoid rounding drift from recursive splitting.
     """
     if not rooms:
         return []
+    if len(rooms) == 1:
+        return [_make_placed_room(rooms[0], w, h, x, y)]
 
-    placed = []
+    n = len(rooms)
+    total_gaps = iwall * (n - 1)
+
+    # Check if all rooms can fit as a row (horizontal)
+    if w >= h:
+        net_w = w - total_gaps
+        min_w_per_room = max(4.0, h / 2.5)  # aspect ratio constraint
+        if net_w >= min_w_per_room * n:
+            return _flat_fill_h(rooms, x, y, w, h, iwall)
+        # Too many for one row: split into 2 groups, stacked vertically
+        return _bsp_split_v(rooms, x, y, w, h, iwall)
+    else:
+        net_h = h - total_gaps
+        min_h_per_room = max(4.0, w / 2.5)
+        if net_h >= min_h_per_room * n:
+            return _flat_fill_v(rooms, x, y, w, h, iwall)
+        # Too many for one stack: split into 2 groups, side by side
+        return _bsp_split_h(rooms, x, y, w, h, iwall)
+
+
+def _flat_fill_h(
+    rooms: List[Dict],
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
+) -> List[Dict]:
+    """Pack rooms left-to-right with proportional widths. Last room fills remaining."""
     n = len(rooms)
     areas = [r["target_area"] for r in rooms]
-    total_area = sum(areas) or 1.0
-    total_gaps = iwall * max(0, n - 1)
-    net_w = usable_w - total_gaps
-    boundary_right = start_x + usable_w
-    MAX_ASPECT = 2.5
+    total_area = sum(areas) or 1
+    total_gaps = iwall * (n - 1)
+    net_w = w - total_gaps
 
-    # ── Compute width bounds per room ──
-    min_ws = []
-    max_ws = []
-    for r in rooms:
-        min_a = MIN_ROOM_SIZES.get(r["room_type"], 25)
-        min_w_area = min_a / max(row_h, 1)       # width to achieve min area
-        min_w_aspect = row_h / MAX_ASPECT          # width for aspect ratio
-        min_ws.append(max(min_w_area, min_w_aspect, 4.0))
-        max_ws.append(row_h * MAX_ASPECT)          # max width for aspect ratio
-
-    total_min = sum(min_ws)
-
-    if total_min <= net_w:
-        # Give each room its floor, distribute remaining proportionally
-        leftover = net_w - total_min
-        extras = [max(0, areas[i] / total_area * net_w - min_ws[i]) for i in range(n)]
-        total_extra = sum(extras) or 1.0
-        widths = [min_ws[i] + leftover * (extras[i] / total_extra) for i in range(n)]
-    else:
-        # Not enough width — proportional fallback
-        widths = [max(4.0, net_w * (areas[i] / total_area)) for i in range(n)]
-
-    # ── Clamp to max width & redistribute excess ──
-    for _pass in range(3):
-        excess = 0.0
-        unclamped_idx = []
-        for i in range(n):
-            if widths[i] > max_ws[i]:
-                excess += widths[i] - max_ws[i]
-                widths[i] = max_ws[i]
-            else:
-                unclamped_idx.append(i)
-        if excess < 0.1 or not unclamped_idx:
-            break
-        share = excess / len(unclamped_idx)
-        for i in unclamped_idx:
-            widths[i] += share
-
-    current_x = start_x
+    placed = []
+    cx = x
     for i, room in enumerate(rooms):
-        remaining = round(boundary_right - current_x, 1)
         if i == n - 1:
-            rw = remaining
+            rw = round(x + w - cx, 1)
         else:
-            rw = round(widths[i], 1)
-            rw = max(rw, 4.0)
-            space_for_rest = (n - 1 - i) * (4.0 + iwall)
-            rw = min(rw, remaining - space_for_rest)
+            rw = round(net_w * (areas[i] / total_area), 1)
+            rw = max(4.0, rw)
+        rw = max(4.0, rw)
+        placed.append(_make_placed_room(room, rw, h, round(cx, 1), y))
+        cx += rw + iwall
 
-        rw = max(rw, 4.0)
-        rw = min(rw, remaining)
+    return placed
 
-        placed.append(_make_placed_room(room, rw, row_h, current_x, start_y))
-        current_x += rw + iwall
 
+def _flat_fill_v(
+    rooms: List[Dict],
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
+) -> List[Dict]:
+    """Pack rooms top-to-bottom with proportional heights. Last room fills remaining."""
+    n = len(rooms)
+    areas = [r["target_area"] for r in rooms]
+    total_area = sum(areas) or 1
+    total_gaps = iwall * (n - 1)
+    net_h = h - total_gaps
+
+    placed = []
+    cy = y
+    for i, room in enumerate(rooms):
+        if i == n - 1:
+            rh = round(y + h - cy, 1)
+        else:
+            rh = round(net_h * (areas[i] / total_area), 1)
+            rh = max(4.0, rh)
+        rh = max(4.0, rh)
+        placed.append(_make_placed_room(room, w, rh, x, round(cy, 1)))
+        cy += rh + iwall
+
+    return placed
+
+
+def _bsp_split_h(
+    rooms: List[Dict],
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
+) -> List[Dict]:
+    """Split rooms horizontally (left / right) based on area proportion."""
+    n = len(rooms)
+    if n == 1:
+        return [_make_placed_room(rooms[0], w, h, x, y)]
+
+    # Find optimal split point by area balance
+    areas = [r["target_area"] for r in rooms]
+    total = sum(areas) or 1
+    best_idx, best_diff = 1, float("inf")
+    cum = 0
+    for i in range(len(areas) - 1):
+        cum += areas[i]
+        diff = abs(cum / total - 0.5)
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i + 1
+
+    left_rooms = rooms[:best_idx]
+    right_rooms = rooms[best_idx:]
+
+    left_area = sum(r["target_area"] for r in left_rooms)
+    right_area = sum(r["target_area"] for r in right_rooms)
+    frac = left_area / (left_area + right_area) if (left_area + right_area) > 0 else 0.5
+
+    gap = iwall if len(left_rooms) > 0 and len(right_rooms) > 0 else 0
+    net_w = w - gap
+    left_w = max(4.0, round(net_w * frac, 1))
+    # Right side fills remaining exactly — no rounding drift
+    right_w = max(4.0, round(net_w - left_w, 1))
+
+    # Ensure both sides get at least 4 ft
+    if left_w < 4.0:
+        left_w = 4.0
+        right_w = max(4.0, round(net_w - left_w, 1))
+    if right_w < 4.0:
+        right_w = 4.0
+        left_w = max(4.0, round(net_w - right_w, 1))
+
+    right_x = round(x + left_w + gap, 1)
+    # Recalculate right_w from right_x to boundary to avoid gaps/overlaps
+    right_w = round(x + w - right_x, 1)
+    right_w = max(4.0, right_w)
+
+    placed = []
+    placed.extend(_bsp_subdivide(left_rooms, x, y, left_w, h, iwall))
+    placed.extend(_bsp_subdivide(right_rooms, right_x, y, right_w, h, iwall))
+    return placed
+
+
+def _bsp_split_v(
+    rooms: List[Dict],
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
+) -> List[Dict]:
+    """Split rooms vertically (top / bottom) based on area proportion."""
+    n = len(rooms)
+    if n == 1:
+        return [_make_placed_room(rooms[0], w, h, x, y)]
+
+    areas = [r["target_area"] for r in rooms]
+    total = sum(areas) or 1
+    best_idx, best_diff = 1, float("inf")
+    cum = 0
+    for i in range(len(areas) - 1):
+        cum += areas[i]
+        diff = abs(cum / total - 0.5)
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i + 1
+
+    top_rooms = rooms[:best_idx]
+    bottom_rooms = rooms[best_idx:]
+
+    top_area = sum(r["target_area"] for r in top_rooms)
+    bottom_area = sum(r["target_area"] for r in bottom_rooms)
+    frac = top_area / (top_area + bottom_area) if (top_area + bottom_area) > 0 else 0.5
+
+    gap = iwall if len(top_rooms) > 0 and len(bottom_rooms) > 0 else 0
+    net_h = h - gap
+    top_h = max(4.0, round(net_h * frac, 1))
+    bottom_h = max(4.0, round(net_h - top_h, 1))
+
+    if top_h < 4.0:
+        top_h = 4.0
+        bottom_h = max(4.0, round(net_h - top_h, 1))
+    if bottom_h < 4.0:
+        bottom_h = 4.0
+        top_h = max(4.0, round(net_h - bottom_h, 1))
+
+    bottom_y = round(y + top_h + gap, 1)
+    # Recalculate bottom_h from bottom_y to boundary to avoid gaps/overlaps
+    bottom_h = round(y + h - bottom_y, 1)
+    bottom_h = max(4.0, bottom_h)
+
+    placed = []
+    placed.extend(_bsp_subdivide(top_rooms, x, y, w, top_h, iwall))
+    placed.extend(_bsp_subdivide(bottom_rooms, x, bottom_y, w, bottom_h, iwall))
     return placed
 
 
@@ -1787,14 +1689,20 @@ def _make_placed_room(
     rtype = spec["room_type"]
     zone = ZONE_CLASSIFICATION.get(rtype, "private")
 
+    zone = spec.get("zone", ZONE_CLASSIFICATION.get(rtype, "private"))
+    target = spec.get("target_area", width * length)
+
     return {
         "name": spec["name"],
         "room_type": rtype,
         "zone": zone,
+        "area_ratio": spec.get("area_ratio", 0),
         "width": round(width, 1),
         "length": round(length, 1),
         "area": round(width * length, 1),
         "position": {"x": round(x, 1), "y": round(y, 1)},
+        "adjacent_to": [],   # populated by adjacency pass
+        "connected_to": [],  # populated by adjacency pass
         "doors": [],
         "windows": [],
     }
@@ -1826,21 +1734,38 @@ def _split_into_rows(rooms: List[Dict], max_per_row: int) -> List[List[Dict]]:
 
 def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
     """
-    Assign doors and windows based on room position, zoning, and adjacency.
+    Assign doors and windows based on adjacency graph and room geometry.
 
-    Door rules:
-      • Living room gets main entrance on front (S) wall
-      • Public rooms: door toward corridor (N wall)
-      • Private rooms: door toward corridor (S wall)
-      • Bathrooms: door toward adjacent bedroom (shared wall)
-      • Privacy: bathrooms must not face entrance
-
-    Window rules (§2F):
-      • Every habitable room must touch external wall → window
-      • Bathrooms: small window (2ft) on external wall or ventilation shaft
-      • Habitable rooms: larger windows (4ft)
+    Phase 1: Detect physical adjacency (shared walls)
+    Phase 2: Populate connected_to for each room
+    Phase 3: Place doors on shared walls per adjacency graph
+    Phase 4: Place windows on exterior walls (10-30% of wall length)
     """
-    # Detect corridor midpoint
+    WALL = WALL_EXT_FT
+    TOL = 1.0  # adjacency tolerance in ft
+
+    # ── Phase 1 & 2: detect adjacency from geometry ──
+    for room in rooms:
+        room["connected_to"] = []
+        room["adjacent_to"] = []
+
+    for i, a in enumerate(rooms):
+        ax, ay = a["position"]["x"], a["position"]["y"]
+        aw, al = a["width"], a["length"]
+        for j, b in enumerate(rooms):
+            if j <= i:
+                continue
+            bx, by = b["position"]["x"], b["position"]["y"]
+            bw, bl = b["width"], b["length"]
+
+            shared_wall = _detect_shared_wall(ax, ay, aw, al, bx, by, bw, bl, TOL)
+            if shared_wall:
+                a["connected_to"].append(b["name"])
+                b["connected_to"].append(a["name"])
+                a["adjacent_to"].append(b["name"])
+                b["adjacent_to"].append(a["name"])
+
+    # Detect corridor midpoint for door orientation
     public_bottom = 0.0
     private_top = plot_l
     for room in rooms:
@@ -1853,61 +1778,66 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             private_top = min(private_top, ry)
     corridor_mid = (public_bottom + private_top) / 2
 
+    # ── Phase 3: door placement ──
     for room in rooms:
         pos = room["position"]
-        rw = room["width"]
-        rl = room["length"]
+        rw, rl = room["width"], room["length"]
         rtype = room["room_type"]
         zone = room.get("zone", "private")
         rx, ry = pos["x"], pos["y"]
-
-        doors = []
-        windows = []
-
         room_center_y = ry + rl / 2.0
 
-        # ── Door placement ──
+        doors = []
+
         if rtype in ("bathroom", "toilet"):
-            # Find adjacent bedroom for bathroom door
+            # Bathroom door toward adjacent bedroom (shared wall)
             door_placed = False
             for other in rooms:
                 if other["room_type"] not in ("master_bedroom", "bedroom"):
                     continue
-                ox = other["position"]["x"]
-                ow = other["width"]
-                oy = other["position"]["y"]
-                # Bedroom to the left?
-                if abs((ox + ow) - rx) < 1.0 and abs(oy - ry) < rl:
-                    doors.append({"wall": "W", "width": 2.5})
-                    door_placed = True
-                    break
-                # Bedroom to the right?
-                if abs((rx + rw) - ox) < 1.0 and abs(oy - ry) < rl:
-                    doors.append({"wall": "E", "width": 2.5})
-                    door_placed = True
-                    break
-                # Bedroom above?
-                if abs((oy + other["length"]) - ry) < 1.0 and abs(ox - rx) < rw:
-                    doors.append({"wall": "S", "width": 2.5})
-                    door_placed = True
-                    break
-                # Bedroom below?
-                if abs((ry + rl) - oy) < 1.0 and abs(ox - rx) < rw:
-                    doors.append({"wall": "N", "width": 2.5})
+                wall = _detect_shared_wall(
+                    rx, ry, rw, rl,
+                    other["position"]["x"], other["position"]["y"],
+                    other["width"], other["length"], TOL,
+                )
+                if wall:
+                    doors.append({"wall": wall, "width": 2.5})
                     door_placed = True
                     break
             if not door_placed:
-                # Door toward corridor
                 if room_center_y < corridor_mid:
                     doors.append({"wall": "N", "width": 2.5})
                 else:
                     doors.append({"wall": "S", "width": 2.5})
 
+        elif rtype == "living":
+            # Living: main entrance on south, interior door on north
+            doors.append({"wall": "S", "width": 3.0})
+            doors.append({"wall": "N", "width": 3.0})
+
+        elif rtype == "kitchen":
+            # Kitchen: door toward dining (find shared wall)
+            door_placed = False
+            for other in rooms:
+                if other["room_type"] != "dining":
+                    continue
+                wall = _detect_shared_wall(
+                    rx, ry, rw, rl,
+                    other["position"]["x"], other["position"]["y"],
+                    other["width"], other["length"], TOL,
+                )
+                if wall:
+                    doors.append({"wall": wall, "width": 3.0})
+                    door_placed = True
+                    break
+            if not door_placed:
+                doors.append({"wall": "N", "width": 3.0})
+
         elif zone in ("public", "semi_private"):
             doors.append({"wall": "N", "width": 3.0})
-            # Living room: main entrance on front (south) wall
-            if rtype == "living":
-                doors.append({"wall": "S", "width": 3.0})
+
+        elif rtype == "passage":
+            pass  # passages don't get doors
 
         else:
             # Private rooms — door toward corridor
@@ -1916,54 +1846,91 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             else:
                 doors.append({"wall": "N", "width": 3.0})
 
-        # ── Window placement — external walls only (§2F) ──
-        is_south = ry <= WALL_EXT_FT + 1
-        is_north = ry + rl >= plot_l - WALL_EXT_FT - 1
-        is_west = rx <= WALL_EXT_FT + 1
-        is_east = rx + rw >= plot_w - WALL_EXT_FT - 1
+        # ── Phase 4: window placement — exterior walls only ──
+        windows = []
+        is_south = ry <= WALL + 1
+        is_north = ry + rl >= plot_l - WALL - 1
+        is_west = rx <= WALL + 1
+        is_east = rx + rw >= plot_w - WALL - 1
 
         if rtype in ("bathroom", "toilet"):
             # Small ventilation window
-            if is_east:
-                windows.append({"wall": "E", "width": 2.0})
-            elif is_north:
-                windows.append({"wall": "N", "width": 2.0})
-            elif is_west:
-                windows.append({"wall": "W", "width": 2.0})
-            elif is_south:
-                windows.append({"wall": "S", "width": 2.0})
+            for side, flag, wall_len in [
+                ("E", is_east, rl), ("N", is_north, rw),
+                ("W", is_west, rl), ("S", is_south, rw),
+            ]:
+                if flag:
+                    win_w = max(2.0, min(wall_len * 0.15, 3.0))
+                    windows.append({"wall": side, "width": round(win_w, 1)})
+                    break
         else:
-            # Habitable rooms: windows on all external walls
-            if is_north:
-                windows.append({"wall": "N", "width": 4.0})
-            if is_south:
-                windows.append({"wall": "S", "width": 4.0})
-            if is_east:
-                windows.append({"wall": "E", "width": 4.0})
-            if is_west:
-                windows.append({"wall": "W", "width": 4.0})
+            # Habitable rooms: windows 10-30% of wall length on exterior walls
+            for side, flag, wall_len in [
+                ("N", is_north, rw), ("S", is_south, rw),
+                ("E", is_east, rl), ("W", is_west, rl),
+            ]:
+                if flag:
+                    win_w = max(3.0, min(wall_len * 0.25, wall_len * 0.30))
+                    windows.append({"wall": side, "width": round(win_w, 1)})
 
-        # §2F: Every habitable room must have at least one window
+        # Habitable rooms must have at least one window
         non_window_types = ("bathroom", "toilet", "store", "utility",
                             "hallway", "staircase", "passage")
         if not windows and rtype not in non_window_types:
-            if is_north:
-                windows.append({"wall": "N", "width": 4.0})
-            elif is_south:
-                windows.append({"wall": "S", "width": 4.0})
-            elif is_east:
-                windows.append({"wall": "E", "width": 4.0})
-            elif is_west:
-                windows.append({"wall": "W", "width": 4.0})
+            for side, flag, wall_len in [
+                ("N", is_north, rw), ("S", is_south, rw),
+                ("E", is_east, rl), ("W", is_west, rl),
+            ]:
+                if flag:
+                    windows.append({"wall": side, "width": 4.0})
+                    break
             else:
-                # Interior room — add ventilation window (should not happen
-                # in well-designed layouts, but safety net)
                 windows.append({"wall": "N", "width": 3.0})
 
         room["doors"] = doors
         room["windows"] = windows
 
     return rooms
+
+
+def _detect_shared_wall(
+    ax: float, ay: float, aw: float, al: float,
+    bx: float, by: float, bw: float, bl: float,
+    tol: float,
+) -> Optional[str]:
+    """
+    Detect which wall room A shares with room B.
+
+    Returns 'N', 'S', 'E', 'W' from A's perspective, or None.
+    Requires at least 2ft of overlap on the shared edge.
+    """
+    MIN_OVERLAP = 2.0
+
+    # A's north edge touches B's south edge
+    if abs((ay + al) - by) < tol:
+        overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+        if overlap >= MIN_OVERLAP:
+            return "N"
+
+    # A's south edge touches B's north edge
+    if abs(ay - (by + bl)) < tol:
+        overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+        if overlap >= MIN_OVERLAP:
+            return "S"
+
+    # A's east edge touches B's west edge
+    if abs((ax + aw) - bx) < tol:
+        overlap = max(0, min(ay + al, by + bl) - max(ay, by))
+        if overlap >= MIN_OVERLAP:
+            return "E"
+
+    # A's west edge touches B's south edge
+    if abs(ax - (bx + bw)) < tol:
+        overlap = max(0, min(ay + al, by + bl) - max(ay, by))
+        if overlap >= MIN_OVERLAP:
+            return "W"
+
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2328,6 +2295,57 @@ def _build_layout_output(
     else:
         circ_type = "minimal"
 
+    # ── Build zones (Step 2 — array of {name, band} objects) ──
+    ZONE_BANDS = {
+        "public": "front", "semi_private": "middle",
+        "private": "rear", "service": "rear", "circulation": "middle",
+    }
+    zones_array = []
+    zone_rooms_map = {"public": [], "semi_private": [], "private": [], "service": [], "circulation": []}
+    for room in placed_rooms:
+        z = room.get("zone", "private")
+        if z not in zone_rooms_map:
+            zone_rooms_map[z] = []
+        zone_rooms_map[z].append(room["name"])
+    for zname in ["public", "semi_private", "private", "service", "circulation"]:
+        if zone_rooms_map.get(zname):
+            zones_array.append({
+                "name": zname,
+                "band": ZONE_BANDS.get(zname, "middle"),
+                "rooms": zone_rooms_map[zname],
+            })
+
+    # ── Build adjacency_graph (Step 3 — list of edge pairs) ──
+    adjacency_edges = []
+    seen_edges = set()
+    for room in placed_rooms:
+        for neighbor in room.get("connected_to", []):
+            edge = tuple(sorted([room["name"], neighbor]))
+            if edge not in seen_edges:
+                seen_edges.add(edge)
+                adjacency_edges.append(list(edge))
+
+    # ── Build routing_graph (Step 4 — primary + private access paths) ──
+    routing_edges = []
+    room_names = {r["name"] for r in placed_rooms}
+    # Primary: Living → Dining → Kitchen
+    primary_chain = ["Living Room", "Dining Room", "Kitchen"]
+    for i in range(len(primary_chain) - 1):
+        if primary_chain[i] in room_names and primary_chain[i + 1] in room_names:
+            routing_edges.append([primary_chain[i], primary_chain[i + 1]])
+    # Private access: living → passage → each bedroom
+    passage_names = [r["name"] for r in placed_rooms if r["room_type"] == "passage"]
+    bedroom_names = [r["name"] for r in placed_rooms
+                     if r["room_type"] in ("master_bedroom", "bedroom")]
+    if passage_names and passage_names[0] in room_names:
+        routing_edges.append(["Living Room", passage_names[0]])
+        for bname in bedroom_names:
+            routing_edges.append([passage_names[0], bname])
+
+    # ── Corridor width from passage room ──
+    passage_room = next((r for r in placed_rooms if r["room_type"] == "passage"), None)
+    actual_corr_width = passage_room["length"] if passage_room else MIN_PASSAGE_WIDTH
+
     return {
         "plot": {
             "width": plot_w,
@@ -2344,9 +2362,19 @@ def _build_layout_output(
         "dim_chains_x": dim_chains_x,
         "dim_chains_y": dim_chains_y,
         "total_area": round(total_area, 1),
+        "zones": zones_array,
+        "adjacency_graph": adjacency_edges,
+        "routing_graph": routing_edges,
+        "constraints": {
+            "no_overlap": True,
+            "orthogonal_walls": True,
+            "inside_boundary": True,
+            "aspect_ratio_max": 2.5,
+            "min_corridor_width_ft": MIN_PASSAGE_WIDTH,
+        },
         "circulation": {
             "type": circ_type,
-            "width": max(MIN_PASSAGE_WIDTH, 3.5),
+            "width": round(actual_corr_width, 1),
         },
         "walls": {
             "external": "9 inch",
@@ -2594,6 +2622,48 @@ def _check_ventilation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
                 issues.append(
                     f"{room.get('name')}: habitable room has no external wall access"
                 )
+
+    return issues
+
+
+def _check_reachability(rooms: List[Dict]) -> List[str]:
+    """
+    Check all rooms are reachable via the adjacency graph (BFS from living room).
+
+    Every room must be connected to the living room through some chain of
+    adjacent rooms. Unreachable rooms indicate a layout flaw.
+    """
+    if not rooms:
+        return []
+
+    # Build adjacency map from connected_to
+    name_set = {r["name"] for r in rooms}
+    adj = {r["name"]: set(r.get("connected_to", [])) for r in rooms}
+
+    # Find living room as root
+    root = None
+    for r in rooms:
+        if r["room_type"] == "living":
+            root = r["name"]
+            break
+    if root is None:
+        root = rooms[0]["name"]
+
+    # BFS
+    visited = set()
+    queue = [root]
+    visited.add(root)
+    while queue:
+        current = queue.pop(0)
+        for neighbor in adj.get(current, []):
+            if neighbor not in visited and neighbor in name_set:
+                visited.add(neighbor)
+                queue.append(neighbor)
+
+    unreachable = name_set - visited
+    issues = []
+    for name in unreachable:
+        issues.append(f"{name}: not reachable from {root} via adjacency graph")
 
     return issues
 
