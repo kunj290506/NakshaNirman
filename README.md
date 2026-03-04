@@ -14,40 +14,45 @@ An end-to-end platform that generates architecturally-compliant 2D floor plans a
 
 | Feature | Description |
 |---------|-------------|
-| **PerfectCAD Engine** | Deterministic zone-based strip-packing layout engine with strict 3-band architectural compliance mode |
-| **GNN Engine** | Graph Neural Network-driven room placement with adjacency-aware scoring |
-| **AI Design Chat** | Natural-language floor plan generation via Groq/OpenAI LLM integration |
-| **ML Pipeline** | Trainable generator + discriminator for learning layouts from CubiCasa / R-Plan datasets |
-| **DXF Export** | Industry-standard AutoCAD DXF file export with walls, doors, windows, and dimension annotations |
+| **BSP Layout Engine** | Production layout engine using Binary Space Partitioning with zone-based band allocation, privacy gradient, and architectural compliance |
+| **Engine Registry** | Unified dispatch layer supporting BSP (default), Grid, and GNN engines with automatic fallback |
+| **3-Panel Workspace** | Professional CAD-style UI: left controls, center interactive canvas, right property panel |
+| **Interactive CAD Canvas** | Zoom/pan/grid overlay, room selection, drag-to-move, dimension lines, north arrow |
+| **AI Design Chat** | Natural-language floor plan generation via Groq LLM integration |
+| **DXF Export** | Industry-standard AutoCAD DXF file export with walls, doors, windows, and dimensions |
 | **3D Visualization** | Real-time interactive 3D walkthrough using React Three Fiber |
-| **Boundary Upload** | Upload DXF site boundaries or draw custom plot shapes |
+| **Boundary Upload** | Upload DXF site boundaries with automatic setback and buildable area computation |
+| **Centralized State** | React useReducer store for layout, canvas, and UI state — no prop drilling |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Nginx (port 80)                   │
-├──────────────────────┬──────────────────────────────┤
-│   Frontend (React)   │      Backend (FastAPI)        │
-│   Vite · port 5173   │      Uvicorn · port 8000     │
-│                      │                               │
-│  • Landing Page      │  API Routes:                  │
-│  • Workspace         │  /api/perfect/design          │
-│  • 3D Viewer         │  /api/gnn/design              │
-│  • Chat Interface    │  /api/ai-design/generate      │
-│  • Export Panel      │  /api/ml/generate              │
-│                      │  /api/engine/generate          │
-│                      │  /api/boundary/upload          │
-│                      │  /api/floorplan                │
-│                      │  /api/model3d                  │
-│                      │  /api/project                  │
-│                      │  /api/requirements             │
-│                      │  /api/health                   │
-├──────────────────────┴──────────────────────────────┤
-│           SQLite (aiosqlite) / PostgreSQL             │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                     Nginx (port 80)                       │
+├────────────────────────┬─────────────────────────────────┤
+│   Frontend (React 18)  │       Backend (FastAPI)          │
+│   Vite · port 5173     │       Uvicorn · port 8000       │
+│                        │                                  │
+│  3-Panel Workspace:    │  Primary API:                    │
+│  ┌──────┬───────┬────┐ │  POST /api/architect/design      │
+│  │ Chat │ CAD   │Prop│ │  POST /api/architect/redesign     │
+│  │ Form │Canvas │ery │ │  WS   /api/architect/ws           │
+│  │      │       │    │ │                                  │
+│  └──────┴───────┴────┘ │  Engine Registry:                │
+│                        │  ├─ BSP  (arch_engine.py)        │
+│  State Store:          │  ├─ Grid (layout_engine/)        │
+│  layoutStore.jsx       │  └─ GNN  (gnn_engine.py)        │
+│                        │                                  │
+│  API Service:          │  Support APIs:                   │
+│  api.js → fetch()      │  /api/boundary/* · /api/project  │
+│                        │  /api/requirements · /api/health │
+│                        │  /api/model3d · /api/floorplan   │
+├────────────────────────┴─────────────────────────────────┤
+│             SQLite (aiosqlite) / PostgreSQL                │
+└──────────────────────────────────────────────────────────┘
+```
 ```
 
 ---
@@ -149,49 +154,56 @@ Access the app at `http://localhost` (Nginx reverse proxy).
 │   ├── models.py               # ORM models
 │   ├── schemas.py              # Pydantic request/response schemas
 │   ├── routes/
-│   │   ├── perfect_design.py   # PerfectCAD engine endpoint
-│   │   ├── gnn_design.py       # GNN engine endpoint
-│   │   ├── ai_design.py        # AI chat design endpoint
-│   │   ├── ml_design.py        # ML pipeline endpoint
-│   │   ├── engine.py           # Pro layout engine endpoint
-│   │   ├── boundary.py         # Boundary upload/parse
-│   │   ├── floorplan.py        # Floor plan CRUD
-│   │   ├── model3d.py          # 3D model generation
+│   │   ├── architect.py        # Primary design endpoint (uses engine_registry)
+│   │   ├── boundary.py         # Boundary upload/parse/setback
 │   │   ├── project.py          # Project management
 │   │   ├── requirements.py     # Room requirements
-│   │   └── chat.py             # WebSocket chat
+│   │   ├── floorplan.py        # Floor plan CRUD
+│   │   ├── model3d.py          # 3D model generation
+│   │   ├── chat.py             # WebSocket chat
+│   │   ├── engine.py           # Pro layout engine endpoint
+│   │   ├── gnn_design.py       # GNN engine endpoint
+│   │   ├── perfect_design.py   # PerfectCAD engine endpoint
+│   │   ├── ai_design.py        # AI chat design endpoint
+│   │   └── ml_design.py        # ML pipeline endpoint
 │   ├── services/
-│   │   ├── perfect_layout.py   # PerfectCAD engine (strict 3-band mode)
+│   │   ├── engine_registry.py  # Unified engine dispatch (BSP/Grid/GNN)
+│   │   ├── arch_engine.py      # BSP production layout engine (~2500 lines)
 │   │   ├── gnn_engine.py       # GNN-based layout generator
-│   │   ├── pro_layout_engine.py# Professional layout engine
-│   │   ├── arch_engine.py      # Architectural rule engine
+│   │   ├── perfect_layout.py   # PerfectCAD engine (3-band mode)
+│   │   ├── pro_layout_engine.py# Zone-based tiling engine
+│   │   ├── multi_factor_engine.py # Multi-factor reasoning engine
 │   │   ├── cad_export.py       # DXF file generation
 │   │   ├── model3d.py          # 3D mesh builder
 │   │   ├── boundary.py         # Boundary parsing service
 │   │   ├── layout_constants.py # Room dimension/area constants
-│   │   └── layout_engine/      # Modular layout components
+│   │   └── layout_engine/      # Modular grid/treemap layout components
 │   ├── ml_pipeline/            # Trainable ML layout generator
-│   │   ├── models/             # Generator, discriminator, encoders
-│   │   ├── training/           # Training loop & losses
-│   │   ├── data/               # Dataset loaders (CubiCasa, R-Plan)
-│   │   └── evaluation/         # Layout quality metrics
 │   ├── samples/                # Sample DXF boundary files
 │   └── exports/                # Generated DXF output files
 └── frontend/
     ├── src/
-    │   ├── App.jsx             # Root component with routing
+    │   ├── App.jsx             # Root with LayoutProvider + routing
+    │   ├── store/
+    │   │   └── layoutStore.jsx # Centralized state (useReducer)
+    │   ├── services/
+    │   │   └── api.js          # Backend API service layer
     │   ├── pages/
     │   │   ├── LandingPage.jsx # Home / feature showcase
-    │   │   └── Workspace.jsx   # Main design workspace
+    │   │   └── WorkspaceNew.jsx# 3-panel design workspace
     │   └── components/
-    │       ├── PlanPreview.jsx  # 2D floor plan SVG renderer
-    │       ├── Viewer3D.jsx    # Three.js 3D walkthrough
-    │       ├── FormInterface.jsx       # Design input form
-    │       ├── RequirementsForm.jsx     # Room requirements editor
-    │       ├── ExportPanel.jsx         # DXF/image export controls
-    │       ├── ChatInterface.jsx       # LLM design chat
-    │       ├── AIDesignChat.jsx        # AI-powered design assistant
-    │       └── BoundaryPreview.jsx     # Boundary shape viewer
+    │       ├── canvas/
+    │       │   └── CadCanvas.jsx       # Interactive zoom/pan/drag canvas
+    │       ├── toolbar/
+    │       │   └── CanvasToolbar.jsx    # Grid/snap/zoom controls
+    │       ├── panels/
+    │       │   └── PropertyPanel.jsx    # Room properties + room list
+    │       ├── PlanPreview.jsx         # 2D floor plan SVG renderer
+    │       ├── Viewer3D.jsx           # Three.js 3D walkthrough
+    │       ├── FormInterface.jsx      # Design input form
+    │       ├── AIDesignChat.jsx       # AI-powered design assistant
+    │       ├── ExportPanel.jsx        # DXF/image export controls
+    │       └── BoundaryPreview.jsx    # Boundary shape viewer
     └── public/
 ```
 
@@ -199,67 +211,70 @@ Access the app at `http://localhost` (Nginx reverse proxy).
 
 ## Layout Engines
 
-### PerfectCAD (Strict 3-Band Mode)
+All engines are accessed through the **Engine Registry** (`services/engine_registry.py`), which provides a unified interface with automatic fallback.
 
-Deterministic, constraint-driven layout engine for architecturally-compliant floor plans.
+### BSP Engine (Default — Production)
 
-**Hard constraints (1200 sqft reference):**
+The primary layout engine using Binary Space Partitioning with architectural reasoning:
 
-| Band | Zone | Rooms | Area % |
-|------|------|-------|--------|
-| Band 1 (Top) | Public | Drawing Room, Kitchen, Dining Area | 40% |
-| Band 2 (Middle) | Service | Wash Area, Passage | ~13% |
-| Band 3 (Bottom) | Private | Master Bedroom, Bedroom 1, Attached Bath (inside MBR) | ~47% |
+- **10-Step Pipeline**: Plot analysis → Zoning → Room list → Adjacency graph → Routing → Placement → Doors/windows → Dimension chains → Validation → Summary
+- **3-Zone System**: Public (front band), Service (middle), Private (rear band)
+- **Adjacency Compliance**: Mandatory + preferred adjacency graphs with scoring
+- **Position Data**: Every room includes `position`, `polygon`, `centroid` for interactive editing
+- **Supports**: 1–5 BHK configurations, custom plot dimensions, boundary polygons
 
-- Exactly **8 rooms** — no utility rooms, no duplicates, no filler blocks
-- Attached Bathroom carved **inside** Master Bedroom (top-right corner)
-- All area percentages within specified ranges (e.g., Drawing Room 15–20%, MBR 18–22%)
-- Band heights derived from target area ratios for mathematical compliance
+### Grid Engine
+
+Zone-based proportional tiling using the `layout_engine/` module. Uses treemap subdivision for area allocation.
 
 ### GNN Engine
 
-Uses graph neural network principles with adjacency matrices to optimize room placement. Scores candidates on area utilization, proportion, adjacency satisfaction, and natural lighting.
-
-### Pro Layout Engine
-
-Zone-based proportional tiling with front/corridor/back structure. Supports 1–5 BHK configurations with automatic room sizing.
+Graph Neural Network-inspired placement with adjacency-aware scoring. Generates candidates and scores them on area utilization, room proportions, and natural lighting.
 
 ---
 
 ## API Reference
 
-### Design Endpoints
+### Primary Endpoints (Frontend uses these)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/perfect/design` | Generate layout via PerfectCAD engine |
-| POST | `/api/gnn/design` | Generate layout via GNN engine |
-| POST | `/api/ai-design/generate` | AI chat-based design generation |
-| POST | `/api/ml/generate` | ML pipeline layout generation |
-| POST | `/api/engine/generate` | Pro layout engine |
+| POST | `/api/architect/design` | Generate floor plan via engine registry |
+| POST | `/api/architect/redesign` | New layout with same requirements |
+| WS | `/api/architect/ws` | Interactive chat + design pipeline |
 
-### Utility Endpoints
+### Support Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/boundary/upload` | Upload DXF boundary file |
 | GET | `/api/health` | Health check |
 | POST | `/api/project` | Create project |
-| GET | `/api/floorplan/{id}` | Get floor plan by ID |
+| POST | `/api/requirements` | Store room requirements |
+| POST | `/api/upload-boundary` | Upload DXF boundary file |
+| GET | `/api/extract-boundary/{id}` | Extract boundary polygon |
+| POST | `/api/buildable-footprint/{id}` | Compute buildable area with setbacks |
+| POST | `/api/generate-3d/{id}` | Generate 3D model |
+
+### Alternative Engine Endpoints (Testing/Direct Access)
+
+| Method | Endpoint | Engine |
+|--------|----------|--------|
+| POST | `/api/engine/design` | Pro Layout (Grid) |
+| POST | `/api/gnn/design` | GNN |
+| POST | `/api/perfect/design` | PerfectCAD |
+| POST | `/api/ml/generate` | ML Pipeline |
 
 ### Example Request
 
 ```bash
-curl -X POST http://localhost:8000/api/perfect/design \
+curl -X POST http://localhost:8000/api/architect/design \
   -H "Content-Type: application/json" \
   -d '{
-    "plot_width": 40,
-    "plot_length": 30,
+    "total_area": 1200,
     "bedrooms": 2,
-    "bathrooms": 1,
+    "bathrooms": 2,
     "floors": 1,
-    "extras": [],
-    "strict_mode": true
+    "extras": []
   }'
 ```
 

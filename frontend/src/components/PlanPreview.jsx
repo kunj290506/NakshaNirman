@@ -455,7 +455,7 @@ function getFurniture(room, thin) {
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════
 
-export default function PlanPreview({ plan }) {
+export default function PlanPreview({ plan, selectedRoomId, showDimensions = true, showLabels = true, showFurniture = true }) {
 
   // ── 1. Normalise rooms ──
   const rooms = useMemo(() => {
@@ -622,17 +622,27 @@ export default function PlanPreview({ plan }) {
         <rect x={vx} y={vy} width={vw} height={vh} fill="#fff" />
 
         {/* 2 — room fills */}
-        {rooms.map((r, i) => (
-          <rect key={`fill-${i}`} x={r.x} y={r.y} width={r.w} height={r.h}
-            fill={fillOf(r.room_type)} />
-        ))}
+        {rooms.map((r, i) => {
+          const rid = r.id || `room-${i}`
+          const isSelected = rid === selectedRoomId
+          return (
+            <g key={`fill-${i}`} data-room-id={rid} style={{ cursor: 'pointer' }}>
+              <rect x={r.x} y={r.y} width={r.w} height={r.h}
+                fill={fillOf(r.room_type)}
+                stroke={isSelected ? '#111' : 'none'}
+                strokeWidth={isSelected ? thinLine * 4 : 0}
+                strokeDasharray={isSelected ? `${thinLine * 3} ${thinLine * 2}` : 'none'}
+              />
+            </g>
+          )
+        })}
 
         {/* 3 — furniture */}
-        <g opacity={0.88}>
+        {showFurniture && <g opacity={0.88}>
           {rooms.map((r, i) => (
             <g key={`furn-${i}`}>{getFurniture(r, thinLine)}</g>
           ))}
-        </g>
+        </g>}
 
         {/* 4 — column marks (only at plot boundary corners, not internal junctions) */}
         {columnMarks.map(([cx, cy], i) => (
@@ -715,7 +725,7 @@ export default function PlanPreview({ plan }) {
         })}
 
         {/* 9 — room labels — positioned in lower portion to avoid furniture overlap */}
-        {rooms.map((r, i) => {
+        {showLabels && rooms.map((r, i) => {
           if (Math.min(r.w, r.h) < 1.8) return null
           const fontSize = clamp(Math.min(r.w, r.h) * 0.13, 0.45, 1.5)
           const cx = r.x + r.w / 2
@@ -745,6 +755,7 @@ export default function PlanPreview({ plan }) {
         })}
 
         {/* 10 — only 2 dimension lines: top (width) + left (depth) */}
+        {showDimensions && <>
         {/* Top — overall width */}
         <g>
           <line x1={minX} y1={minY - dimOffset} x2={maxX} y2={minY - dimOffset}
@@ -773,6 +784,7 @@ export default function PlanPreview({ plan }) {
             {fmtDim(plotH)}
           </text>
         </g>
+        </>}
 
         {/* 11 — road label */}
         <line x1={minX - EXT_W} y1={roadY} x2={maxX + EXT_W} y2={roadY}

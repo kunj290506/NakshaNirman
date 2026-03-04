@@ -1,8 +1,8 @@
 """
-Multi-Factor Architectural Engine route.
+Architect Engine route.
 
-Provides REST and WebSocket endpoints for the Advanced Architectural
-Planning Engine that uses multi-factor reasoning (not GNN, not random).
+Provides REST and WebSocket endpoints for floor plan generation
+using the unified engine registry (BSP production engine by default).
 
 Endpoints:
   POST /api/architect/design     — Generate floor plan
@@ -13,18 +13,11 @@ Endpoints:
 import json
 import os
 import logging
-from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
-from database import get_db, async_session
-from models import Project, ProjectStatus
-from services.multi_factor_engine import (
-    generate_plan,
-    generate_new_plan,
-    parse_input,
-)
+from services.engine_registry import generate as engine_generate, DEFAULT_ENGINE
 from services.cad_export import generate_dxf
 from config import EXPORT_DIR
 
@@ -57,7 +50,7 @@ class ArchitectRedesignRequest(ArchitectDesignRequest):
 
 class ArchitectDesignResponse(BaseModel):
     """Response for architectural design."""
-    engine: str = "multi_factor"
+    engine: str = "bsp"
     method: str = "architectural_reasoning"
     explanation: str = ""
     layout: Optional[Dict] = None
@@ -107,7 +100,6 @@ async def architect_design(req: ArchitectDesignRequest):
     8. Human Comfort
     """
     try:
-        # Build input dict
         input_data = {
             "total_area": req.total_area,
             "plot_width": req.plot_width,
@@ -120,8 +112,7 @@ async def architect_design(req: ArchitectDesignRequest):
             "boundary_polygon": req.boundary_polygon,
         }
 
-        # Generate plan
-        result = generate_plan(input_data)
+        result = engine_generate(DEFAULT_ENGINE, input_data)
 
         if "error" in result:
             return ArchitectDesignResponse(
@@ -129,14 +120,13 @@ async def architect_design(req: ArchitectDesignRequest):
                 suggestion=result.get("suggestion"),
             )
 
-        # Generate DXF if project_id provided
         dxf_url = None
         layout = result.get("layout", {})
         if req.project_id and layout.get("rooms"):
             dxf_url = await _generate_dxf(req.project_id, layout)
 
         return ArchitectDesignResponse(
-            engine="multi_factor",
+            engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
             explanation=result.get("explanation", ""),
             layout=layout,
@@ -170,7 +160,7 @@ async def architect_redesign(req: ArchitectRedesignRequest):
             "boundary_polygon": req.boundary_polygon,
         }
 
-        result = generate_new_plan(input_data, req.previous_strategy)
+        result = engine_generate(DEFAULT_ENGINE, input_data)
 
         if "error" in result:
             return ArchitectDesignResponse(
@@ -184,7 +174,7 @@ async def architect_redesign(req: ArchitectRedesignRequest):
             dxf_url = await _generate_dxf(req.project_id, layout)
 
         return ArchitectDesignResponse(
-            engine="multi_factor",
+            engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
             explanation=result.get("explanation", ""),
             layout=layout,
@@ -227,25 +217,25 @@ async def architect_ws(websocket: WebSocket):
             user_text = msg_data.get("message", "")
             project_id = msg_data.get("project_id")
 
-            # Parse what the user wants
-            parsed = parse_input(user_text)
+            # Parse structured data from message
+            is_generate = msg_data.get("generatePlan", False)
 
-            # Detect mode
-            is_redesign = parsed.get("is_redesign", False)
-            is_generate = parsed.get("is_generate", False) or msg_data.get("generatePlan", False)
-
-            # Merge parsed into collected
-            for key in ("plot_width", "plot_length", "total_area",
-                        "bedrooms", "bathrooms", "floors", "extras"):
-                if parsed.get(key) is not None:
-                    collected_requirements[key] = parsed[key]
-
-            # Also accept structured data directly
+            # Merge structured data into collected requirements
             if msg_data.get("data"):
                 for key in ("plot_width", "plot_length", "total_area",
                             "bedrooms", "bathrooms", "floors", "extras", "rooms"):
                     if msg_data["data"].get(key) is not None:
                         collected_requirements[key] = msg_data["data"][key]
+
+            # Simple NL parsing for requirements
+            _extract_from_text(user_text, collected_requirements)
+
+            # Detect redesign intent
+            is_redesign = any(w in user_text.lower() for w in
+                            ["redesign", "different", "another", "new layout", "regenerate"])
+            if not is_generate:
+                is_generate = any(w in user_text.lower() for w in
+                                ["generate", "create", "make", "design", "build"])
 
             history.append({"role": "user", "content": user_text})
 
@@ -261,9 +251,7 @@ async def architect_ws(websocket: WebSocket):
 
             if is_redesign and is_complete:
                 # REDESIGN MODE
-                result = generate_new_plan(
-                    collected_requirements, last_strategy
-                )
+                result = engine_generate(DEFAULT_ENGINE, collected_requirements)
                 if "error" in result:
                     await websocket.send_text(json.dumps({
                         "mode": "error",
@@ -305,7 +293,7 @@ async def architect_ws(websocket: WebSocket):
 
             elif (is_generate or is_complete) and is_complete:
                 # DESIGN MODE
-                result = generate_plan(collected_requirements)
+                result = engine_generate(DEFAULT_ENGINE, collected_requirements)
 
                 if "error" in result:
                     await websocket.send_text(json.dumps({
@@ -388,3 +376,33 @@ async def architect_ws(websocket: WebSocket):
             }))
         except Exception:
             pass
+
+
+import re as _re
+
+def _extract_from_text(text: str, reqs: Dict) -> None:
+    """Extract plot dimensions and room counts from natural language."""
+    text_lower = text.lower()
+
+    m = _re.search(r'(\d+)\s*[xX×by]+\s*(\d+)', text_lower)
+    if m:
+        w, l = float(m.group(1)), float(m.group(2))
+        reqs["plot_width"] = min(w, l)
+        reqs["plot_length"] = max(w, l)
+        reqs["total_area"] = w * l
+
+    m = _re.search(r'(\d+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)', text_lower)
+    if m:
+        reqs["total_area"] = float(m.group(1))
+
+    m = _re.search(r'(\d+)\s*(?:bhk|bed(?:room)?s?)', text_lower)
+    if m:
+        reqs["bedrooms"] = int(m.group(1))
+
+    m = _re.search(r'(\d+)\s*bath(?:room)?s?', text_lower)
+    if m:
+        reqs["bathrooms"] = int(m.group(1))
+
+    m = _re.search(r'(\d+)\s*(?:floor|stor(?:ey|y|ies))', text_lower)
+    if m:
+        reqs["floors"] = int(m.group(1))
