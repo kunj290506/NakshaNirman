@@ -1,810 +1,619 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 
-const PIPELINE_STAGES = [
-    { key: 'chat', label: 'Chat', icon: '1', desc: 'Collecting requirements' },
-    { key: 'extraction', label: 'Extract', icon: '2', desc: 'Structuring data' },
-    { key: 'design', label: 'Design', icon: '3', desc: 'Generating layout' },
-    { key: 'validation', label: 'Validate', icon: '4', desc: 'Checking compliance' },
-    { key: 'generation', label: 'Generate', icon: '5', desc: 'Creating DXF' },
-]
+// ── Text cleaning ──
 
-const STAGE_ORDER = ['chat', 'extraction', 'design', 'validation', 'generation', 'complete']
+function cleanInput(raw) {
+  return raw
+    .trim()
+    .replace(/[*_~`#>|]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[-=_*]{2,}/gm, '')
+    .replace(/[-=_*]{2,}$/gm, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .trim()
+}
 
-export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, projectId, onReviewPlan, plan }) {
-    const [messages, setMessages] = useState([
-        {
-            role: 'assistant',
-            content: "Welcome to NakshaNirman AI Architect.\n\nI'll help you design your dream home step by step.\n\nStart by telling me about your plot — for example:\n\"I have a 30x40 feet plot and need 3 bedrooms, 2 bathrooms.\"\n\nOr just tell me your plot size and I'll guide you through the rest.",
-            provider: 'system',
-            stage: 'chat',
-        }
-    ])
-    const [input, setInput] = useState('')
-    const [isTyping, setIsTyping] = useState(false)
-    const [ws, setWs] = useState(null)
-    const [wsReady, setWsReady] = useState(false)
-    const [currentStage, setCurrentStage] = useState('chat')
-    const [extractedData, setExtractedData] = useState({ rooms: [], total_area: null })
-    const [layoutJson, setLayoutJson] = useState(null)
-    const [validationReport, setValidationReport] = useState(null)
-    const [requirementsJson, setRequirementsJson] = useState(null)
-    const [reviewData, setReviewData] = useState(null)
-    const [isReviewing, setIsReviewing] = useState(false)
-    const [expandedReasoning, setExpandedReasoning] = useState({})
-    const messagesEndRef = useRef(null)
-    const fileInputRef = useRef(null)
-    const extractedRef = useRef({ rooms: [], total_area: null })
+function inlineFormat(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} style={{ fontWeight: 600 }}>{part.slice(2, -2)}</strong>
+    }
+    return part
+  })
+}
 
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }, [messages, isTyping])
+function formatReply(text) {
+  if (!text) return null
 
-    useEffect(() => {
-        extractedRef.current = extractedData
-    }, [extractedData])
+  let clean = text
+    .replace(/[═─━┃┄┅┆┇┈┉┊┋│┼╭╮╯╰╱╲╳]/g, '')
+    .replace(/[▸▹►▻◂◃◄◅▴▵▶▷▼▽◆◇○●◉]/g, '')
+    .replace(/^[═─━=*#]{3,}.*$/gm, '')
+    .replace(/\*{3,}/g, '')
+    .replace(/_{3,}/g, '')
 
-    // WebSocket connection — tries engine endpoint first, falls back to ai-design
-    useEffect(() => {
-        let socket = null
-        let reconnectTimeout = null
+  const lines = clean.split('\n').filter(l => l.trim())
+  const elements = []
+  let i = 0
 
-        const connect = () => {
-            try {
-                const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-                // Try the new engine endpoint first, fallback to ai-design
-                const wsUrl = `${proto}//${window.location.host}/api/engine/chat`
-                socket = new WebSocket(wsUrl)
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    if (!line) { i++; continue }
 
-                socket.onopen = () => {
-                    setWs(socket)
-                    setWsReady(true)
-                }
-
-                socket.onmessage = (event) => {
-                    const data = JSON.parse(event.data)
-                    setIsTyping(false)
-
-                    // Update stage — support both 'stage' (ai-design) and 'mode' (engine) fields
-                    const stageOrMode = data.stage || data.mode
-                    if (stageOrMode) {
-                        setCurrentStage(stageOrMode)
-                    }
-
-                    // Build message object
-                    const msgObj = {
-                        role: 'assistant',
-                        content: data.reply,
-                        provider: data.provider || (data.mode ? 'engine' : 'unknown'),
-                        stage: stageOrMode,
-                        stageTransition: data.stage_transition || false,
-                        extractedData: data.extracted_data,
-                        requirementsJson: data.requirements_json,
-                        layoutJson: data.layout_json || data.layout,
-                        validationReport: data.validation_report || data.validation,
-                    }
-                    setMessages(prev => [...prev, msgObj])
-
-                    // Store extracted data
-                    if (data.extracted_data) {
-                        setExtractedData(prev => {
-                            const updated = { ...prev }
-                            if (data.extracted_data.total_area) updated.total_area = data.extracted_data.total_area
-                            if (data.extracted_data.rooms) {
-                                updated.rooms = data.extracted_data.rooms
-                            }
-                            return updated
-                        })
-                    }
-
-                    if (data.requirements_json) {
-                        setRequirementsJson(data.requirements_json)
-                    }
-
-                    // Support both 'layout_json' (ai-design) and 'layout' (engine)
-                    if (data.layout_json || data.layout) {
-                        setLayoutJson(data.layout_json || data.layout)
-                    }
-
-                    // Support both 'validation_report' (ai-design) and 'validation' (engine)
-                    if (data.validation_report || data.validation) {
-                        setValidationReport(data.validation_report || data.validation)
-                    }
-
-                    // Handle engine 'collected' data (parsed requirements from chat)
-                    if (data.collected) {
-                        setExtractedData(prev => {
-                            const updated = { ...prev }
-                            if (data.collected.total_area) updated.total_area = data.collected.total_area
-                            if (data.collected.bedrooms) {
-                                // Convert collected data to rooms format
-                                const rooms = []
-                                if (data.collected.bedrooms) {
-                                    rooms.push({ room_type: 'master_bedroom', quantity: 1 })
-                                    if (data.collected.bedrooms > 1) {
-                                        rooms.push({ room_type: 'bedroom', quantity: data.collected.bedrooms - 1 })
-                                    }
-                                }
-                                if (data.collected.bathrooms) {
-                                    rooms.push({ room_type: 'bathroom', quantity: data.collected.bathrooms })
-                                }
-                                rooms.push({ room_type: 'living', quantity: 1 })
-                                rooms.push({ room_type: 'kitchen', quantity: 1 })
-                                if (data.collected.extras) {
-                                    data.collected.extras.forEach(e => {
-                                        rooms.push({ room_type: e, quantity: 1 })
-                                    })
-                                }
-                                updated.rooms = rooms
-                            }
-                            return updated
-                        })
-                    }
-
-                    // Auto-generate when pipeline completes
-                    if (data.should_generate && data.extracted_data) {
-                        const rooms = data.extracted_data.rooms || extractedRef.current.rooms
-                        const totalArea = data.extracted_data.total_area || extractedRef.current.total_area
-                        if (totalArea && rooms?.length > 0) {
-                            const chatRequirements = {
-                                floors: data.extracted_data.floors || data.collected?.floors || 1,
-                                bedrooms: data.extracted_data.bedrooms || data.collected?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
-                                bathrooms: data.extracted_data.bathrooms || data.collected?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
-                                extras: data.extracted_data.extras || data.collected?.extras || [],
-                            }
-                            onGenerate(rooms, totalArea, chatRequirements)
-                        }
-                    }
-                }
-
-                socket.onerror = () => {
-                    setWsReady(false)
-                }
-
-                socket.onclose = () => {
-                    setWs(null)
-                    setWsReady(false)
-                    reconnectTimeout = setTimeout(connect, 5000)
-                }
-            } catch {
-                setWsReady(false)
-            }
-        }
-
-        connect()
-
-        return () => {
-            if (reconnectTimeout) clearTimeout(reconnectTimeout)
-            if (socket) socket.close()
-        }
-    }, [])
-
-    const sendMessage = useCallback(() => {
-        if (!input.trim() || loading) return
-
-        const userMsg = { role: 'user', content: input.trim() }
-        setMessages(prev => [...prev, userMsg])
-        setIsTyping(true)
-
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ message: input.trim(), project_id: projectId }))
-        } else {
-            // Fallback: Use REST API
-            fetch('/api/ai-design/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: input.trim(), project_id: projectId }),
-            })
-                .then(res => res.json())
-                .then(data => {
-                    setIsTyping(false)
-                    const msgObj = {
-                        role: 'assistant',
-                        content: data.reasoning || data.reply || 'Analysis complete.',
-                        provider: data.provider || 'unknown',
-                        extractedData: data.extracted_data,
-                        vastuRecommendations: data.vastu_recommendations,
-                        complianceNotes: data.compliance_notes,
-                        designScore: data.design_score,
-                    }
-                    setMessages(prev => [...prev, msgObj])
-
-                    if (data.rooms?.length > 0) {
-                        setExtractedData(prev => ({
-                            ...prev,
-                            rooms: data.rooms,
-                            total_area: data.extracted_data?.total_area || prev.total_area,
-                        }))
-                    }
-
-                    if (data.ready_to_generate) {
-                        const totalArea = data.extracted_data?.total_area || extractedRef.current.total_area
-                        const rooms = data.rooms?.length > 0 ? data.rooms : extractedRef.current.rooms
-                        if (totalArea && rooms?.length > 0) {
-                            const chatRequirements = {
-                                floors: data.extracted_data?.floors || 1,
-                                bedrooms: data.extracted_data?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
-                                bathrooms: data.extracted_data?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
-                                extras: data.extracted_data?.extras || [],
-                            }
-                            onGenerate(rooms, totalArea, chatRequirements)
-                        }
-                    }
-                })
-                .catch(err => {
-                    setIsTyping(false)
-                    setMessages(prev => [...prev, {
-                        role: 'assistant',
-                        content: `Connection issue: ${err.message}. Please check the backend.`,
-                        provider: 'error',
-                    }])
-                })
-        }
-
-        setInput('')
-    }, [input, ws, loading, projectId])
-
-    const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            sendMessage()
-        }
+    if (/^\*\*[^*]+\*\*$/.test(line) || /^#{1,3}\s/.test(line)) {
+      const txt = line.replace(/^\*\*/, '').replace(/\*\*$/, '').replace(/^#{1,3}\s/, '')
+      elements.push(
+        <p key={i} style={{ fontWeight: 700, color: '#1a1a2e', marginBottom: 4, marginTop: i > 0 ? 10 : 0, fontSize: 13 }}>
+          {txt}
+        </p>
+      )
+      i++; continue
     }
 
-    const handleFileUpload = async (e) => {
-        const file = e.target.files?.[0]
-        if (!file) return
-
-        setMessages(prev => [...prev, {
-            role: 'user', content: `Uploaded: ${file.name}`
-        }])
-
-        setIsTyping(true)
-        const result = await onBoundaryUpload(file)
-        setIsTyping(false)
-
-        if (result) {
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `Boundary extracted! ${result.num_vertices || 'Several'} vertices, ${result.area ? result.area.toFixed(0) : 'calculated'} sq units.\n\nUsable area after setback: ${result.usable_area ? result.usable_area.toFixed(0) : 'N/A'} sq units.\n\nNow describe your rooms — I'll design the layout for you.`,
-                provider: 'system',
-                stage: 'chat',
-            }])
-        } else {
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: 'Could not extract boundary. Try a clearer image or DXF file.',
-                provider: 'system',
-            }])
-        }
+    if (/^[-•*]\s/.test(line) || /^\d+\.\s/.test(line)) {
+      const bullets = []
+      while (i < lines.length && (/^[-•*]\s/.test(lines[i]?.trim()) || /^\d+\.\s/.test(lines[i]?.trim()))) {
+        const bt = lines[i].trim().replace(/^[-•*]\s/, '').replace(/^\d+\.\s/, '')
+        bullets.push(inlineFormat(bt))
+        i++
+      }
+      elements.push(
+        <ul key={`ul-${i}`} style={{ paddingLeft: 16, margin: '4px 0' }}>
+          {bullets.map((b, j) => (
+            <li key={j} style={{ marginBottom: 2, fontSize: 13, color: '#2a2a3e', lineHeight: 1.5 }}>{b}</li>
+          ))}
+        </ul>
+      )
+      continue
     }
 
-    const handleReviewPlan = async () => {
-        if (!plan) return
-        setIsReviewing(true)
-
-        setMessages(prev => [...prev, {
-            role: 'user', content: 'Review this floor plan for compliance'
-        }])
-
-        try {
-            const res = await fetch('/api/ai-design/review', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ floor_plan: plan, project_id: projectId }),
-            })
-
-            const data = await res.json()
-            setReviewData(data.scores)
-
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: data.review_text || 'Review complete.',
-                provider: data.provider || 'unknown',
-                reviewScores: data.scores,
-            }])
-        } catch (err) {
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `Review failed: ${err.message}`,
-                provider: 'error',
-            }])
-        }
-        setIsReviewing(false)
-    }
-
-    const handleGenerateFromAI = () => {
-        const current = extractedRef.current
-        if (current.total_area && current.rooms?.length > 0) {
-            onGenerate(current.rooms, current.total_area)
-        }
-    }
-
-    const toggleReasoning = (idx) => {
-        setExpandedReasoning(prev => ({ ...prev, [idx]: !prev[idx] }))
-    }
-
-    const getProviderBadge = (provider) => {
-        const badges = {
-            grok: { label: 'AI', color: '#000', bg: '#f0f0f0' },
-            groq: { label: 'AI', color: '#000', bg: '#f0f0f0' },
-            fallback: { label: 'Offline', color: '#666', bg: '#f0f0f0' },
-            system: { label: 'System', color: '#333', bg: '#f0f0f0' },
-            error: { label: 'Error', color: '#333', bg: '#eee' },
-        }
-        return badges[provider] || badges.fallback
-    }
-
-    const renderScoreBadge = (score, label) => {
-        return (
-            <span style={{
-                display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
-                padding: '0.15rem 0.5rem', borderRadius: '99px',
-                fontSize: '0.72rem', fontWeight: 700, color: '#000', background: '#f0f0f0',
-                border: '1px solid #ddd',
-            }}>
-                {label}: {score}/10
-            </span>
-        )
-    }
-
-    // Get stage index for progress bar
-    const currentStageIdx = STAGE_ORDER.indexOf(currentStage)
-
-    // Stage-specific typing message
-    const getTypingMessage = () => {
-        switch (currentStage) {
-            case 'chat': return 'AI Architect is thinking...'
-            case 'extraction': return 'Extracting requirements...'
-            case 'design': return 'Generating layout...'
-            case 'validation': return 'Validating design...'
-            case 'generation': return 'Creating floor plan...'
-            default: return 'Processing...'
-        }
-    }
-
-    return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Pipeline Stage Progress Indicator */}
-            <div style={{
-                padding: '0.6rem 0.75rem',
-                background: '#f7f7f7',
-                border: '1px solid #e0e0e0',
-                borderRadius: 'var(--radius-sm)',
-                marginBottom: '0.5rem',
-            }}>
-                {/* Header row */}
-                <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    marginBottom: '0.5rem',
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#000' }}>
-                            AI Design Pipeline
-                        </span>
-                        <span style={{
-                            width: 8, height: 8, borderRadius: 99,
-                            background: wsReady ? '#333' : '#999',
-                            display: 'inline-block',
-                        }} />
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.3rem' }}>
-                        {plan && (
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={handleReviewPlan}
-                                disabled={isReviewing}
-                                style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem' }}
-                            >
-                                {isReviewing ? '...' : 'AI Review'}
-                            </button>
-                        )}
-                        {extractedData.rooms?.length > 0 && extractedData.total_area && (
-                            <button
-                                className="btn btn-primary btn-sm"
-                                onClick={handleGenerateFromAI}
-                                disabled={loading}
-                                style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem' }}
-                            >
-                                Generate
-                            </button>
-                        )}
-                    </div>
-                </div>
-
-                {/* Stage progress bar */}
-                <div style={{
-                    display: 'flex', alignItems: 'center', gap: '0.15rem',
-                }}>
-                    {PIPELINE_STAGES.map((stage, idx) => {
-                        const isActive = stage.key === currentStage
-                        const isComplete = currentStageIdx > idx || currentStage === 'complete'
-                        const isPending = currentStageIdx < idx && currentStage !== 'complete'
-
-                        return (
-                            <div key={stage.key} style={{
-                                display: 'flex', alignItems: 'center', flex: 1,
-                            }}>
-                                <div style={{
-                                    display: 'flex', flexDirection: 'column', alignItems: 'center',
-                                    flex: 1, position: 'relative',
-                                }}>
-                                    {/* Stage dot/icon */}
-                                    <div style={{
-                                        width: isActive ? 28 : 22,
-                                        height: isActive ? 28 : 22,
-                                        borderRadius: '50%',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        fontSize: isActive ? '0.8rem' : '0.65rem',
-                                        fontWeight: 700,
-                                        background: isComplete ? '#000'
-                                            : isActive ? '#333'
-                                                : '#e0e0e0',
-                                        color: (isComplete || isActive) ? '#fff' : '#999',
-                                        transition: 'all 0.3s ease',
-                                        boxShadow: isActive ? '0 0 0 3px rgba(0,0,0,0.1)' : 'none',
-                                    }}>
-                                        {isComplete ? '✓' : stage.icon}
-                                    </div>
-                                    {/* Stage label */}
-                                    <span style={{
-                                        fontSize: '0.6rem',
-                                        fontWeight: isActive ? 700 : 500,
-                                        color: isActive ? '#000' : isComplete ? '#333' : '#999',
-                                        marginTop: '0.2rem',
-                                        whiteSpace: 'nowrap',
-                                    }}>
-                                        {stage.label}
-                                    </span>
-                                </div>
-                                {/* Connector line */}
-                                {idx < PIPELINE_STAGES.length - 1 && (
-                                    <div style={{
-                                        flex: 0.5,
-                                        height: 2,
-                                        background: currentStageIdx > idx || currentStage === 'complete'
-                                            ? '#000' : '#e0e0e0',
-                                        marginBottom: '1rem',
-                                        transition: 'background 0.3s ease',
-                                    }} />
-                                )}
-                            </div>
-                        )
-                    })}
-                </div>
-            </div>
-
-            {/* Messages */}
-            <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', padding: '0.5rem 0' }}>
-                {messages.map((msg, i) => {
-                    const badge = msg.provider ? getProviderBadge(msg.provider) : null
-                    const isLongMessage = msg.content && msg.content.length > 300
-                    const isTransition = msg.stageTransition
-
-                    // Stage transition messages get special styling
-                    if (isTransition) {
-                        return (
-                            <div key={i} style={{
-                                display: 'flex', alignItems: 'center', gap: '0.5rem',
-                                padding: '0.4rem 0.8rem',
-                                margin: '0.3rem 0',
-                                background: '#f5f5f5',
-                                borderRadius: 'var(--radius-sm)',
-                                fontSize: '0.78rem',
-                                fontWeight: 600,
-                                color: '#333',
-                                border: '1px solid #e5e5e5',
-                            }}>
-                                <span style={{
-                                    width: 14, height: 14, border: '2px solid #ddd',
-                                    borderTopColor: '#333', borderRadius: '50%',
-                                    animation: 'spin 0.7s linear infinite',
-                                    display: 'inline-block', flexShrink: 0,
-                                }}></span>
-                                {msg.content}
-                            </div>
-                        )
-                    }
-
-                    return (
-                        <div key={i} className={`chat-bubble ${msg.role}`} style={{
-                            position: 'relative',
-                        }}>
-                            {/* Provider badge */}
-                            {msg.role === 'assistant' && badge && (
-                                <div style={{
-                                    display: 'flex', alignItems: 'center', gap: '0.4rem',
-                                    marginBottom: '0.4rem',
-                                }}>
-                                    <span style={{
-                                        fontSize: '0.68rem', fontWeight: 700,
-                                        color: badge.color, background: badge.bg,
-                                        padding: '0.1rem 0.4rem', borderRadius: '99px',
-                                        border: `1px solid ${badge.color}20`,
-                                    }}>
-                                        {badge.label}
-                                    </span>
-                                    {msg.designScore > 0 && renderScoreBadge(msg.designScore, 'Design')}
-                                    {msg.stage && msg.stage !== 'chat' && (
-                                        <span style={{
-                                            fontSize: '0.65rem', fontWeight: 600,
-                                            color: '#555', background: '#f5f5f5',
-                                            padding: '0.1rem 0.35rem', borderRadius: '99px',
-                                            border: '1px solid #e5e5e5',
-                                        }}>
-                                            Stage: {msg.stage}
-                                        </span>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Message content */}
-                            {isLongMessage && msg.role === 'assistant' ? (
-                                <div>
-                                    <div style={{
-                                        maxHeight: expandedReasoning[i] ? 'none' : '150px',
-                                        overflow: 'hidden',
-                                        position: 'relative',
-                                    }}>
-                                        {msg.content.split('\n').map((line, j) => (
-                                            <span key={j}>
-                                                {line.startsWith('## ') ? (
-                                                    <strong style={{ display: 'block', marginTop: '0.5rem', color: '#111' }}>
-                                                        {line.replace('## ', '')}
-                                                    </strong>
-                                                ) : line.startsWith('**') ? (
-                                                    <strong>{line.replace(/\*\*/g, '')}</strong>
-                                                ) : (
-                                                    line
-                                                )}
-                                                {j < msg.content.split('\n').length - 1 && <br />}
-                                            </span>
-                                        ))}
-                                        {!expandedReasoning[i] && (
-                                            <div style={{
-                                                position: 'absolute', bottom: 0, left: 0, right: 0,
-                                                height: '40px',
-                                                background: 'linear-gradient(transparent, #fafafa)',
-                                            }} />
-                                        )}
-                                    </div>
-                                    <button
-                                        onClick={() => toggleReasoning(i)}
-                                        style={{
-                                            background: 'none', border: 'none', cursor: 'pointer',
-                                            color: '#333', fontSize: '0.75rem', fontWeight: 600,
-                                            padding: '0.3rem 0', display: 'block',
-                                        }}
-                                    >
-                                        {expandedReasoning[i] ? 'Show less' : 'Show full reasoning'}
-                                    </button>
-                                </div>
-                            ) : (
-                                msg.content.split('\n').map((line, j) => (
-                                    <span key={j}>
-                                        {line.startsWith('## ') ? (
-                                            <strong style={{ display: 'block', marginTop: '0.5rem', color: '#111' }}>
-                                                {line.replace('## ', '')}
-                                            </strong>
-                                        ) : line.startsWith('**') ? (
-                                            <strong>{line.replace(/\*\*/g, '')}</strong>
-                                        ) : (
-                                            line
-                                        )}
-                                        {j < msg.content.split('\n').length - 1 && <br />}
-                                    </span>
-                                ))
-                            )}
-
-                            {/* Requirements JSON display */}
-                            {msg.requirementsJson && (
-                                <div style={{
-                                    marginTop: '0.5rem', padding: '0.5rem 0.6rem',
-                                    background: '#f5f5f5', borderRadius: '6px',
-                                    border: '1px solid #ddd',
-                                    fontSize: '0.72rem', fontFamily: 'monospace',
-                                    maxHeight: '200px', overflowY: 'auto',
-                                }}>
-                                    <strong style={{ color: '#000', display: 'block', marginBottom: '0.3rem' }}>
-                                        Extracted Requirements:
-                                    </strong>
-                                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#333' }}>
-                                        {JSON.stringify(msg.requirementsJson, null, 2)}
-                                    </pre>
-                                </div>
-                            )}
-
-                            {/* Validation report display */}
-                            {msg.validationReport && (
-                                <div style={{
-                                    marginTop: '0.5rem', padding: '0.5rem 0.6rem',
-                                    background: '#f5f5f5',
-                                    borderRadius: '6px',
-                                    border: '1px solid #ddd',
-                                    fontSize: '0.72rem',
-                                }}>
-                                    <strong style={{
-                                        color: '#000',
-                                        display: 'block', marginBottom: '0.3rem',
-                                    }}>
-                                        {msg.validationReport.compliant ? 'Design Compliant' : 'Issues Found'}
-                                    </strong>
-                                    {msg.validationReport.issues?.length > 0 && (
-                                        <div>
-                                            {msg.validationReport.issues.map((issue, ii) => (
-                                                <div key={ii} style={{ color: '#333', marginTop: '0.1rem' }}>
-                                                    - {issue}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    {msg.validationReport.suggestions?.length > 0 && (
-                                        <div style={{ marginTop: '0.3rem' }}>
-                                            {msg.validationReport.suggestions.map((s, si) => (
-                                                <div key={si} style={{ color: '#555', marginTop: '0.1rem' }}>
-                                                    {s}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Vastu recommendations */}
-                            {msg.vastuRecommendations?.length > 0 && (
-                                <div style={{
-                                    marginTop: '0.5rem', padding: '0.4rem 0.6rem',
-                                    background: '#f5f5f5', borderRadius: '6px',
-                                    border: '1px solid #ddd',
-                                    fontSize: '0.75rem',
-                                }}>
-                                    <strong style={{ color: '#000' }}>Vastu:</strong>
-                                    {msg.vastuRecommendations.map((v, vi) => (
-                                        <div key={vi} style={{ marginTop: '0.2rem', color: '#333' }}>
-                                            - {v.room}: {v.recommended_direction} -- {v.reason}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            {/* Review scores */}
-                            {msg.reviewScores && (
-                                <div style={{
-                                    marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.3rem',
-                                }}>
-                                    {msg.reviewScores.overall_score && renderScoreBadge(msg.reviewScores.overall_score, 'Overall')}
-                                    {msg.reviewScores.vastu_compliance?.score && renderScoreBadge(msg.reviewScores.vastu_compliance.score, 'Vastu')}
-                                    {msg.reviewScores.building_code?.score && renderScoreBadge(msg.reviewScores.building_code.score, 'Code')}
-                                    {msg.reviewScores.ventilation?.score && renderScoreBadge(msg.reviewScores.ventilation.score, 'Ventilation')}
-                                    {msg.reviewScores.circulation?.score && renderScoreBadge(msg.reviewScores.circulation.score, 'Flow')}
-                                </div>
-                            )}
-
-                            {/* Compliance notes */}
-                            {msg.complianceNotes?.length > 0 && (
-                                <div style={{
-                                    marginTop: '0.5rem', padding: '0.4rem 0.6rem',
-                                    background: '#f5f5f5', borderRadius: '6px',
-                                    border: '1px solid #e5e5e5',
-                                    fontSize: '0.75rem',
-                                }}>
-                                    <strong style={{ color: '#111' }}>Compliance:</strong>
-                                    {msg.complianceNotes.map((n, ni) => (
-                                        <div key={ni} style={{ marginTop: '0.2rem', color: '#333' }}>- {n}</div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    )
-                })}
-
-                {isTyping && (
-                    <div className="typing-indicator">
-                        <div className="typing-dot" />
-                        <div className="typing-dot" />
-                        <div className="typing-dot" />
-                        <span style={{ fontSize: '0.72rem', color: '#555', marginLeft: '0.3rem', fontWeight: 600 }}>
-                            {getTypingMessage()}
-                        </span>
-                    </div>
-                )}
-
-                {loading && (
-                    <div style={{
-                        display: 'flex', alignItems: 'center', gap: '0.6rem',
-                        padding: '0.75rem 1rem',
-                        background: '#f5f5f5',
-                        border: '1px solid #e5e5e5',
-                        borderRadius: 'var(--radius-md)',
-                        alignSelf: 'flex-start', maxWidth: '88%',
-                    }}>
-                        <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2, marginBottom: 0 }}></div>
-                        <span style={{ fontSize: '0.82rem', color: '#333', fontWeight: 600 }}>
-                            Generating your floor plan...
-                        </span>
-                    </div>
-                )}
-                <div ref={messagesEndRef} />
-            </div>
-
-            {/* Extracted data summary bar */}
-            {(extractedData.rooms?.length > 0 || extractedData.total_area) && (
-                <div style={{
-                    padding: '0.4rem 0.6rem',
-                    background: '#f5f5f5',
-                    border: '1px solid #e5e5e5',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '0.72rem',
-                    color: '#333',
-                    marginBottom: '0.4rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: '0.3rem',
-                }}>
-                    <span>
-                        {extractedData.total_area ? `${extractedData.total_area} sqft` : ''}
-                        {extractedData.rooms?.length > 0 ? ` | ${extractedData.rooms.length} room types` : ''}
-                    </span>
-                    {extractedData.rooms?.length > 0 && extractedData.total_area && (
-                        <button
-                            className="btn btn-primary btn-sm"
-                            onClick={handleGenerateFromAI}
-                            disabled={loading}
-                            style={{ fontSize: '0.68rem', padding: '0.15rem 0.4rem' }}
-                        >
-                            Generate Plan
-                        </button>
-                    )}
-                </div>
-            )}
-
-            {/* Input area */}
-            <div className="chat-input-area" style={{ position: 'sticky', bottom: 0 }}>
-                <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    accept=".png,.jpg,.jpeg,.dxf"
-                    style={{ display: 'none' }}
-                />
-                <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => fileInputRef.current?.click()}
-                    title="Upload boundary image"
-                    disabled={loading}
-                >
-                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                </button>
-                <input
-                    className="chat-input"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={
-                        currentStage === 'chat'
-                            ? 'Describe your dream home...'
-                            : loading
-                                ? 'Processing...'
-                                : 'Type a message...'
-                    }
-                    disabled={loading || (currentStage !== 'chat' && currentStage !== 'complete')}
-                />
-                <button
-                    className="btn btn-primary btn-sm"
-                    onClick={sendMessage}
-                    disabled={loading || !input.trim()}
-                    style={{
-                        opacity: (loading || !input.trim()) ? 0.5 : 1,
-                    }}
-                >
-                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                    </svg>
-                </button>
-            </div>
-        </div>
+    elements.push(
+      <p key={i} style={{ margin: '3px 0', fontSize: 13, color: '#2a2a3e', lineHeight: 1.55 }}>
+        {inlineFormat(line)}
+      </p>
     )
+    i++
+  }
+
+  return <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{elements}</div>
+}
+
+// ── Error messages ──
+
+const ERROR_MESSAGES = {
+  PARSE_ERROR: 'Received an unexpected response. Please try again.',
+  SEND_FAILED: 'Could not send your message. Please check your connection.',
+  UPLOAD_FAILED: 'Could not read the uploaded file. Try a different format.',
+  BACKEND_DOWN: 'The design server is not running. Please start the backend on port 8000.',
+}
+
+// ── Sub-components ──
+
+function MessageBubble({ msg }) {
+  const isUser = msg.role === 'user'
+
+  const timeStr = msg.timestamp
+    ? new Date(msg.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+    : ''
+
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: isUser ? 'flex-end' : 'flex-start',
+      maxWidth: '88%',
+      alignSelf: isUser ? 'flex-end' : 'flex-start',
+    }}>
+      <div style={{
+        background: isUser ? '#1a3a6b' : '#ffffff',
+        color: isUser ? '#ffffff' : '#1a1a2e',
+        padding: '9px 13px',
+        borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+        maxWidth: '100%',
+        wordBreak: 'break-word',
+      }}>
+        {isUser
+          ? <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>{msg.content}</p>
+          : formatReply(msg.content)
+        }
+      </div>
+      <span style={{ fontSize: 10, color: '#999', marginTop: 3, paddingLeft: 4, paddingRight: 4 }}>
+        {timeStr}
+      </span>
+    </div>
+  )
+}
+
+function TypingIndicator() {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 4,
+      padding: '8px 13px',
+      background: '#fff',
+      borderRadius: '16px 16px 16px 4px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+      width: 'fit-content',
+    }}>
+      {[0, 1, 2].map(i => (
+        <span
+          key={i}
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: '#94a3b8',
+            display: 'inline-block',
+            animation: 'typingBounce 1.2s ease-in-out infinite',
+            animationDelay: `${i * 0.2}s`,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes typingBounce {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+          30% { transform: translateY(-5px); opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════
+
+export default function AIDesignChat({
+  onGenerate,
+  onBoundaryUpload,
+  loading,
+  projectId,
+  onReviewPlan,
+  plan,
+}) {
+  const [messages, setMessages] = useState([{
+    id: 'welcome',
+    role: 'assistant',
+    content: 'Welcome! I am your AI architect.\n\nTell me about your plot and I will design your floor plan.\n\nExample: I have a 30 by 40 feet plot and need 3 bedrooms with a pooja room.',
+    timestamp: new Date(),
+    status: 'sent',
+  }])
+  const [input, setInput] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const [ws, setWs] = useState(null)
+  const [wsReady, setWsReady] = useState(false)
+  const [currentStage, setCurrentStage] = useState('chat')
+  const [extractedData, setExtractedData] = useState({ rooms: [], total_area: null })
+  const [layoutJson, setLayoutJson] = useState(null)
+  const [validationReport, setValidationReport] = useState(null)
+
+  const messagesEndRef = useRef(null)
+  const inputRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const extractedRef = useRef({ rooms: [], total_area: null })
+
+  // Keep ref in sync with state
+  useEffect(() => { extractedRef.current = extractedData }, [extractedData])
+
+  // Auto-scroll
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isTyping])
+
+  // Auto-focus input
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto'
+      inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 100) + 'px'
+    }
+  }, [input])
+
+  // ── addAssistantMessage ──
+  const addAssistantMessage = useCallback((content) => {
+    const text = (content || '').toString()
+    if (!text) return
+    setMessages(prev => {
+      // Deduplicate by content within last 2 messages
+      const last = prev[prev.length - 1]
+      if (last && last.role === 'assistant' && last.content === text) return prev
+      return [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: text,
+        timestamp: new Date(),
+        status: 'sent',
+      }]
+    })
+  }, [])
+
+  // ── handleDataFromResponse ──
+  const handleDataFromResponse = useCallback((data) => {
+    if (data.stage || data.mode) setCurrentStage(data.stage || data.mode)
+
+    if (data.extracted_data) {
+      const ed = data.extracted_data
+      setExtractedData(prev => ({
+        ...prev,
+        total_area: ed.total_area || prev.total_area,
+        rooms: ed.rooms?.length > 0 ? ed.rooms : prev.rooms,
+      }))
+    }
+
+    // Handle engine 'collected' data
+    if (data.collected) {
+      setExtractedData(prev => {
+        const updated = { ...prev }
+        if (data.collected.total_area) updated.total_area = data.collected.total_area
+        if (data.collected.bedrooms) {
+          const rooms = []
+          rooms.push({ room_type: 'master_bedroom', quantity: 1 })
+          if (data.collected.bedrooms > 1) {
+            rooms.push({ room_type: 'bedroom', quantity: data.collected.bedrooms - 1 })
+          }
+          if (data.collected.bathrooms) {
+            rooms.push({ room_type: 'bathroom', quantity: data.collected.bathrooms })
+          }
+          rooms.push({ room_type: 'living', quantity: 1 })
+          rooms.push({ room_type: 'kitchen', quantity: 1 })
+          if (data.collected.extras) {
+            data.collected.extras.forEach(e => rooms.push({ room_type: e, quantity: 1 }))
+          }
+          updated.rooms = rooms
+        }
+        return updated
+      })
+    }
+
+    if (data.layout_json || data.layout) setLayoutJson(data.layout_json || data.layout)
+    if (data.validation_report || data.validation) setValidationReport(data.validation_report || data.validation)
+
+    // Auto-generate
+    if (data.should_generate && data.extracted_data) {
+      const rooms = data.extracted_data.rooms || extractedRef.current.rooms
+      const totalArea = data.extracted_data.total_area || extractedRef.current.total_area
+      if (totalArea && rooms?.length > 0) {
+        onGenerate(rooms, totalArea, {
+          floors: data.extracted_data.floors || data.collected?.floors || 1,
+          bedrooms: data.extracted_data.bedrooms || data.collected?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
+          bathrooms: data.extracted_data.bathrooms || data.collected?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+          extras: data.extracted_data.extras || data.collected?.extras || [],
+        })
+      }
+    }
+
+    // Also handle REST 'ready_to_generate'
+    if (data.ready_to_generate) {
+      const totalArea = data.extracted_data?.total_area || extractedRef.current.total_area
+      const rooms = data.rooms?.length > 0 ? data.rooms : (data.extracted_data?.rooms || extractedRef.current.rooms)
+      if (totalArea && rooms?.length > 0) {
+        onGenerate(rooms, totalArea, {
+          floors: data.extracted_data?.floors || 1,
+          bedrooms: data.extracted_data?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
+          bathrooms: data.extracted_data?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+          extras: data.extracted_data?.extras || [],
+        })
+      }
+    }
+  }, [onGenerate])
+
+  // ── WebSocket ──
+  useEffect(() => {
+    let socket = null
+    let retryTimer = null
+    let retries = 0
+
+    const connect = () => {
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        socket = new WebSocket(`${proto}//${window.location.host}/api/architect/ws`)
+
+        socket.onopen = () => {
+          setWs(socket)
+          setWsReady(true)
+          retries = 0
+        }
+
+        socket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            setIsTyping(false)
+
+            const reply = data.reply || data.message || data.text || data.content || ''
+            if (reply) addAssistantMessage(reply)
+
+            handleDataFromResponse(data)
+          } catch {
+            setIsTyping(false)
+            addAssistantMessage(ERROR_MESSAGES.PARSE_ERROR)
+          }
+        }
+
+        socket.onerror = () => {
+          setWsReady(false)
+        }
+
+        socket.onclose = () => {
+          setWs(null)
+          setWsReady(false)
+          const delay = Math.min(3000 * Math.pow(2, retries), 12000)
+          retries++
+          retryTimer = setTimeout(connect, delay)
+        }
+      } catch {
+        setWsReady(false)
+      }
+    }
+
+    connect()
+
+    return () => {
+      clearTimeout(retryTimer)
+      socket?.close()
+    }
+  }, [addAssistantMessage, handleDataFromResponse])
+
+  // ── sendMessage ──
+  const sendMessage = useCallback(() => {
+    const text = cleanInput(input)
+    if (!text || loading || isTyping) return
+
+    const userMsg = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+      status: 'sent',
+    }
+    setMessages(prev => [...prev, userMsg])
+    setInput('')
+    setIsTyping(true)
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ message: text, project_id: projectId }))
+    } else {
+      fetch('/api/ai-design/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, project_id: projectId }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          setIsTyping(false)
+          const reply = data.reasoning || data.reply || data.message || 'Understood. Please continue.'
+          addAssistantMessage(reply)
+          handleDataFromResponse(data)
+        })
+        .catch(() => {
+          setIsTyping(false)
+          addAssistantMessage(ERROR_MESSAGES.SEND_FAILED)
+        })
+    }
+  }, [input, ws, loading, isTyping, projectId, addAssistantMessage, handleDataFromResponse])
+
+  // ── keyboard ──
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendMessage()
+    }
+  }
+
+  // ── file upload ──
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !onBoundaryUpload) return
+
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `Uploaded: ${file.name}`,
+      timestamp: new Date(),
+      status: 'sent',
+    }])
+
+    setIsTyping(true)
+    try {
+      const result = await onBoundaryUpload(file)
+      setIsTyping(false)
+      if (result) {
+        addAssistantMessage(
+          `Boundary extracted successfully.\n\n` +
+          `- Vertices: ${result.num_vertices || 'Several'}\n` +
+          `- Area: ${result.area ? Math.round(result.area) : 'Calculated'} sq units\n` +
+          `- Usable area after setback: ${result.usable_area ? Math.round(result.usable_area) : 'N/A'} sq units\n\n` +
+          `Now describe your rooms and I will design the layout.`
+        )
+      } else {
+        addAssistantMessage(ERROR_MESSAGES.UPLOAD_FAILED)
+      }
+    } catch {
+      setIsTyping(false)
+      addAssistantMessage(ERROR_MESSAGES.UPLOAD_FAILED)
+    }
+  }
+
+  // ── manual generate ──
+  const handleGenerateFromAI = () => {
+    const current = extractedRef.current
+    if (current.total_area && current.rooms?.length > 0) {
+      onGenerate(current.rooms, current.total_area)
+    }
+  }
+
+  // ── disabled state for input ──
+  const inputDisabled = loading || isTyping
+  const sendDisabled = !input.trim() || loading || isTyping
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fff' }}>
+      {/* Header */}
+      <div style={{
+        padding: '12px 16px',
+        borderBottom: '1px solid #eee',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        background: '#fff',
+        flexShrink: 0,
+      }}>
+        <div style={{
+          width: 8, height: 8, borderRadius: '50%',
+          background: wsReady ? '#22c55e' : '#f59e0b',
+        }} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a2e' }}>
+          AI Architect
+        </span>
+        <span style={{ fontSize: 11, color: '#888', marginLeft: 'auto' }}>
+          {wsReady ? 'Connected' : 'Connecting...'}
+        </span>
+        {extractedData.rooms?.length > 0 && extractedData.total_area && (
+          <button
+            onClick={handleGenerateFromAI}
+            disabled={loading}
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              padding: '4px 10px',
+              background: loading ? '#e2e8f0' : '#1a3a6b',
+              color: loading ? '#94a3b8' : '#fff',
+              border: 'none',
+              borderRadius: 6,
+              cursor: loading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Generate Plan
+          </button>
+        )}
+      </div>
+
+      {/* Messages area */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '12px 14px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          background: '#f8f9fb',
+        }}
+      >
+        {messages.map(msg => <MessageBubble key={msg.id} msg={msg} />)}
+        {isTyping && <TypingIndicator />}
+        {loading && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '9px 13px',
+            background: '#fff',
+            borderRadius: '16px 16px 16px 4px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+            width: 'fit-content',
+            fontSize: 13,
+            color: '#1a1a2e',
+            fontWeight: 500,
+          }}>
+            Generating your floor plan...
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input area */}
+      <div style={{
+        borderTop: '1px solid #eee',
+        padding: '10px 14px 12px',
+        background: '#fff',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        flexShrink: 0,
+      }}>
+        {/* Input row */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={inputDisabled ? 'AI is typing...' : 'Describe your plot and requirements...'}
+            rows={1}
+            style={{
+              width: '100%',
+              resize: 'none',
+              border: '1px solid #dde1e7',
+              borderRadius: 12,
+              padding: '10px 14px',
+              fontSize: 13,
+              fontFamily: 'inherit',
+              outline: 'none',
+              lineHeight: 1.5,
+              maxHeight: 100,
+              overflow: 'auto',
+              background: '#fff',
+              color: '#1a1a2e',
+              boxSizing: 'border-box',
+            }}
+            disabled={inputDisabled}
+          />
+          <button
+            onClick={sendMessage}
+            disabled={sendDisabled}
+            style={{
+              padding: '10px 16px',
+              background: sendDisabled ? '#e2e8f0' : '#1a3a6b',
+              color: sendDisabled ? '#94a3b8' : '#fff',
+              border: 'none',
+              borderRadius: 10,
+              cursor: sendDisabled ? 'not-allowed' : 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+              minWidth: 64,
+              transition: 'background 0.15s',
+              flexShrink: 0,
+            }}
+          >
+            {isTyping ? '...' : 'Send'}
+          </button>
+        </div>
+
+        {/* Upload row */}
+        {onBoundaryUpload && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                fontSize: 11,
+                color: '#64748b',
+                background: 'none',
+                border: '1px dashed #cbd5e1',
+                borderRadius: 6,
+                padding: '4px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              Upload boundary
+            </button>
+            <span style={{ fontSize: 10, color: '#aaa' }}>DXF or image</span>
+            <input ref={fileInputRef} type="file" accept=".dxf,.png,.jpg,.jpeg"
+              style={{ display: 'none' }} onChange={handleFileUpload} />
+          </div>
+        )}
+
+        {/* Hint */}
+        <span style={{ fontSize: 10, color: '#bbb' }}>
+          Press Enter to send, Shift+Enter for new line
+        </span>
+      </div>
+    </div>
+  )
 }

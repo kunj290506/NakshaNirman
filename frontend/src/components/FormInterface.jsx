@@ -136,13 +136,13 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
             {/* Step labels */}
             <div style={{
                 display: 'flex', justifyContent: 'space-between',
-                fontSize: '0.65rem', color: 'var(--text-muted)',
-                marginBottom: '1.25rem', marginTop: '0.3rem',
+                fontSize: '0.7rem', color: '#bbb',
+                marginBottom: '1rem', marginTop: '0.25rem',
                 fontWeight: 500,
             }}>
-                <span style={{ color: step === 0 ? 'var(--accent)' : step > 0 ? 'var(--success)' : undefined }}>Plot / Boundary</span>
-                <span style={{ color: step === 1 ? 'var(--accent)' : step > 1 ? 'var(--success)' : undefined }}>Rooms</span>
-                <span style={{ color: step === 2 ? 'var(--accent)' : undefined }}>Generate</span>
+                <span style={{ color: step >= 0 ? '#111' : undefined }}>Plot</span>
+                <span style={{ color: step >= 1 ? '#111' : undefined }}>Rooms</span>
+                <span style={{ color: step >= 2 ? '#111' : undefined }}>Generate</span>
             </div>
 
             {/* Step 0: Plot OR Boundary (toggle) */}
@@ -151,7 +151,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                     {/* Toggle: Plot vs Boundary */}
                     <div style={{
                         display: 'flex', gap: '0', marginBottom: '1.25rem',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden',
+                        border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden',
                     }}>
                         <button
                             onClick={() => setInputMode('plot')}
@@ -160,14 +160,11 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                 border: 'none', cursor: 'pointer',
                                 fontWeight: 600, fontSize: '0.82rem',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
-                                background: inputMode === 'plot' ? 'var(--accent)' : 'var(--bg-primary)',
-                                color: inputMode === 'plot' ? 'white' : 'var(--text-secondary)',
+                                background: inputMode === 'plot' ? '#111' : '#fff',
+                                color: inputMode === 'plot' ? 'white' : '#64748b',
                                 transition: 'all 0.2s ease',
                             }}
                         >
-                            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6z" />
-                            </svg>
                             Enter Area
                         </button>
                         <button
@@ -177,33 +174,25 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                 border: 'none', cursor: 'pointer',
                                 fontWeight: 600, fontSize: '0.82rem',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
-                                background: inputMode === 'boundary' ? 'var(--accent)' : 'var(--bg-primary)',
-                                color: inputMode === 'boundary' ? 'white' : 'var(--text-secondary)',
-                                borderLeft: '1px solid var(--border)',
+                                background: inputMode === 'boundary' ? '#111' : '#fff',
+                                color: inputMode === 'boundary' ? 'white' : '#64748b',
+                                borderLeft: '1px solid #e2e8f0',
                                 transition: 'all 0.2s ease',
                             }}
                         >
-                            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                            </svg>
                             Upload DXF
                         </button>
                     </div>
 
                     <div style={{ marginBottom: '0.8rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.45rem', fontWeight: 600 }}>Requirements</div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.45rem', fontWeight: 600 }}>Requirements</div>
                         <RequirementsForm value={requirements} onChange={handleRequirementsChange} />
                     </div>
 
                     {/* Plot mode: manual area entry */}
                     {inputMode === 'plot' && (
                         <>
-                            <h3>
-                                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: -3 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6z" />
-                                </svg>
-                                Plot Details
-                            </h3>
+                            <h3>Plot Details</h3>
                             <div className="form-group">
                                 <label>Total Area (sq ft)</label>
                                 <input
@@ -215,7 +204,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                     max={50000}
                                     placeholder="Enter total plot area"
                                 />
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.35rem' }}>
                                     Typical: 600 (1BHK) / 1200 (2BHK) / 1800 (3BHK) / 2500+ (4BHK)
                                 </div>
                             </div>
@@ -233,12 +222,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                     {/* Boundary mode: DXF upload */}
                     {inputMode === 'boundary' && (
                         <>
-                            <h3>
-                                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: -3 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                                Upload Plot Boundary
-                            </h3>
+                            <h3>Upload Plot Boundary</h3>
                             <div
                                 className="file-upload"
                                 onClick={() => fileInputRef.current?.click()}
@@ -261,7 +245,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
 
                             {/* Show backend unreachable warning inside upload panel */}
                             {!backendHealthy && (
-                                <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#f5f5f5', border: '1px solid #e5e5e5', color: '#333', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '10px', background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: '0.82rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <div>Backend unreachable — unable to upload. Start the backend and retry.</div>
                                     <div>
                                         <button className="btn btn-secondary btn-sm" onClick={async (e) => { e.stopPropagation(); onCheckBackend && await onCheckBackend(); }}>
@@ -276,19 +260,19 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                 <div style={{
                                     marginTop: '0.75rem',
                                     padding: '0.85rem',
-                                    background: '#f5f5f5',
-                                    border: '1px solid #e5e5e5',
-                                    borderRadius: 'var(--radius-sm)',
+                                    background: '#ecfdf5',
+                                    border: '1px solid #a7f3d0',
+                                    borderRadius: '10px',
                                     fontSize: '0.8rem',
-                                    color: '#333',
+                                    color: '#065f46',
                                 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontWeight: 600 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontWeight: 600, color: '#065f46' }}>
                                         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                                         </svg>
                                         Boundary Extracted
                                     </div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.3rem 1rem', fontSize: '0.75rem' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.3rem 1rem', fontSize: '0.75rem', color: '#047857' }}>
                                         <span>Plot area: <strong>{boundaryData.area?.toFixed(1)} sq.m</strong></span>
                                         <span>Vertices: <strong>{boundaryData.num_vertices}</strong></span>
                                         <span>Usable area: <strong>{boundaryData.usable_area?.toFixed(1)} sq.m</strong></span>
@@ -323,14 +307,9 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
             {/* Step 1: Rooms */}
             {step === 1 && (
                 <div className="form-section">
-                    <h3>
-                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: -3 }}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                        </svg>
-                        Rooms and Amenities
-                    </h3>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-                        Select rooms and set quantities. Tap to toggle, use the number field to adjust count.
+                    <h3>Rooms</h3>
+                    <div style={{ fontSize: '0.72rem', color: '#999', marginBottom: '0.65rem' }}>
+                        Select rooms and adjust quantities.
                     </div>
                     <div className="amenity-grid">
                         {ROOM_TYPES.map(r => {
@@ -365,9 +344,10 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                     </div>
 
                     <div style={{
-                        marginTop: '1rem', padding: '0.5rem 0.75rem',
-                        background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)',
-                        fontSize: '0.78rem', color: 'var(--text-secondary)',
+                        marginTop: '1rem', padding: '0.55rem 0.8rem',
+                        background: '#f8fafc', borderRadius: '8px',
+                        fontSize: '0.78rem', color: '#475569',
+                        border: '1px solid #e2e8f0',
                     }}>
                         {selectedCount} room types selected / {totalRooms} total rooms
                     </div>
@@ -394,40 +374,35 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
             {/* Step 2: Review & Generate */}
             {step === 2 && (
                 <div className="form-section">
-                    <h3>
-                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: -3 }}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        Review and Generate
-                    </h3>
+                    <h3>Review</h3>
 
                     <div style={{
-                        background: 'var(--bg-input)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 'var(--radius-md)',
+                        background: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '10px',
                         padding: '1rem',
                         marginBottom: '1.25rem',
                     }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.85rem', paddingBottom: '0.85rem', borderBottom: '1px solid var(--border)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.85rem', paddingBottom: '0.85rem', borderBottom: '1px solid #e2e8f0' }}>
                             <div>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600 }}>
                                     {inputMode === 'boundary' ? 'Plot Area' : 'Total Area'}
                                 </div>
-                                <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--accent)' }}>
+                                <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#111' }}>
                                     {inputMode === 'boundary' && boundaryData
                                         ? `${boundaryData.area?.toFixed(1)} sq.m`
                                         : `${totalArea} sq ft`}
                                 </div>
                             </div>
                             <div style={{ textAlign: 'center' }}>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Floors</div>
-                                <div style={{ fontSize: '1.15rem', fontWeight: 700 }}>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600 }}>Floors</div>
+                                <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#0f172a' }}>
                                     {requirements?.floors || 1}
                                 </div>
                             </div>
                             <div style={{ textAlign: 'right' }}>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Input Mode</div>
-                                <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600 }}>Input Mode</div>
+                                <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#0f172a' }}>
                                     {inputMode === 'boundary'
                                         ? `DXF (${boundaryData?.num_vertices || '?'} vertices)`
                                         : 'Manual Area'}
@@ -436,11 +411,11 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                         </div>
 
                         {inputMode === 'boundary' && boundaryData && (
-                            <div style={{ marginBottom: '0.85rem', paddingBottom: '0.85rem', borderBottom: '1px solid var(--border)' }}>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.3rem' }}>Buildable Footprint</div>
-                                <div style={{ fontSize: '0.85rem' }}>
+                            <div style={{ marginBottom: '0.85rem', paddingBottom: '0.85rem', borderBottom: '1px solid #e2e8f0' }}>
+                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600, marginBottom: '0.3rem' }}>Buildable Footprint</div>
+                                <div style={{ fontSize: '0.85rem', color: '#0f172a' }}>
                                     Usable area: <strong>{boundaryData.usable_area?.toFixed(1)} sq.m</strong>
-                                    <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                                    <span style={{ color: '#94a3b8', marginLeft: '0.5rem' }}>
                                         (setback: {boundaryData.setback}m, coverage: {(boundaryData.coverage_ratio * 100).toFixed(1)}%)
                                     </span>
                                 </div>
@@ -448,7 +423,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                         )}
 
                         <div>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.4rem' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600, marginBottom: '0.4rem' }}>
                                 Rooms ({totalRooms})
                             </div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
@@ -459,11 +434,12 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                         return (
                                             <span key={key} style={{
                                                 padding: '0.25rem 0.6rem',
-                                                background: 'var(--bg-primary)',
-                                                border: '1px solid var(--border)',
-                                                borderRadius: 'var(--radius-full)',
+                                                background: '#fff',
+                                                border: '1px solid #e2e8f0',
+                                                borderRadius: '99px',
                                                 fontSize: '0.75rem',
                                                 fontWeight: 500,
+                                                color: '#475569',
                                             }}>
                                                 {room?.label} x{v.qty}
                                             </span>

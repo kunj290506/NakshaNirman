@@ -295,10 +295,10 @@ export default function Workspace() {
                 </Link>
                 <div className="workspace-nav-right">
                     <span className="project-label">Workspace</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginRight: '0.5rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem' }}>
-                            <span style={{ width: 10, height: 10, borderRadius: 99, background: backendHealthy ? '#000' : '#999', display: 'inline-block' }} />
-                            <span style={{ color: '#000', fontWeight: 600 }}>{backendHealthy ? 'Online' : 'Offline'}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginRight: '0.25rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem' }}>
+                            <span style={{ width: 8, height: 8, borderRadius: 99, background: backendHealthy ? '#10b981' : '#94a3b8', display: 'inline-block' }} />
+                            <span style={{ color: backendHealthy ? '#0f172a' : '#94a3b8', fontWeight: 500, fontSize: '0.75rem' }}>{backendHealthy ? 'Online' : 'Offline'}</span>
                         </div>
                         {!backendHealthy && (
                             <button className="btn btn-secondary btn-sm" onClick={() => checkBackend()}>
@@ -310,13 +310,12 @@ export default function Workspace() {
                         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                         </svg>
-                        New Project
+                        New
                     </button>
                     <button className="btn btn-secondary btn-sm" onClick={() => navigate('/')}>
                         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1h-2z" />
                         </svg>
-                        Home
                     </button>
                 </div>
             </nav>
@@ -429,8 +428,8 @@ export default function Workspace() {
                     {error && !loading && (
                         <div style={{
                             position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)',
-                            padding: '0.55rem 1rem', background: '#f5f5f5', border: '1px solid #e5e5e5',
-                            borderRadius: 'var(--radius-sm)', fontSize: '0.82rem', color: '#333',
+                            padding: '0.6rem 1.15rem', background: '#fef2f2', border: '1px solid #fecaca',
+                            borderRadius: '10px', fontSize: '0.82rem', color: '#991b1b',
                             zIndex: 10, maxWidth: '90%', textAlign: 'center',
                         }}>
                             {error}

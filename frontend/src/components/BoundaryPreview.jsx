@@ -83,8 +83,8 @@ export default function BoundaryPreview({ boundaryData }) {
             <div style={{
                 display: 'flex', justifyContent: 'center', gap: '1.5rem',
                 padding: '0.6rem 1rem',
-                background: 'var(--bg-secondary, #fafafa)',
-                borderBottom: '1px solid var(--border)',
+                background: '#f8fafc',
+                borderBottom: '1px solid #e2e8f0',
                 fontSize: '0.78rem', fontWeight: 500,
             }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -101,7 +101,7 @@ export default function BoundaryPreview({ boundaryData }) {
                     }}></span>
                     Buildable Area ({boundaryData.usable_area?.toFixed(1)} sq.m)
                 </span>
-                <span style={{ color: 'var(--text-muted)' }}>
+                <span style={{ color: '#94a3b8' }}>
                     Setback: {boundaryData.setback}m
                 </span>
             </div>
@@ -154,7 +154,7 @@ export default function BoundaryPreview({ boundaryData }) {
                     {/* Setback zone hatching — covers boundary then "cut out" usable area via rule */}
                     <g clipPath="url(#setback-clip)">
                         <path d={boundaryPath} fill="url(#setback-hatch)" />
-                        <path d={usablePath} fill="var(--bg-primary, #ffffff)" />
+                        <path d={usablePath} fill="#ffffff" />
                     </g>
 
                     {/* Vertex dots on boundary */}
@@ -209,33 +209,33 @@ export default function BoundaryPreview({ boundaryData }) {
             <div style={{
                 display: 'flex', justifyContent: 'space-around',
                 padding: '0.6rem',
-                background: 'var(--bg-secondary, #fafafa)',
-                borderTop: '1px solid var(--border)',
+                background: '#f8fafc',
+                borderTop: '1px solid #e2e8f0',
                 fontSize: '0.75rem',
             }}>
                 <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#2563eb' }}>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#111' }}>
                         {boundaryData.area?.toFixed(1)}
                     </div>
-                    <div style={{ color: 'var(--text-muted)' }}>Total (sq.m)</div>
+                    <div style={{ color: '#94a3b8' }}>Total (sq.m)</div>
                 </div>
                 <div style={{ textAlign: 'center' }}>
                     <div style={{ fontWeight: 700, fontSize: '1rem', color: '#16a34a' }}>
                         {boundaryData.usable_area?.toFixed(1)}
                     </div>
-                    <div style={{ color: 'var(--text-muted)' }}>Usable (sq.m)</div>
+                    <div style={{ color: '#94a3b8' }}>Usable (sq.m)</div>
                 </div>
                 <div style={{ textAlign: 'center' }}>
                     <div style={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>
                         {(boundaryData.area - boundaryData.usable_area)?.toFixed(1)}
                     </div>
-                    <div style={{ color: 'var(--text-muted)' }}>Setback Loss</div>
+                    <div style={{ color: '#94a3b8' }}>Setback Loss</div>
                 </div>
                 <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--accent)' }}>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#111' }}>
                         {(boundaryData.coverage_ratio * 100).toFixed(1)}%
                     </div>
-                    <div style={{ color: 'var(--text-muted)' }}>Coverage</div>
+                    <div style={{ color: '#94a3b8' }}>Coverage</div>
                 </div>
             </div>
         </div>

@@ -21,31 +21,31 @@ export default function RequirementsForm({ value, onChange }) {
     const numberField = (label, key, min, max) => (
         <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '0.5rem 0.65rem', background: 'var(--bg-input)',
-            borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+            padding: '0.55rem 0.7rem', background: '#f8fafc',
+            borderRadius: '8px', border: '1px solid #e2e8f0',
         }}>
-            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{label}</span>
+            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569' }}>{label}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                 <button
                     onClick={() => update(key, Math.max(min, (state[key] || min) - 1))}
                     style={{
-                        width: 26, height: 26, border: '1px solid var(--border)',
-                        borderRadius: '50%', background: 'var(--bg-primary)',
+                        width: 26, height: 26, border: '1px solid #e2e8f0',
+                        borderRadius: '50%', background: '#fff',
                         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-secondary)',
+                        fontSize: '0.9rem', fontWeight: 700, color: '#64748b',
                     }}
                 >-</button>
                 <span style={{
                     width: 28, textAlign: 'center', fontSize: '0.9rem',
-                    fontWeight: 700, color: 'var(--accent)',
+                    fontWeight: 700, color: '#111',
                 }}>{state[key] || min}</span>
                 <button
                     onClick={() => update(key, Math.min(max, (state[key] || min) + 1))}
                     style={{
-                        width: 26, height: 26, border: '1px solid var(--border)',
-                        borderRadius: '50%', background: 'var(--bg-primary)',
+                        width: 26, height: 26, border: '1px solid #e2e8f0',
+                        borderRadius: '50%', background: '#fff',
                         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-secondary)',
+                        fontSize: '0.9rem', fontWeight: 700, color: '#64748b',
                     }}
                 >+</button>
             </div>
@@ -58,10 +58,10 @@ export default function RequirementsForm({ value, onChange }) {
             style={{
                 display: 'flex', alignItems: 'center', gap: '0.4rem',
                 padding: '0.45rem 0.75rem',
-                border: state[key] ? '1.5px solid var(--accent)' : '1px solid var(--border)',
-                borderRadius: 'var(--radius-full)',
-                background: state[key] ? 'var(--accent-light)' : 'var(--bg-input)',
-                color: state[key] ? 'var(--accent)' : 'var(--text-muted)',
+                border: state[key] ? '1.5px solid #111' : '1px solid #e2e8f0',
+                borderRadius: '99px',
+                background: state[key] ? '#f5f5f5' : '#fff',
+                color: state[key] ? '#111' : '#94a3b8',
                 fontSize: '0.78rem', fontWeight: state[key] ? 700 : 500,
                 cursor: 'pointer', transition: 'all 0.15s',
             }}
@@ -73,9 +73,9 @@ export default function RequirementsForm({ value, onChange }) {
 
     return (
         <div style={{
-            display: 'flex', flexDirection: 'column', gap: '0.4rem',
-            padding: '0.65rem', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)', background: 'var(--bg-primary)',
+            display: 'flex', flexDirection: 'column', gap: '0.45rem',
+            padding: '0.7rem', border: '1px solid #e2e8f0',
+            borderRadius: '10px', background: '#fff',
         }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
                 {numberField('Floors', 'floors', 1, 4)}
@@ -83,7 +83,7 @@ export default function RequirementsForm({ value, onChange }) {
                 {numberField('Extra Bath', 'bathrooms', 0, 6)}
                 {numberField('Kitchen', 'kitchen', 1, 3)}
             </div>
-            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', padding: '0 0.3rem', lineHeight: 1.3 }}>
+            <div style={{ fontSize: '0.65rem', color: '#94a3b8', padding: '0 0.3rem', lineHeight: 1.3 }}>
                 Each Master Bed auto-gets an attached bathroom. Extra Bath = additional common bathrooms.
             </div>
 
