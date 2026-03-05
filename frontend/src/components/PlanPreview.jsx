@@ -1,39 +1,39 @@
 import { useMemo } from 'react'
 
 /* ──────────────────────────────────────────────
-   Zone-based color palette (soft pastels)
+   Zone-based monochrome palette (grayscale)
    ────────────────────────────────────────────── */
 const ZONE_COLORS = {
-    public:       { fill: '#DBEAFE', stroke: '#3B82F6', text: '#1E40AF' },
-    semi_private: { fill: '#D1FAE5', stroke: '#10B981', text: '#065F46' },
-    private:      { fill: '#EDE9FE', stroke: '#8B5CF6', text: '#5B21B6' },
-    service:      { fill: '#FEF3C7', stroke: '#F59E0B', text: '#92400E' },
-    utility:      { fill: '#F3F4F6', stroke: '#6B7280', text: '#374151' },
+    public:       { fill: '#f0f0f0', stroke: '#555', text: '#222' },
+    semi_private: { fill: '#e8e8e8', stroke: '#666', text: '#222' },
+    private:      { fill: '#e0e0e0', stroke: '#444', text: '#111' },
+    service:      { fill: '#ebebeb', stroke: '#777', text: '#333' },
+    utility:      { fill: '#f5f5f5', stroke: '#888', text: '#444' },
 }
 
 const ROOM_TYPE_COLORS = {
     living:         ZONE_COLORS.public,
-    dining:         { fill: '#CFFAFE', stroke: '#06B6D4', text: '#155E75' },
-    kitchen:        { fill: '#FFEDD5', stroke: '#F97316', text: '#9A3412' },
-    master_bedroom: { fill: '#EDE9FE', stroke: '#8B5CF6', text: '#5B21B6' },
-    bedroom:        { fill: '#E8DEF8', stroke: '#7C3AED', text: '#4C1D95' },
-    bathroom:       { fill: '#CCFBF1', stroke: '#14B8A6', text: '#134E4A' },
-    toilet:         { fill: '#CCFBF1', stroke: '#14B8A6', text: '#134E4A' },
-    study:          { fill: '#FEF9C3', stroke: '#EAB308', text: '#854D0E' },
-    pooja:          { fill: '#FCE7F3', stroke: '#EC4899', text: '#9D174D' },
-    store:          { fill: '#E7E5E4', stroke: '#78716C', text: '#44403C' },
-    balcony:        { fill: '#DCFCE7', stroke: '#22C55E', text: '#166534' },
-    garage:         { fill: '#E5E7EB', stroke: '#6B7280', text: '#374151' },
-    hallway:        { fill: '#F9FAFB', stroke: '#9CA3AF', text: '#4B5563' },
-    utility:        { fill: '#F3F4F6', stroke: '#6B7280', text: '#374151' },
-    foyer:          { fill: '#FEF3C7', stroke: '#F59E0B', text: '#92400E' },
-    passage:        { fill: '#F9FAFB', stroke: '#9CA3AF', text: '#4B5563' },
+    dining:         { fill: '#eaeaea', stroke: '#666', text: '#222' },
+    kitchen:        { fill: '#e5e5e5', stroke: '#555', text: '#222' },
+    master_bedroom: { fill: '#ddd', stroke: '#333', text: '#111' },
+    bedroom:        { fill: '#e0e0e0', stroke: '#444', text: '#111' },
+    bathroom:       { fill: '#ededed', stroke: '#777', text: '#333' },
+    toilet:         { fill: '#ededed', stroke: '#777', text: '#333' },
+    study:          { fill: '#e8e8e8', stroke: '#666', text: '#222' },
+    pooja:          { fill: '#f0f0f0', stroke: '#888', text: '#444' },
+    store:          { fill: '#ebebeb', stroke: '#777', text: '#333' },
+    balcony:        { fill: '#f3f3f3', stroke: '#999', text: '#444' },
+    garage:         { fill: '#e5e5e5', stroke: '#666', text: '#333' },
+    hallway:        { fill: '#f5f5f5', stroke: '#aaa', text: '#555' },
+    utility:        { fill: '#f5f5f5', stroke: '#888', text: '#444' },
+    foyer:          { fill: '#ebebeb', stroke: '#777', text: '#333' },
+    passage:        { fill: '#f5f5f5', stroke: '#aaa', text: '#555' },
 }
 
 function getRoomColor(room) {
     return ROOM_TYPE_COLORS[room.room_type] ||
            ZONE_COLORS[room.zone] ||
-           { fill: '#F9FAFB', stroke: '#9CA3AF', text: '#4B5563' }
+           { fill: '#f5f5f5', stroke: '#999', text: '#555' }
 }
 
 /* ──────────────────────────────────────────────
@@ -135,9 +135,9 @@ function furniturePooja(cx, cy, w, h, scale) {
     return (
         <g opacity="0.45">
             <rect x={cx - ps / 2} y={cy - ps * 0.4} width={ps} height={ps * 0.8}
-                fill="none" stroke="#EC4899" strokeWidth={scale * 0.3} rx={scale * 0.1} />
+                fill="none" stroke="#888" strokeWidth={scale * 0.3} rx={scale * 0.1} />
             <circle cx={cx} cy={cy - ps * 0.15} r={ps * 0.12}
-                fill="none" stroke="#EC4899" strokeWidth={scale * 0.2} />
+                fill="none" stroke="#888" strokeWidth={scale * 0.2} />
         </g>
     )
 }
@@ -159,9 +159,9 @@ function furnitureBalcony(cx, cy, w, h, scale) {
     return (
         <g opacity="0.4">
             <circle cx={cx - bs * 0.3} cy={cy} r={bs * 0.2}
-                fill="none" stroke="#22C55E" strokeWidth={scale * 0.25} />
+                fill="none" stroke="#999" strokeWidth={scale * 0.25} />
             <circle cx={cx + bs * 0.3} cy={cy} r={bs * 0.15}
-                fill="none" stroke="#22C55E" strokeWidth={scale * 0.25} />
+                fill="none" stroke="#999" strokeWidth={scale * 0.25} />
         </g>
     )
 }
@@ -201,11 +201,11 @@ function CompassRose({ x, y, size }) {
     const triW = size * 0.1
     return (
         <g>
-            <circle cx={x} cy={y} r={size * 0.5} fill="white" stroke="#CBD5E1" strokeWidth={size * 0.015} />
-            <polygon points={`${x},${y - arm} ${x - triW},${y} ${x + triW},${y}`} fill="#1E293B" />
-            <polygon points={`${x},${y + arm} ${x - triW},${y} ${x + triW},${y}`} fill="none" stroke="#94A3B8" strokeWidth={size * 0.01} />
-            <line x1={x - arm * 0.6} y1={y} x2={x + arm * 0.6} y2={y} stroke="#94A3B8" strokeWidth={size * 0.012} />
-            <text x={x} y={y - arm - size * 0.08} textAnchor="middle" fill="#1E293B" fontSize={size * 0.2} fontWeight="700" fontFamily="Inter, system-ui, sans-serif">N</text>
+            <circle cx={x} cy={y} r={size * 0.5} fill="white" stroke="#ccc" strokeWidth={size * 0.015} />
+            <polygon points={`${x},${y - arm} ${x - triW},${y} ${x + triW},${y}`} fill="#222" />
+            <polygon points={`${x},${y + arm} ${x - triW},${y} ${x + triW},${y}`} fill="none" stroke="#999" strokeWidth={size * 0.01} />
+            <line x1={x - arm * 0.6} y1={y} x2={x + arm * 0.6} y2={y} stroke="#999" strokeWidth={size * 0.012} />
+            <text x={x} y={y - arm - size * 0.08} textAnchor="middle" fill="#222" fontSize={size * 0.2} fontWeight="700" fontFamily="Inter, system-ui, sans-serif">N</text>
         </g>
     )
 }
@@ -238,7 +238,7 @@ export default function PlanPreview({ plan }) {
     if (!layout) return (
         <div className="preview-empty" style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            height: '100%', color: '#94A3B8', fontFamily: 'Inter, system-ui, sans-serif',
+            height: '100%', color: '#999', fontFamily: 'Inter, system-ui, sans-serif',
         }}>
             <p>No plan data</p>
         </div>
@@ -287,9 +287,9 @@ export default function PlanPreview({ plan }) {
     return (
         <div className="plan-svg" style={{
             padding: '1rem',
-            background: 'linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%)',
+            background: '#fafafa',
             borderRadius: '12px',
-            border: '1px solid #E2E8F0',
+            border: '1px solid #e5e5e5',
         }}>
             <svg viewBox={viewBox} xmlns="http://www.w3.org/2000/svg" style={{ background: 'transparent' }}>
                 <defs>
@@ -301,7 +301,7 @@ export default function PlanPreview({ plan }) {
                     </filter>
                     <pattern id="grid-pattern" width={scale * 0.05} height={scale * 0.05} patternUnits="userSpaceOnUse">
                         <path d={`M ${scale * 0.05} 0 L 0 0 0 ${scale * 0.05}`}
-                            fill="none" stroke="#E2E8F0" strokeWidth={scale * 0.0005} />
+                            fill="none" stroke="#e5e5e5" strokeWidth={scale * 0.0005} />
                     </pattern>
                 </defs>
 
@@ -311,7 +311,7 @@ export default function PlanPreview({ plan }) {
                     y={minY - layout.pad * 1.8}
                     width={w + layout.pad * 2}
                     height={h + layout.pad * 3.0}
-                    fill="#FAFBFD"
+                    fill="#fafafa"
                 />
                 {/* Subtle grid behind the plan */}
                 <rect
@@ -326,8 +326,8 @@ export default function PlanPreview({ plan }) {
                 {/* Outer boundary — thick dark walls with shadow */}
                 <path
                     d={toPathD(plan.boundary)}
-                    fill="#FFFFFF"
-                    stroke="#1E293B"
+                    fill="#fff"
+                    stroke="#222"
                     strokeWidth={wallThick}
                     strokeLinejoin="miter"
                     filter="url(#wall-shadow)"
@@ -341,7 +341,7 @@ export default function PlanPreview({ plan }) {
                             key={`room-${i}`}
                             d={toPathD(room.polygon)}
                             fill={colors.fill}
-                            stroke={colors.stroke || '#CBD5E1'}
+                            stroke={colors.stroke || '#ccc'}
                             strokeWidth={innerWall * 0.6}
                             strokeLinejoin="miter"
                         />
@@ -367,7 +367,7 @@ export default function PlanPreview({ plan }) {
                         lines.push(
                             <line key={`h-${i}-${d}`}
                                 x1={x1c} y1={y1c} x2={x2c} y2={y2c}
-                                stroke={room.room_type === 'kitchen' ? '#F97316' : '#14B8A6'}
+                                stroke={room.room_type === 'kitchen' ? '#888' : '#aaa'}
                                 strokeWidth={scale * 0.0004}
                                 opacity="0.18"
                             />
@@ -391,7 +391,7 @@ export default function PlanPreview({ plan }) {
                         return (
                             <circle key={`door-${i}`}
                                 cx={door.position[0]} cy={door.position[1]}
-                                r={scale * 0.005} fill="none" stroke="#475569" strokeWidth={scale * 0.0015}
+                                r={scale * 0.005} fill="none" stroke="#555" strokeWidth={scale * 0.0015}
                             />
                         )
                     }
@@ -406,12 +406,12 @@ export default function PlanPreview({ plan }) {
                     return (
                         <g key={`door-${i}`}>
                             <line x1={hx} y1={hy} x2={doorEndX} y2={doorEndY}
-                                stroke="#FFFFFF" strokeWidth={wallThick * 1.3} />
+                                stroke="#fff" strokeWidth={wallThick * 1.3} />
                             <line x1={hx} y1={hy} x2={arcEndX} y2={arcEndY}
-                                stroke="#475569" strokeWidth={scale * 0.0015} />
+                                stroke="#555" strokeWidth={scale * 0.0015} />
                             <path
                                 d={`M ${arcEndX},${arcEndY} A ${r},${r} 0 0 ${sy > 0 || sx < 0 ? 1 : 0} ${doorEndX},${doorEndY}`}
-                                fill="none" stroke="#475569"
+                                fill="none" stroke="#555"
                                 strokeWidth={scale * 0.0012}
                                 strokeDasharray={`${scale * 0.003} ${scale * 0.003}`}
                             />
@@ -427,7 +427,7 @@ export default function PlanPreview({ plan }) {
                                 x={win.position[0] - scale * 0.01}
                                 y={win.position[1] - scale * 0.002}
                                 width={scale * 0.02} height={scale * 0.004}
-                                fill="#fff" stroke="#475569" strokeWidth={scale * 0.001}
+                                fill="#fff" stroke="#555" strokeWidth={scale * 0.001}
                             />
                         )
                     }
@@ -446,7 +446,7 @@ export default function PlanPreview({ plan }) {
                                 <line key={m}
                                     x1={wsx + wnx * offset * m} y1={wsy + wny * offset * m}
                                     x2={wex + wnx * offset * m} y2={wey + wny * offset * m}
-                                    stroke="#1E293B" strokeWidth={scale * 0.001}
+                                    stroke="#222" strokeWidth={scale * 0.001}
                                 />
                             ))}
                         </g>
@@ -539,29 +539,29 @@ export default function PlanPreview({ plan }) {
                                 <line x1={x1} y1={y1}
                                     x2={x1 + nx * (dimOffset + scale * 0.006)}
                                     y2={y1 + ny * (dimOffset + scale * 0.006)}
-                                    stroke="#94A3B8" strokeWidth={scale * 0.0008} />
+                                    stroke="#999" strokeWidth={scale * 0.0008} />
                                 <line x1={x2} y1={y2}
                                     x2={x2 + nx * (dimOffset + scale * 0.006)}
                                     y2={y2 + ny * (dimOffset + scale * 0.006)}
-                                    stroke="#94A3B8" strokeWidth={scale * 0.0008} />
+                                    stroke="#999" strokeWidth={scale * 0.0008} />
                                 <line x1={ox1} y1={oy1} x2={ox2} y2={oy2}
-                                    stroke="#64748B" strokeWidth={scale * 0.001} />
-                                <circle cx={ox1} cy={oy1} r={scale * 0.0018} fill="#64748B" />
-                                <circle cx={ox2} cy={oy2} r={scale * 0.0018} fill="#64748B" />
+                                    stroke="#666" strokeWidth={scale * 0.001} />
+                                <circle cx={ox1} cy={oy1} r={scale * 0.0018} fill="#666" />
+                                <circle cx={ox2} cy={oy2} r={scale * 0.0018} fill="#666" />
                                 {/* Label background */}
                                 <rect
                                     x={omx - scale * 0.025}
                                     y={omy - scale * 0.012}
                                     width={scale * 0.05}
                                     height={scale * 0.015}
-                                    fill="#FAFBFD"
+                                    fill="#fafafa"
                                     rx={scale * 0.002}
                                     transform={`rotate(${angle}, ${omx}, ${omy - scale * 0.005})`}
                                 />
                                 <text
                                     x={omx} y={omy - scale * 0.003}
                                     textAnchor="middle"
-                                    fill="#475569"
+                                    fill="#555"
                                     fontSize={fontSize.dimLabel}
                                     fontWeight="600"
                                     fontFamily="Inter, system-ui, sans-serif"
@@ -593,7 +593,7 @@ export default function PlanPreview({ plan }) {
                     <text
                         x={minX}
                         y={minY - h * 0.065}
-                        fill="#0F172A"
+                        fill="#111"
                         fontSize={fontSize.title}
                         fontWeight="800"
                         fontFamily="Inter, system-ui, sans-serif"
@@ -604,7 +604,7 @@ export default function PlanPreview({ plan }) {
                     <text
                         x={minX}
                         y={minY - h * 0.025}
-                        fill="#64748B"
+                        fill="#666"
                         fontSize={fontSize.subtitle}
                         fontWeight="500"
                         fontFamily="Inter, system-ui, sans-serif"
@@ -627,7 +627,7 @@ export default function PlanPreview({ plan }) {
                         <g>
                             <text
                                 x={startX} y={legendY - scale * 0.008}
-                                fill="#64748B" fontSize={scale * 0.01} fontWeight="600"
+                                fill="#666" fontSize={scale * 0.01} fontWeight="600"
                                 fontFamily="Inter, system-ui, sans-serif"
                                 letterSpacing={scale * 0.001}
                             >
@@ -648,7 +648,7 @@ export default function PlanPreview({ plan }) {
                                         />
                                         <text
                                             x={lx + boxSize * 1.5} y={ly + boxSize * 0.8}
-                                            fill="#475569" fontSize={scale * 0.009}
+                                            fill="#555" fontSize={scale * 0.009}
                                             fontWeight="500"
                                             fontFamily="Inter, system-ui, sans-serif"
                                         >

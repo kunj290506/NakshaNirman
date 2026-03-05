@@ -429,8 +429,8 @@ export default function Workspace() {
                     {error && !loading && (
                         <div style={{
                             position: 'absolute', bottom: '1rem', left: '50%', transform: 'translateX(-50%)',
-                            padding: '0.65rem 1.25rem', background: 'var(--error-bg)', border: '1px solid #fecaca',
-                            borderRadius: 'var(--radius-full)', fontSize: '0.82rem', color: '#991b1b',
+                            padding: '0.55rem 1rem', background: '#f5f5f5', border: '1px solid #e5e5e5',
+                            borderRadius: 'var(--radius-sm)', fontSize: '0.82rem', color: '#333',
                             zIndex: 10, maxWidth: '90%', textAlign: 'center',
                         }}>
                             {error}

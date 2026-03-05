@@ -487,17 +487,19 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                 display: 'flex', alignItems: 'center', gap: '0.5rem',
                                 padding: '0.4rem 0.8rem',
                                 margin: '0.3rem 0',
-                                background: 'linear-gradient(135deg, #ede9fe, #ddd6fe)',
+                                background: '#f5f5f5',
                                 borderRadius: 'var(--radius-sm)',
                                 fontSize: '0.78rem',
                                 fontWeight: 600,
-                                color: '#5b21b6',
-                                border: '1px solid #c4b5fd40',
+                                color: '#333',
+                                border: '1px solid #e5e5e5',
                             }}>
                                 <span style={{
-                                    animation: 'spin 1s linear infinite',
-                                    display: 'inline-block',
-                                }}>⚙️</span>
+                                    width: 14, height: 14, border: '2px solid #ddd',
+                                    borderTopColor: '#333', borderRadius: '50%',
+                                    animation: 'spin 0.7s linear infinite',
+                                    display: 'inline-block', flexShrink: 0,
+                                }}></span>
                                 {msg.content}
                             </div>
                         )
@@ -525,9 +527,9 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                     {msg.stage && msg.stage !== 'chat' && (
                                         <span style={{
                                             fontSize: '0.65rem', fontWeight: 600,
-                                            color: '#7c3aed', background: '#f5f3ff',
+                                            color: '#555', background: '#f5f5f5',
                                             padding: '0.1rem 0.35rem', borderRadius: '99px',
-                                            border: '1px solid #7c3aed20',
+                                            border: '1px solid #e5e5e5',
                                         }}>
                                             Stage: {msg.stage}
                                         </span>
@@ -546,7 +548,7 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                         {msg.content.split('\n').map((line, j) => (
                                             <span key={j}>
                                                 {line.startsWith('## ') ? (
-                                                    <strong style={{ display: 'block', marginTop: '0.5rem', color: '#5b21b6' }}>
+                                                    <strong style={{ display: 'block', marginTop: '0.5rem', color: '#111' }}>
                                                         {line.replace('## ', '')}
                                                     </strong>
                                                 ) : line.startsWith('**') ? (
@@ -561,9 +563,7 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                             <div style={{
                                                 position: 'absolute', bottom: 0, left: 0, right: 0,
                                                 height: '40px',
-                                                background: msg.role === 'assistant'
-                                                    ? 'linear-gradient(transparent, var(--gray-50, #f9fafb))'
-                                                    : 'linear-gradient(transparent, var(--accent-light, #ede9fe))',
+                                                background: 'linear-gradient(transparent, #fafafa)',
                                             }} />
                                         )}
                                     </div>
@@ -571,7 +571,7 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                         onClick={() => toggleReasoning(i)}
                                         style={{
                                             background: 'none', border: 'none', cursor: 'pointer',
-                                            color: '#7c3aed', fontSize: '0.75rem', fontWeight: 600,
+                                            color: '#333', fontSize: '0.75rem', fontWeight: 600,
                                             padding: '0.3rem 0', display: 'block',
                                         }}
                                     >
@@ -582,7 +582,7 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                                 msg.content.split('\n').map((line, j) => (
                                     <span key={j}>
                                         {line.startsWith('## ') ? (
-                                            <strong style={{ display: 'block', marginTop: '0.5rem', color: '#5b21b6' }}>
+                                            <strong style={{ display: 'block', marginTop: '0.5rem', color: '#111' }}>
                                                 {line.replace('## ', '')}
                                             </strong>
                                         ) : line.startsWith('**') ? (
@@ -683,13 +683,13 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                             {msg.complianceNotes?.length > 0 && (
                                 <div style={{
                                     marginTop: '0.5rem', padding: '0.4rem 0.6rem',
-                                    background: '#ecfdf5', borderRadius: '6px',
-                                    border: '1px solid #6ee7b7',
+                                    background: '#f5f5f5', borderRadius: '6px',
+                                    border: '1px solid #e5e5e5',
                                     fontSize: '0.75rem',
                                 }}>
-                                    <strong style={{ color: '#065f46' }}>Compliance:</strong>
+                                    <strong style={{ color: '#111' }}>Compliance:</strong>
                                     {msg.complianceNotes.map((n, ni) => (
-                                        <div key={ni} style={{ marginTop: '0.2rem', color: '#047857' }}>- {n}</div>
+                                        <div key={ni} style={{ marginTop: '0.2rem', color: '#333' }}>- {n}</div>
                                     ))}
                                 </div>
                             )}
@@ -702,7 +702,7 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                         <div className="typing-dot" />
                         <div className="typing-dot" />
                         <div className="typing-dot" />
-                        <span style={{ fontSize: '0.72rem', color: '#7c3aed', marginLeft: '0.3rem', fontWeight: 600 }}>
+                        <span style={{ fontSize: '0.72rem', color: '#555', marginLeft: '0.3rem', fontWeight: 600 }}>
                             {getTypingMessage()}
                         </span>
                     </div>
@@ -712,13 +712,13 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                     <div style={{
                         display: 'flex', alignItems: 'center', gap: '0.6rem',
                         padding: '0.75rem 1rem',
-                        background: 'linear-gradient(135deg, #ede9fe, #ddd6fe)',
-                        border: '1px solid #c4b5fd',
+                        background: '#f5f5f5',
+                        border: '1px solid #e5e5e5',
                         borderRadius: 'var(--radius-md)',
                         alignSelf: 'flex-start', maxWidth: '88%',
                     }}>
                         <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2, marginBottom: 0 }}></div>
-                        <span style={{ fontSize: '0.82rem', color: '#5b21b6', fontWeight: 600 }}>
+                        <span style={{ fontSize: '0.82rem', color: '#333', fontWeight: 600 }}>
                             Generating your floor plan...
                         </span>
                     </div>
@@ -730,11 +730,11 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
             {(extractedData.rooms?.length > 0 || extractedData.total_area) && (
                 <div style={{
                     padding: '0.4rem 0.6rem',
-                    background: '#f0fdf4',
-                    border: '1px solid #bbf7d0',
+                    background: '#f5f5f5',
+                    border: '1px solid #e5e5e5',
                     borderRadius: 'var(--radius-sm)',
                     fontSize: '0.72rem',
-                    color: '#166534',
+                    color: '#333',
                     marginBottom: '0.4rem',
                     display: 'flex',
                     alignItems: 'center',
@@ -798,7 +798,6 @@ export default function AIDesignChat({ onGenerate, onBoundaryUpload, loading, pr
                     disabled={loading || !input.trim()}
                     style={{
                         opacity: (loading || !input.trim()) ? 0.5 : 1,
-                        background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
                     }}
                 >
                     <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

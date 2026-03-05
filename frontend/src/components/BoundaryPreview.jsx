@@ -90,14 +90,14 @@ export default function BoundaryPreview({ boundaryData }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                     <span style={{
                         display: 'inline-block', width: 20, height: 3,
-                        background: '#2563eb', borderRadius: 2,
+                        background: '#111', borderRadius: 2,
                     }}></span>
                     Plot Boundary ({boundaryData.area?.toFixed(1)} sq.m)
                 </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                     <span style={{
                         display: 'inline-block', width: 20, height: 3, borderRadius: 2,
-                        background: 'repeating-linear-gradient(90deg, #16a34a 0, #16a34a 4px, transparent 4px, transparent 7px)',
+                        background: 'repeating-linear-gradient(90deg, #666 0, #666 4px, transparent 4px, transparent 7px)',
                     }}></span>
                     Buildable Area ({boundaryData.usable_area?.toFixed(1)} sq.m)
                 </span>
@@ -117,25 +117,25 @@ export default function BoundaryPreview({ boundaryData }) {
                     <defs>
                         <pattern id="grid" width={vbW / 10} height={vbH / 10} patternUnits="userSpaceOnUse">
                             <path d={`M ${vbW / 10} 0 L 0 0 0 ${vbH / 10}`}
-                                fill="none" stroke="#e5e7eb" strokeWidth={strokeW * 0.3} />
+                                fill="none" stroke="#e5e5e5" strokeWidth={strokeW * 0.3} />
                         </pattern>
                     </defs>
                     <rect x={vbX} y={flipVbY} width={vbW} height={vbH} fill="url(#grid)" />
 
-                    {/* Original boundary — solid blue fill + stroke */}
+                    {/* Original boundary — solid dark fill + stroke */}
                     <path
                         d={boundaryPath}
-                        fill="rgba(37, 99, 235, 0.08)"
-                        stroke="#2563eb"
+                        fill="rgba(0, 0, 0, 0.04)"
+                        stroke="#111"
                         strokeWidth={strokeW * 1.5}
                         strokeLinejoin="round"
                     />
 
-                    {/* Usable (setback) polygon — dashed green fill + stroke */}
+                    {/* Usable (setback) polygon — dashed gray fill + stroke */}
                     <path
                         d={usablePath}
-                        fill="rgba(22, 163, 74, 0.12)"
-                        stroke="#16a34a"
+                        fill="rgba(0, 0, 0, 0.02)"
+                        stroke="#666"
                         strokeWidth={strokeW * 1.5}
                         strokeDasharray={`${dashLen} ${dashLen * 0.6}`}
                         strokeLinejoin="round"
@@ -144,7 +144,7 @@ export default function BoundaryPreview({ boundaryData }) {
                     {/* Setback hatching between the two polygons */}
                     <defs>
                         <pattern id="setback-hatch" width={strokeW * 6} height={strokeW * 6} patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-                            <line x1="0" y1="0" x2="0" y2={strokeW * 6} stroke="rgba(239, 68, 68, 0.15)" strokeWidth={strokeW} />
+                            <line x1="0" y1="0" x2="0" y2={strokeW * 6} stroke="rgba(0, 0, 0, 0.08)" strokeWidth={strokeW} />
                         </pattern>
                         <clipPath id="setback-clip">
                             <path d={boundaryPath} />
@@ -160,13 +160,13 @@ export default function BoundaryPreview({ boundaryData }) {
                     {/* Vertex dots on boundary */}
                     {boundaryData.boundary.slice(0, -1).map(([x, y], i) => (
                         <circle key={`bv-${i}`} cx={x} cy={-y} r={strokeW * 2.5}
-                            fill="#2563eb" stroke="white" strokeWidth={strokeW * 0.7} />
+                            fill="#111" stroke="white" strokeWidth={strokeW * 0.7} />
                     ))}
 
                     {/* Vertex dots on usable polygon */}
                     {boundaryData.usable_polygon.slice(0, -1).map(([x, y], i) => (
                         <circle key={`uv-${i}`} cx={x} cy={-y} r={strokeW * 2}
-                            fill="#16a34a" stroke="white" strokeWidth={strokeW * 0.5} />
+                            fill="#666" stroke="white" strokeWidth={strokeW * 0.5} />
                     ))}
 
                     {/* Dimension labels on boundary edges */}
@@ -193,7 +193,7 @@ export default function BoundaryPreview({ boundaryData }) {
                                 y={my + sign * (ny / nl) * offset}
                                 textAnchor="middle"
                                 dominantBaseline="middle"
-                                fill="#374151"
+                                fill="#333"
                                 fontSize={strokeW * 5}
                                 fontWeight="600"
                                 fontFamily="system-ui, sans-serif"

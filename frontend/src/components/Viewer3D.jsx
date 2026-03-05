@@ -21,7 +21,7 @@ class CanvasErrorBoundary extends Component {
                     flexDirection: 'column', gap: '0.75rem', padding: '2rem',
                     width: '100%', height: '100%'
                 }}>
-                    <svg width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.2" style={{ color: '#ef4444' }}>
+                    <svg width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.2" style={{ color: '#555' }}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                     </svg>
                     <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>3D Render Error</span>
@@ -75,14 +75,14 @@ function SceneLights() {
     return (
         <>
             {/* Ambient fill light — soft overall illumination */}
-            <ambientLight intensity={0.4} color="#f5f0eb" />
+            <ambientLight intensity={0.4} color="#f0f0f0" />
 
             {/* Main directional sun light — warm tone, casts shadows */}
             <directionalLight
                 ref={dirLightRef}
                 position={[40, 60, 30]}
                 intensity={1.2}
-                color="#fff8f0"
+                color="#ffffff"
                 castShadow
                 shadow-mapSize-width={2048}
                 shadow-mapSize-height={2048}
@@ -99,13 +99,13 @@ function SceneLights() {
             <directionalLight
                 position={[-30, 40, -20]}
                 intensity={0.4}
-                color="#e8eeff"
+                color="#e8e8e8"
             />
 
             {/* Warm accent light from below — simulates ground bounce */}
             <hemisphereLight
-                skyColor="#b1e1ff"
-                groundColor="#b97a20"
+                skyColor="#ddd"
+                groundColor="#888"
                 intensity={0.3}
             />
 
@@ -113,7 +113,7 @@ function SceneLights() {
             <pointLight
                 position={[0, 8, 0]}
                 intensity={0.3}
-                color="#ffcc88"
+                color="#eee"
                 distance={80}
                 decay={2}
             />
@@ -238,7 +238,7 @@ export default function Viewer3D({ projectId }) {
                     toneMappingExposure: 1.1,
                     outputColorSpace: THREE.SRGBColorSpace,
                 }}
-                style={{ background: 'linear-gradient(180deg, #87ceeb 0%, #e0e8f0 60%, #d4dbe2 100%)' }}
+                style={{ background: 'linear-gradient(180deg, #e8e8e8 0%, #f0f0f0 60%, #e5e5e5 100%)' }}
             >
                 <CameraSetup />
                 <SceneLights />
@@ -278,7 +278,7 @@ export default function Viewer3D({ projectId }) {
                         scale={150}
                         blur={2.5}
                         far={50}
-                        color="#3a3520"
+                        color="#333"
                     />
                 </Suspense>
 

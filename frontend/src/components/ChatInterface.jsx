@@ -144,11 +144,11 @@ export default function ChatInterface({ onGenerate, onBoundaryUpload, loading })
             {!wsReady && (
                 <div style={{
                     padding: '0.5rem 0.8rem',
-                    background: 'var(--warning-bg)',
-                    border: '1px solid #fde68a',
+                    background: '#f5f5f5',
+                    border: '1px solid #e5e5e5',
                     borderRadius: 'var(--radius-sm)',
                     fontSize: '0.78rem',
-                    color: '#92400e',
+                    color: '#555',
                     marginBottom: '0.5rem',
                     display: 'flex',
                     alignItems: 'center',

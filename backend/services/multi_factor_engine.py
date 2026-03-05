@@ -56,9 +56,9 @@ STRATEGIES = ["side_corridor", "central_corridor", "cluster"]
 # ── Comfort aspect-ratio limits (Section 5: 1:1 to 1:2 for comfort rooms) ──
 COMFORT_AR: Dict[str, float] = {
     "living": 2.0, "master_bedroom": 2.0, "bedroom": 2.0,
-    "kitchen": 2.0, "dining": 2.0, "bathroom": 2.0,
-    "toilet": 2.0, "study": 2.0, "pooja": 2.0,
-    "store": 2.0, "utility": 2.0, "foyer": 2.0,
+    "kitchen": 2.0, "dining": 2.0, "bathroom": 2.5,
+    "toilet": 2.0, "study": 2.0, "pooja": 3.0,
+    "store": 2.0, "utility": 2.0, "foyer": 3.0,
     "entrance": 2.0, "porch": 2.0, "wash_area": 2.5,
     "balcony": 3.0, "staircase": 2.5, "garage": 2.5,
     "parking": 2.5, "passage": 10.0, "corridor": 10.0,
@@ -67,7 +67,7 @@ COMFORT_AR: Dict[str, float] = {
 
 # ── Minimum room areas (sq ft) ──
 MIN_ROOM_AREA: Dict[str, float] = {
-    "master_bedroom": 120, "bedroom": 100, "living": 150,
+    "master_bedroom": 120, "bedroom": 100, "living": 130,
     "kitchen": 80, "dining": 80, "bathroom": 35,
     "toilet": 15, "study": 60, "pooja": 16,
     "store": 25, "utility": 20, "hallway": 30,
@@ -366,15 +366,32 @@ def _allocate_areas(
                 ideal = max(ideal, 0.17)
             elif rtype == "living":
                 ideal = min(ideal, 0.14)
+        elif usable_area < 800:
+            if rtype in ("master_bedroom", "bedroom"):
+                ideal = max(ideal, 0.15)
+            elif rtype == "living":
+                ideal = min(ideal, 0.16)
+            elif rtype == "dining":
+                ideal = min(ideal, 0.10)
 
         target = usable_area * ideal
-        target = max(target, MIN_ROOM_AREA.get(rtype, 25))
+        # On small plots, relax minimum areas — Indian NBC allows smaller
+        # rooms when total plot area is constrained.
+        min_a = MIN_ROOM_AREA.get(rtype, 25)
+        if usable_area < 800:
+            if rtype == "master_bedroom":
+                min_a = min(min_a, 100)
+            elif rtype == "bedroom":
+                min_a = min(min_a, 85)
+            elif rtype == "living":
+                min_a = min(min_a, 120)
+        target = max(target, min_a)
         target = min(target, MAX_AREAS.get(rtype, usable_area * 0.4))
 
         room_specs.append({
             "room_type": rtype,
             "target_area": round(target, 1),
-            "min_area": MIN_ROOM_AREA.get(rtype, 25),
+            "min_area": min_a,
             "zone": SPATIAL_ZONE.get(rtype, "service"),
             "layer": LAYER_MAP.get(rtype, 2),
             "priority": PRIORITY.get(rtype, 10),
@@ -388,17 +405,22 @@ def _allocate_areas(
             r["target_area"] = max(r["min_area"] * 0.6,
                                    round(r["target_area"] * scale, 1))
 
-    # Auto-add extras for large plots to prevent oversized rooms.
-    # Indian homes on large plots typically include pooja, store, study, balcony.
+    # Auto-add extras for large plots to fill space and prevent oversized rooms.
+    # Indian homes on large plots typically include pooja, store, study, balcony,
+    # utility, wash_area, foyer — these are standard in premium Indian homes.
     total_alloc = sum(r["target_area"] for r in room_specs)
     surplus_ratio = usable_area / max(100, total_alloc)
-    if surplus_ratio > 1.6 and usable_area > 1500:
+    if surplus_ratio > 1.3 and usable_area > 800:
         existing_types = {r["room_type"] for r in room_specs}
         auto_extras = [
-            ("pooja",   bedrooms >= 2 and "pooja" not in existing_types),
-            ("store",   bedrooms >= 2 and "store" not in existing_types),
+            ("dining",  bedrooms >= 2 and "dining" not in existing_types),
+            ("pooja",   bedrooms >= 2 and usable_area > 900 and "pooja" not in existing_types),
+            ("store",   bedrooms >= 2 and usable_area > 1000 and "store" not in existing_types),
+            ("balcony", usable_area > 1000 and "balcony" not in existing_types),
+            ("wash_area", usable_area > 1200 and "wash_area" not in existing_types),
+            ("utility", usable_area > 1500 and "utility" not in existing_types),
             ("study",   bedrooms >= 3 and usable_area > 1500 and "study" not in existing_types),
-            ("balcony", usable_area > 1200 and "balcony" not in existing_types),
+            ("foyer",   usable_area > 2000 and "foyer" not in existing_types),
         ]
         for rtype, should_add in auto_extras:
             if should_add:
@@ -414,6 +436,19 @@ def _allocate_areas(
                     "priority": PRIORITY.get(rtype, 30),
                 })
 
+    # Scale up room targets when surplus remains — rooms should fill available
+    # space rather than leaving dead zones. Target 85% coverage.
+    total_alloc = sum(r["target_area"] for r in room_specs)
+    fill_ratio = total_alloc / max(1, usable_area)
+    if fill_ratio < 0.80:
+        boost = min((usable_area * 0.82) / max(1, total_alloc), 1.35)
+        for r in room_specs:
+            rtype = r["room_type"]
+            cap = MAX_AREAS.get(rtype, usable_area * 0.4)
+            r["target_area"] = round(
+                min(r["target_area"] * boost, cap), 1
+            )
+
     # Sort by priority (higher placed first -> better position)
     room_specs.sort(key=lambda r: r["priority"], reverse=True)
     return room_specs
@@ -427,14 +462,14 @@ def _select_strategy(plot_w: float, plot_l: float) -> str:
     """
     Choose layout strategy dynamically based on plot shape.
 
-    Wide rectangular  (W/L > 1.3) -> side_corridor
-    Deep narrow       (W/L < 0.77) -> central_corridor
-    Near square       (else)        -> cluster
+    Wide rectangular  (W/L > 1.3)  -> side_corridor
+    Deep/narrow       (W/L < 0.85) -> central_corridor
+    Near square       (else)       -> cluster
     """
     ratio = plot_w / plot_l if plot_l > 0 else 1.0
     if ratio > 1.3:
         return "side_corridor"
-    elif ratio < 0.77:
+    elif ratio < 0.85:
         return "central_corridor"
     else:
         return "cluster"
@@ -518,6 +553,26 @@ def _balance_layers(layers: Dict[int, List[Dict]], uw: float, ul: float) -> None
                     "min_area": 25, "zone": "public", "layer": 1,
                     "priority": 60,
                 })
+
+    # Wide-plot L1 rebalance: when L1 has rooms but significant unused width,
+    # pull just dining to L1 (not kitchen — kitchen stays adjacent to wash/utility).
+    # Only for very wide plots where L1 waste is extreme.
+    if len(layers[1]) > 1 and uw > 45:
+        n1 = len(layers[1])
+        # Estimate L1 max used width: each room's area-limited width
+        est_used = 0
+        for r in layers[1]:
+            rt = r["room_type"]
+            max_a = MAX_AREAS.get(rt, 300)
+            ar = COMFORT_AR.get(rt, 2.0)
+            est_used += min(uw / n1, max_a / 8.0, 10.0 * ar)
+        unused = uw - est_used
+        if unused > 10:
+            dining = [r for r in layers[2] if r["room_type"] == "dining"]
+            if dining:
+                dining[0]["layer"] = 1
+                layers[1].append(dining[0])
+                layers[2].remove(dining[0])
 
     # Skip Layers 2/3 balancing for tight plots
     if is_tight:
@@ -672,27 +727,63 @@ def _place_central_corridor(
     d2 = available * (a2 / total_a)
     d3 = available * (a3 / total_a)
 
+    # Depth-from-area: ideal depth = total_layer_area / usable_width
+    # This ensures rooms can fill the full band width at proper AR.
+    da1 = a1 / uw if layers[1] else 0
+    da2 = a2 / uw if layers[2] else 0
+    da3 = a3 / uw if layers[3] else 0
+
+    # Compute effective minimum depth per layer: reduced for compact-only
+    # layers and for layers where area-derived depth is sufficient.
+    def _eff_min(layer_rooms, layer_num):
+        if not layer_rooms:
+            return 0
+        if all(r["room_type"] in COMPACT_ROOMS for r in layer_rooms):
+            return 5.0
+        # For layers with few rooms on plots where we can estimate depth
+        # from area accurately (wide enough that rooms span full width):
+        non_compact = [r for r in layer_rooms if r["room_type"] not in COMPACT_ROOMS]
+        if uw > 14 and len(non_compact) <= 2:
+            total = sum(r["target_area"] for r in layer_rooms)
+            need = total / uw
+            return max(5.0, snap_up(need))
+        return MIN_DEPTH
+
+    eff_min1 = _eff_min(layers[1], 1)
+    eff_min2 = _eff_min(layers[2], 2)
+    eff_min3 = _eff_min(layers[3], 3)
+
+    # Use area-derived depth when proportional would over-allocate
+    if layers[1] and d1 > da1 * 1.3:
+        d1 = max(da1, eff_min1)
+    if layers[2] and d2 > da2 * 1.3:
+        d2 = max(da2, eff_min2)
+    if layers[3] and d3 > da3 * 1.3:
+        d3 = max(da3, eff_min3)
+
     # AR-safe minimum depths: each room in a layer gets ~uw/n width,
-    # so min depth = (uw/n) / max_ar to satisfy aspect ratio
+    # so min depth = (uw/n) / max_ar to satisfy aspect ratio.
+    # Use relaxed AR for service rooms (kitchen, bathroom etc.) and
+    # strict AR for habitable rooms (living, bedrooms).
+    _HABITABLE = {"living", "master_bedroom", "bedroom", "dining", "foyer"}
+
     def _ar_min_depth(layer_rooms):
         if not layer_rooms:
             return 0
         n = len(layer_rooms)
         per_w = uw / n
-        return snap_up(per_w / 2.0)
+        has_habitable = any(r["room_type"] in _HABITABLE for r in layer_rooms)
+        max_ar = 2.0 if has_habitable else 3.0
+        return snap_up(per_w / max_ar)
 
     ar_min1 = _ar_min_depth(layers[1])
     ar_min2 = _ar_min_depth(layers[2])
     ar_min3 = _ar_min_depth(layers[3])
 
     # Apply AR minimums and structural minimums
-    # Use reduced minimum for compact-only layers (pooja, store, etc.)
-    min_d1 = 5.0 if layers[1] and all(r["room_type"] in COMPACT_ROOMS for r in layers[1]) else MIN_DEPTH
-    min_d2 = 5.0 if layers[2] and all(r["room_type"] in COMPACT_ROOMS for r in layers[2]) else MIN_DEPTH
-    min_d3 = 5.0 if layers[3] and all(r["room_type"] in COMPACT_ROOMS for r in layers[3]) else MIN_DEPTH
-    d1 = max(min_d1, ar_min1, snap(d1)) if layers[1] else 0
-    d2 = max(min_d2, ar_min2, snap(d2)) if layers[2] else 0
-    d3 = max(min_d3, ar_min3, snap(d3)) if layers[3] else 0
+    d1 = max(eff_min1, ar_min1, snap(d1)) if layers[1] else 0
+    d2 = max(eff_min2, ar_min2, snap(d2)) if layers[2] else 0
+    d3 = max(eff_min3, ar_min3, snap(d3)) if layers[3] else 0
 
     # Apply MAX_AREA + AR depth constraints:
     # Prevents bands deeper than rooms can fill at proper AR + area caps.
@@ -708,12 +799,36 @@ def _place_central_corridor(
     if max_d3 > 0 and d3 > max_d3:
         d3 = max_d3
 
+    # Redistribute freed depth: when MAX_AREA caps shrink layers,
+    # give the surplus to uncapped layers (proportionally by area need)
+    total_used = d1 + d2 + d3
+    if total_used < available - 1.0:
+        surplus = available - total_used
+        # Layers that were NOT capped can absorb surplus
+        can_grow = []
+        if layers[1] and (max_d1 <= 0 or d1 < max_d1 - 0.5):
+            can_grow.append((1, a1))
+        if layers[2] and (max_d2 <= 0 or d2 < max_d2 - 0.5):
+            can_grow.append((2, a2))
+        if layers[3]:
+            # Layer 3 (bedrooms) always benefits from more depth
+            # (multi-row handles deep bands well)
+            can_grow.append((3, a3))
+        if can_grow:
+            grow_total = sum(a for _, a in can_grow)
+            for lnum, la in can_grow:
+                extra = surplus * (la / grow_total) if grow_total > 0 else surplus / len(can_grow)
+                if lnum == 1:
+                    d1 = snap(d1 + extra)
+                elif lnum == 2:
+                    d2 = snap(d2 + extra)
+                else:
+                    d3 = snap(d3 + extra)
+
     # Fit within available depth -- scale proportionally if needed
     total_used = d1 + d2 + d3
     if total_used > available:
         # Scale while respecting AR minimums
-        excess = total_used - available
-        # Reduce layer with most headroom above its AR minimum
         for _ in range(10):
             total_used = d1 + d2 + d3
             if total_used <= available + 0.3:
@@ -723,8 +838,21 @@ def _place_central_corridor(
                 (d2 - ar_min2, 2) if layers[2] else (0, 2),
                 (d3 - ar_min3, 3) if layers[3] else (0, 3),
             ]
-            total_hr = sum(h for h, _ in headrooms) or 1
+            total_hr = sum(h for h, _ in headrooms)
             excess = total_used - available
+            if total_hr < 0.5:
+                # All layers at ar_min but still over budget:
+                # Fall back to proportional allocation by area need
+                t = (a1 + a2 + a3) or 1
+                # Minimum depth floors: kitchen/dining need ≥5.5 for
+                # AR-capped width to yield sufficient area
+                _has_kitchen_l2 = any(r["room_type"] in ("kitchen", "dining")
+                                     for r in layers[2]) if layers[2] else False
+                _min_d2 = 5.5 if _has_kitchen_l2 else 5.0
+                d1 = snap(max(5.0, available * (a1 / t))) if layers[1] else 0
+                d2 = snap(max(_min_d2, available * (a2 / t))) if layers[2] else 0
+                d3 = snap(max(5.0, available - d1 - d2)) if layers[3] else 0
+                break
             for hr, lnum in headrooms:
                 reduction = excess * (hr / total_hr)
                 if lnum == 1:
@@ -742,8 +870,13 @@ def _place_central_corridor(
 
     # Recalculate d3 to fill remaining space exactly
     d3_actual = snap(uy + ul - y3)
-    if d3_actual >= min_d3:
+    if d3_actual >= eff_min3:
         d3 = d3_actual
+    # Also extend d2 upward if Layer 2 has slack (prevents thin dead strip)
+    if not layers[2] and d2 > 0:
+        d3 = snap(d3 + d2)
+        y3 = y3 - d2
+        d2 = 0
 
     # Place rooms in horizontal bands (with sub-banding for compact rooms)
     if layers[1]:
@@ -867,6 +1000,14 @@ def _place_cluster(
     rear_h = snap(available_h - front_h)
     rear_h = max(MIN_DEPTH, rear_h)
 
+    # Depth-from-area: ideal depth = total_area / width
+    da_front = front_area / uw if front_rooms else MIN_DEPTH
+    da_rear = rear_area / uw if rear_rooms else MIN_DEPTH
+    if front_h > da_front * 1.3 and da_front >= MIN_DEPTH:
+        front_h = snap(max(da_front, MIN_DEPTH))
+    if rear_h > da_rear * 1.3 and da_rear >= MIN_DEPTH:
+        rear_h = snap(max(da_rear, MIN_DEPTH))
+
     # Apply MAX_AREA + AR depth constraints for front and rear zones
     # exclude_compact: compact rooms handled by sub-banding within zones
     max_front = snap(_max_band_depth(front_rooms, exclude_compact=True))
@@ -875,6 +1016,12 @@ def _place_cluster(
         front_h = max_front
     if rear_h > max_rear > 0:
         rear_h = max_rear
+
+    # Redistribute freed depth to rear zone (bedrooms benefit from multi-row)
+    used = front_h + rear_h
+    if used < available_h - 1.0:
+        surplus = available_h - used
+        rear_h = snap(rear_h + surplus)
 
     # Y positions
     front_y = uy
@@ -889,6 +1036,8 @@ def _place_cluster(
     # Front zone: use sub-banding when compact rooms present
     has_compact_front = any(r["room_type"] in COMPACT_ROOMS
                             for r in layers[1] + layers[2])
+    has_compact_l1 = any(r["room_type"] in COMPACT_ROOMS for r in layers[1]) if layers[1] else False
+    has_compact_l2 = any(r["room_type"] in COMPACT_ROOMS for r in layers[2]) if layers[2] else False
 
     if layers[1] and layers[2]:
         l1_area = sum(r["target_area"] for r in layers[1]) or 1
@@ -905,8 +1054,6 @@ def _place_cluster(
             else:
                 placed.extend(_place_band_h(all_front, ux, front_y, uw, front_h))
         else:
-            has_compact_l1 = any(r["room_type"] in COMPACT_ROOMS for r in layers[1])
-            has_compact_l2 = any(r["room_type"] in COMPACT_ROOMS for r in layers[2])
             if has_compact_l1:
                 placed.extend(_place_zone_subband(layers[1], ux, front_y, left_w, front_h, compact_at_rear=True))
             else:
@@ -1082,6 +1229,27 @@ def _place_bedroom_zone(
     if bed_h > max_bed_h:
         bed_h = snap_down(max_bed_h)
 
+    # Wide-plot check: if sub-banded bedrooms can't fill > 80% of row width
+    # (AR limits bedroom width to bed_h * AR), give bedrooms more depth by
+    # compressing the bathroom sub-band to its minimum (4ft).
+    n_beds = len(beds)
+    est_bed_w = (band_w - WALL_INT * max(0, n_beds - 1)) / n_beds if n_beds else band_w
+    bed_ar = COMFORT_AR.get("bedroom", 2.0)
+    max_bed_w_subbanded = bed_h * bed_ar
+    total_bed_w = n_beds * max_bed_w_subbanded + WALL_INT * max(0, n_beds - 1)
+    if total_bed_w < band_w * 0.80:
+        # Compress bath sub-band to give bedrooms more depth
+        bath_h = snap(max(4.0, min(5.0, band_h * 0.20)))
+        bed_h = snap(band_h - bath_h - WALL_INT)
+        if bed_h > max_bed_h:
+            bed_h = snap_down(max_bed_h)
+
+    # Check if sub-banding would make bedrooms undersized.
+    for bed in beds:
+        min_a = MIN_ROOM_AREA.get(bed["room_type"], 80)
+        if est_bed_w * bed_h < min_a * 0.95:
+            return _place_band_h(rooms, x0, y0, band_w, band_h)
+
     if bed_h < 9.0:
         # Squeeze bathroom to give bedrooms enough depth (9ft min for habitable rooms)
         bed_h = snap(max(9.0, band_h * 0.65))
@@ -1096,8 +1264,15 @@ def _place_bedroom_zone(
     bath_y = y0
     bed_y = y0 + bath_h + WALL_INT
 
+    # For wide plots where bedrooms can't fill row, allow relaxed AR
+    _bed_ar_override = None
+    _max_bed_w = bed_h * bed_ar
+    _total_bed_fill = n_beds * _max_bed_w + WALL_INT * max(0, n_beds - 1)
+    if _total_bed_fill < band_w * 0.85:
+        _bed_ar_override = {"master_bedroom": 2.5, "bedroom": 2.5}
+
     # Place bedrooms in main sub-band
-    bed_placed = _fill_row(beds, x0, bed_y, band_w, bed_h)
+    bed_placed = _fill_row(beds, x0, bed_y, band_w, bed_h, ar_override=_bed_ar_override)
     placed.extend(bed_placed)
 
     # Place bathrooms aligned with their parent bedrooms
@@ -1187,11 +1362,19 @@ def _place_bedroom_zone_v(
 
 def _max_rooms_for_row(rooms: List[Dict], band_w: float, band_h: float) -> int:
     """How many rooms fit in a single row while maintaining AR constraints."""
+    _MIN_WIDTH_ENFORCE = {
+        "living": 10.0, "master_bedroom": 9.0, "bedroom": 9.0,
+        "kitchen": 7.0, "dining": 8.0,
+    }
     used = 0.0
     count = 0
     for r in rooms:
         ar = COMFORT_AR.get(r["room_type"], 2.0)
         min_w = max(4.0, band_h / ar)
+        # Account for min-width enforcement in _fill_row
+        enforce = _MIN_WIDTH_ENFORCE.get(r["room_type"])
+        if enforce:
+            min_w = max(min_w, enforce)
         needed = min_w + (WALL_INT if count > 0 else 0)
         if used + needed > band_w:
             break
@@ -1265,16 +1448,33 @@ def _place_band_v(
     rooms_per_row = max(1, int(col_w / 8))  # ~8ft minimum per room in row
     rows = _split_rows(rooms, rooms_per_row)
     n_rows = len(rows)
-    row_h = snap((col_h - WALL_INT * max(0, n_rows - 1)) / n_rows)
-    row_h = max(5.0, row_h)
+    wall_space = WALL_INT * max(0, n_rows - 1)
+    avail_h = col_h - wall_space
+
+    # Proportional row heights based on total target area per row
+    # Floor at 6ft to ensure single rooms (kitchen etc.) have enough depth
+    # for AR-capped width to yield meaningful area
+    _MIN_ROW_H = 6.0
+    row_areas = [sum(r["target_area"] for r in row) for row in rows]
+    total_row_area = sum(row_areas) or 1.0
+    row_heights = []
+    for ra in row_areas:
+        rh = snap(max(_MIN_ROW_H, avail_h * (ra / total_row_area)))
+        row_heights.append(rh)
+
+    # Normalize to fit available height
+    while sum(row_heights) > avail_h + 0.3:
+        excess = sum(row_heights) - avail_h
+        tallest_idx = max(range(n_rows), key=lambda i: row_heights[i])
+        row_heights[tallest_idx] = snap(max(5.0, row_heights[tallest_idx] - excess))
 
     placed: List[Dict] = []
     cy = y0
     for ri, row in enumerate(rows):
-        rh = row_h
         if ri == n_rows - 1:
-            rh = snap(y0 + col_h - cy)
-            rh = max(5.0, rh)
+            rh = snap(max(5.0, y0 + col_h - cy))
+        else:
+            rh = row_heights[ri]
         placed.extend(_fill_row(row, x0, cy, col_w, rh))
         cy += rh + WALL_INT
     return placed
@@ -1303,14 +1503,21 @@ def _fill_row(
     rooms: List[Dict],
     x0: float, y0: float,
     net_w: float, row_h: float,
+    ar_override: Optional[Dict[str, float]] = None,
 ) -> List[Dict]:
     """
     Place N rooms side-by-side in a horizontal row.
     Width proportional to target_area, clamped to AR limits, snapped to grid.
+    ar_override: optional dict of room_type -> AR overrides for this call.
     """
     n = len(rooms)
     if n == 0:
         return []
+
+    def _ar(rtype: str) -> float:
+        if ar_override and rtype in ar_override:
+            return ar_override[rtype]
+        return COMFORT_AR.get(rtype, 2.0)
 
     total_area = sum(r["target_area"] for r in rooms) or 1.0
     wall_space = WALL_INT * max(0, n - 1)
@@ -1323,7 +1530,7 @@ def _fill_row(
     min_ws: List[float] = []
     max_ws: List[float] = []
     for i, r in enumerate(rooms):
-        ar = COMFORT_AR.get(r["room_type"], 2.0)
+        ar = _ar(r["room_type"])
         min_w = max(4.0, row_h / ar)
         max_w = row_h * ar
         min_ws.append(min_w)
@@ -1334,24 +1541,32 @@ def _fill_row(
     # Step 2.5 -- Area capping: prevent rooms from exceeding MAX_AREAS
     # When a room's projected area (width × row_h) exceeds its hard max,
     # reduce its width and redistribute freed space to neighbors.
-    # SKIP if area cap would violate AR minimum (constraints overdetermined).
+    # When constraints are overdetermined (area cap < min_width), freeze
+    # max_ws at min_ws so normalization doesn't grow the room further.
     for i, r in enumerate(rooms):
         max_a = MAX_AREAS.get(r["room_type"])
         if max_a and row_h > 0:
             max_w_for_area = max_a / row_h
-            if max_w_for_area >= min_ws[i] and widths[i] > max_w_for_area * 1.1:
-                freed = widths[i] - max_w_for_area
-                widths[i] = max_w_for_area
+            if max_w_for_area >= min_ws[i]:
+                # Always constrain max_ws so normalization can't overshoot
                 max_ws[i] = min(max_ws[i], max_w_for_area)
-                # Redistribute freed width to neighbors with headroom
-                recipients = [
-                    j for j in range(n) if j != i
-                    and widths[j] < max_ws[j]
-                ]
-                if recipients:
-                    per = freed / len(recipients)
-                    for j in recipients:
-                        widths[j] = min(widths[j] + per, max_ws[j])
+                if widths[i] > max_w_for_area * 1.1:
+                    freed = widths[i] - max_w_for_area
+                    widths[i] = max_w_for_area
+                    # Redistribute freed width to neighbors with headroom
+                    recipients = [
+                        j for j in range(n) if j != i
+                        and widths[j] < max_ws[j]
+                    ]
+                    if recipients:
+                        per = freed / len(recipients)
+                        for j in recipients:
+                            widths[j] = min(widths[j] + per, max_ws[j])
+            else:
+                # Overdetermined: area cap < min_width. Can't shrink below
+                # min_ws, but freeze max_ws to prevent normalization growth.
+                max_ws[i] = min_ws[i]
+                widths[i] = min_ws[i]
 
     # Step 2.6 -- Min dimension enforcement for habitable rooms
     # Indian residential standards: living >= 10ft, bedroom >= 9ft, kitchen >= 7ft
@@ -1367,6 +1582,38 @@ def _fill_row(
             min_ws[i] = max(min_ws[i], widths[i])
     # Step 3 -- normalize to fit available width
     _normalize_widths(widths, avail, min_ws, max_ws)
+
+    # Step 3.5 -- Fill remaining width: if normalization couldn't fill avail
+    # (all rooms at max_ws), relax area caps on habitable rooms to absorb.
+    # Do NOT grow compact rooms (bathrooms etc.) — they should stay small.
+    total_w = sum(widths)
+    gap = avail - total_w
+    if gap > 2.0:
+        _GROWABLE = {"living", "master_bedroom", "bedroom", "dining", "kitchen"}
+        # Bedrooms/living may grow 1.2× past MAX_AREAS to fill width;
+        # kitchen/dining stay at 1.0× to avoid gross oversizing.
+        _GROW_FACTOR = {"living": 1.2, "master_bedroom": 1.2, "bedroom": 1.2,
+                        "dining": 1.1, "kitchen": 1.1}
+        grow_idxs = [i for i, r in enumerate(rooms) if r["room_type"] in _GROWABLE]
+        if grow_idxs:
+            ar_maxs = [row_h * _ar(rooms[i]["room_type"]) for i in grow_idxs]
+            # Cap by MAX_AREAS with per-type growth factor
+            for j, i in enumerate(grow_idxs):
+                rt = rooms[i]["room_type"]
+                max_a = MAX_AREAS.get(rt, 300)
+                gf = _GROW_FACTOR.get(rt, 1.0)
+                area_cap_w = (max_a * gf) / max(row_h, 1.0)
+                ar_maxs[j] = min(ar_maxs[j], area_cap_w)
+            for _ in range(3):
+                total_w = sum(widths)
+                gap = avail - total_w
+                if gap < 1.0:
+                    break
+                headroom = [max(0, ar_maxs[j] - widths[i]) for j, i in enumerate(grow_idxs)]
+                total_hr = sum(headroom) or 1.0
+                for j, i in enumerate(grow_idxs):
+                    extra = gap * (headroom[j] / total_hr)
+                    widths[i] = min(widths[i] + extra, ar_maxs[j])
 
     # Step 4 -- snap & place
     placed: List[Dict] = []
@@ -1392,7 +1639,7 @@ def _fill_row(
         rh = snap(row_h)
 
         # Post-snap AR safety
-        ar = COMFORT_AR.get(room["room_type"], 2.0)
+        ar = _ar(room["room_type"])
         if min(rw, rh) > 0 and max(rw, rh) / min(rw, rh) > ar + 0.05:
             if rh > rw:
                 desired_rw = snap(rh / ar)
@@ -1730,7 +1977,7 @@ def _external_walls(room: Dict, plot_w: float, plot_l: float) -> List[str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _auto_correct(placed: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
-    """Clamp rooms to plot boundary and rebuild polygons."""
+    """Clamp rooms to plot boundary, enforce min size, and remove overlapping."""
     for room in placed:
         x, y = room["position"]["x"], room["position"]["y"]
         w, h = room["width"], room["length"]
@@ -1767,6 +2014,29 @@ def _auto_correct(placed: List[Dict], plot_w: float, plot_l: float) -> List[Dict
             [round(x, 2), round(y, 2)],
         ]
         room["centroid"] = [round(x + w / 2, 2), round(y + h / 2, 2)]
+
+    # Remove rooms that overlap significantly with others (inflation artifacts)
+    def _overlap_area(r1, r2):
+        p1, p2 = r1["position"], r2["position"]
+        ox = max(0, min(p1["x"] + r1["width"], p2["x"] + r2["width"]) - max(p1["x"], p2["x"]))
+        oy = max(0, min(p1["y"] + r1["length"], p2["y"] + r2["length"]) - max(p1["y"], p2["y"]))
+        return ox * oy
+
+    to_remove = set()
+    for i, r1 in enumerate(placed):
+        if i in to_remove:
+            continue
+        for j, r2 in enumerate(placed):
+            if j <= i or j in to_remove:
+                continue
+            ov = _overlap_area(r1, r2)
+            if ov > 2.0:  # More than 2 sqft overlap
+                # Remove the smaller room
+                a1, a2 = r1["area"], r2["area"]
+                to_remove.add(j if a1 >= a2 else i)
+
+    if to_remove:
+        placed = [r for i, r in enumerate(placed) if i not in to_remove]
 
     return placed
 

@@ -261,7 +261,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
 
                             {/* Show backend unreachable warning inside upload panel */}
                             {!backendHealthy && (
-                                <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#fee2e2', border: '1px solid #fecaca', color: '#7f1d1d', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#f5f5f5', border: '1px solid #e5e5e5', color: '#333', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <div>Backend unreachable — unable to upload. Start the backend and retry.</div>
                                     <div>
                                         <button className="btn btn-secondary btn-sm" onClick={async (e) => { e.stopPropagation(); onCheckBackend && await onCheckBackend(); }}>
@@ -276,11 +276,11 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                                 <div style={{
                                     marginTop: '0.75rem',
                                     padding: '0.85rem',
-                                    background: 'var(--success-bg)',
-                                    border: '1px solid #a7f3d0',
+                                    background: '#f5f5f5',
+                                    border: '1px solid #e5e5e5',
                                     borderRadius: 'var(--radius-sm)',
                                     fontSize: '0.8rem',
-                                    color: '#065f46',
+                                    color: '#333',
                                 }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontWeight: 600 }}>
                                         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
