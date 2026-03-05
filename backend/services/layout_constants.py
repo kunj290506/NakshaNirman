@@ -152,11 +152,15 @@ MIN_AREAS = {
     'wash_area': 20, 'passage': 15,
 }
 
-# Hard maximum areas (prevent bloated service rooms)
+# Hard maximum areas — prevent ANY room from bloating on large plots
+# These are absolute caps in sqft based on Indian residential standards.
 MAX_AREAS = {
-    'bathroom': 60, 'toilet': 30, 'pooja': 42,
+    'living': 300, 'master_bedroom': 220, 'bedroom': 180,
+    'kitchen': 130, 'dining': 150,
+    'bathroom': 55, 'toilet': 30, 'pooja': 42,
     'store': 50, 'utility': 40, 'balcony': 55,
-    'wash_area': 72,
+    'wash_area': 35, 'staircase': 70, 'study': 120,
+    'foyer': 55, 'porch': 60,
 }
 
 # ===========================================================================
@@ -181,7 +185,7 @@ AREA_FRACTIONS = {
     'utility':        (0.015, 0.02, 0.03),
     'garage':         (0.08, 0.12, 0.16),
     'staircase':      (0.03, 0.045, 0.06),
-    'wash_area':      (0.04, 0.05, 0.06),
+    'wash_area':      (0.01, 0.015, 0.025),
     'passage':        (0.05, 0.10, 0.15),
 }
 

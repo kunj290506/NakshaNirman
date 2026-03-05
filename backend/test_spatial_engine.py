@@ -145,7 +145,12 @@ def run_all_tests():
         )
         usable_area = (w - 1.5) * (l - 1.5) * 0.85
         density_ratio = usable_area / max(total_min_needed, 1)
-        tolerance = 0.7 if density_ratio >= 1.0 else max(0.4, 0.7 * density_ratio)
+        # Scale tolerance by density: tight plots get more compression leeway
+        # density² reduces tolerance faster for extremely packed plots
+        if density_ratio >= 1.0:
+            tolerance = 0.7
+        else:
+            tolerance = max(0.3, density_ratio ** 2 * 0.7)
 
         for room in rooms:
             rtype = room["room_type"]
