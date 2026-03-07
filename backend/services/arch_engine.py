@@ -2223,6 +2223,99 @@ def _build_layout_output(
                     "swing_dir": [-1, 0],
                 })
 
+    # Build window geometry for frontend (start/end coordinates)
+    windows_list = []
+    for room in placed_rooms:
+        rx = room["position"]["x"]
+        ry = room["position"]["y"]
+        rw = room["width"]
+        rl = room["length"]
+        for win in room.get("windows", []):
+            wall = win.get("wall", "S")
+            ww = win.get("width", 4.0)
+            if wall in ("S", "bottom"):
+                wx = round(rx + rw * 0.5 - ww / 2, 1)
+                windows_list.append({
+                    "start": [wx, ry],
+                    "end": [round(wx + ww, 1), ry],
+                    "wall": "S",
+                })
+            elif wall in ("N", "top"):
+                wx = round(rx + rw * 0.5 - ww / 2, 1)
+                windows_list.append({
+                    "start": [wx, round(ry + rl, 1)],
+                    "end": [round(wx + ww, 1), round(ry + rl, 1)],
+                    "wall": "N",
+                })
+            elif wall in ("W", "left"):
+                wy = round(ry + rl * 0.5 - ww / 2, 1)
+                windows_list.append({
+                    "start": [rx, wy],
+                    "end": [rx, round(wy + ww, 1)],
+                    "wall": "W",
+                })
+            elif wall in ("E", "right"):
+                wy = round(ry + rl * 0.5 - ww / 2, 1)
+                windows_list.append({
+                    "start": [round(rx + rw, 1), wy],
+                    "end": [round(rx + rw, 1), round(wy + ww, 1)],
+                    "wall": "E",
+                })
+
+    # Build column/pillar positions at wall junctions
+    columns = []
+    col_set = set()
+    # Boundary corners
+    for pt in boundary[:-1]:
+        key = (round(pt[0], 1), round(pt[1], 1))
+        if key not in col_set:
+            col_set.add(key)
+            columns.append(list(key))
+    # Room corners that lie on the boundary
+    for room in placed_rooms:
+        rx = round(room["position"]["x"], 1)
+        ry = round(room["position"]["y"], 1)
+        rw = round(room["width"], 1)
+        rl = round(room["length"], 1)
+        for cx, cy in [(rx, ry), (rx+rw, ry), (rx+rw, ry+rl), (rx, ry+rl)]:
+            cx, cy = round(cx, 1), round(cy, 1)
+            on_bnd = (abs(cx) < 0.5 or abs(cx - plot_w) < 0.5 or
+                      abs(cy) < 0.5 or abs(cy - plot_l) < 0.5)
+            if on_bnd:
+                key = (cx, cy)
+                if key not in col_set:
+                    col_set.add(key)
+                    columns.append(list(key))
+
+    # Build interior dimension chains (per-room segments along top and right)
+    # Collect unique x-coordinates for top-edge dimensioning
+    x_coords = sorted(set(
+        round(r["position"]["x"], 1) for r in placed_rooms
+    ) | set(
+        round(r["position"]["x"] + r["width"], 1) for r in placed_rooms
+    ) | {0.0, round(plot_w, 1)})
+    # Collect unique y-coordinates for side dimensioning
+    y_coords = sorted(set(
+        round(r["position"]["y"], 1) for r in placed_rooms
+    ) | set(
+        round(r["position"]["y"] + r["length"], 1) for r in placed_rooms
+    ) | {0.0, round(plot_l, 1)})
+
+    dim_chains_x = []
+    for i in range(len(x_coords) - 1):
+        seg = round(x_coords[i + 1] - x_coords[i], 1)
+        if seg > 0.5:
+            dim_chains_x.append({
+                "start": x_coords[i], "end": x_coords[i + 1], "length": seg
+            })
+    dim_chains_y = []
+    for i in range(len(y_coords) - 1):
+        seg = round(y_coords[i + 1] - y_coords[i], 1)
+        if seg > 0.5:
+            dim_chains_y.append({
+                "start": y_coords[i], "end": y_coords[i + 1], "length": seg
+            })
+
     total_used = sum(r["area"] for r in placed_rooms)
     circulation_area = total_area - total_used
     circ_pct = round(max(0, circulation_area) / max(total_area, 1) * 100, 1)
@@ -2246,6 +2339,10 @@ def _build_layout_output(
         "boundary": boundary,
         "rooms": placed_rooms,
         "doors": doors_list,
+        "windows": windows_list,
+        "columns": columns,
+        "dim_chains_x": dim_chains_x,
+        "dim_chains_y": dim_chains_y,
         "total_area": round(total_area, 1),
         "circulation": {
             "type": circ_type,

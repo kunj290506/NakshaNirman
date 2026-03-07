@@ -213,8 +213,8 @@ def _parse_structured_input(data: Dict) -> Dict:
         "plot_length": data.get("plot_length"),
         "total_area": data.get("total_area"),
         "floors": data.get("floors", 1),
-        "bedrooms": data.get("bedrooms", 2),
-        "bathrooms": data.get("bathrooms"),
+        "bedrooms": data.get("bedrooms") or data.get("num_bedrooms") or 2,
+        "bathrooms": data.get("bathrooms") or data.get("num_bathrooms"),
         "extras": list(data.get("extras", [])),
         "is_redesign": data.get("is_redesign", False) or data.get("redesign", False),
         "is_generate": data.get("is_generate", True),
@@ -673,18 +673,354 @@ def _place_rooms(
     strategy: str,
 ) -> Tuple[List[Dict], Dict]:
     """
-    Place rooms according to selected strategy.
-    Returns (placed_rooms, circulation_info).
+    Space-filling room placement using proportional rectangular subdivision.
+
+    Algorithm:
+      1. Classify rooms into 3 spatial layers (front/middle/rear)
+      2. Allocate zone depths proportionally by area needs
+      3. Within each zone, sub-band compact rooms (bathrooms, etc.)
+      4. Fill each band completely using proportional widths
+      5. Last room in each row absorbs remaining width = 100% coverage
+      6. Last zone absorbs remaining height = 100% coverage
+
+    Guarantees every square foot of buildable area is assigned to a room.
     """
     ux, uy, uw, ul = _buildable_rect(plot_w, plot_l)
     layers = _assign_to_layers(room_specs, uw, ul)
 
-    if strategy == "central_corridor":
-        return _place_central_corridor(layers, ux, uy, uw, ul)
-    elif strategy == "side_corridor":
-        return _place_side_corridor(layers, ux, uy, uw, ul)
+    front = layers[1]
+    middle = layers[2]
+    rear = layers[3]
+
+    # ── Passage depth ──
+    passage_h = snap(max(MIN_PASSAGE, min(4.0, ul * 0.07)))
+
+    # ── Area-proportional depth allocation ──
+    a1 = sum(r["target_area"] for r in front) or 1
+    a2 = sum(r["target_area"] for r in middle) or 1
+    a3 = sum(r["target_area"] for r in rear) or 1
+    a_total = a1 + a2 + a3
+
+    available = ul - passage_h
+
+    d1 = snap(available * a1 / a_total) if front else 0
+    d2 = snap(available * a2 / a_total) if middle else 0
+    d3 = snap(available * a3 / a_total) if rear else 0
+
+    # ── Enforce min depths (habitable rooms need ≥7ft, compact ≥5ft) ──
+    min1 = 7.0 if any(r["room_type"] not in COMPACT_ROOMS for r in front) else 5.0 if front else 0
+    min2 = 5.0 if middle else 0
+    min3 = 7.0 if any(r["room_type"] not in COMPACT_ROOMS for r in rear) else 5.0 if rear else 0
+
+    d1 = max(d1, min1)
+    d2 = max(d2, min2)
+    d3 = max(d3, min3)
+
+    # ── Enforce max depths from AR + MAX_AREA constraints ──
+    if front:
+        max_d1 = _max_band_depth(front, exclude_compact=True)
+        if max_d1 < 998 and d1 > max_d1:
+            d1 = snap(max_d1)
+    if middle:
+        max_d2 = _max_band_depth(middle, exclude_compact=True)
+        if max_d2 < 998 and d2 > max_d2:
+            d2 = snap(max_d2)
+
+    # ── Rear zone absorbs ALL remaining height (guarantees no vertical gap) ──
+    d3 = snap(available - d1 - d2)
+    if d3 < min3:
+        # Compress others to give rear enough
+        excess_needed = min3 - d3
+        if d1 > min1 + excess_needed:
+            d1 = snap(d1 - excess_needed)
+        elif d2 > min2:
+            shrink = min(excess_needed, d2 - min2)
+            d2 = snap(d2 - shrink)
+            d1 = snap(d1 - (excess_needed - shrink)) if excess_needed > shrink else d1
+        d3 = snap(available - d1 - d2)
+
+    # ── Place zones from entrance (south) → rear (north) ──
+    placed: List[Dict] = []
+    y_cur = uy
+
+    # Zone 1: Front (public)
+    if front:
+        placed.extend(_fill_band_tiled(front, ux, y_cur, uw, d1))
     else:
-        return _place_cluster(layers, ux, uy, uw, ul)
+        placed.append(_make_filler(ux, y_cur, uw, d1, "hallway", "Hall"))
+    y_cur = round(y_cur + d1, 2)
+
+    # Zone 2: Middle (semi-private)
+    if middle:
+        placed.extend(_fill_band_tiled(middle, ux, y_cur, uw, d2))
+        y_cur = round(y_cur + d2, 2)
+    elif d2 > 0:
+        placed.append(_make_filler(ux, y_cur, uw, d2, "hallway", "Hall"))
+        y_cur = round(y_cur + d2, 2)
+
+    # Passage
+    pass_y = y_cur
+    placed.append(_make_filler(ux, pass_y, uw, passage_h, "passage", "Passage"))
+    y_cur = round(y_cur + passage_h, 2)
+
+    # Zone 3: Rear (private) — fills all remaining depth
+    d3_actual = round(uy + ul - y_cur, 2)
+    if rear:
+        placed.extend(_fill_rear_tiled(rear, ux, y_cur, uw, d3_actual))
+    else:
+        placed.append(_make_filler(ux, y_cur, uw, d3_actual, "hallway", "Hall"))
+
+    circ_info = {
+        "type": "horizontal_passage",
+        "width_ft": round(uw, 1),
+        "depth_ft": round(passage_h, 1),
+        "position": {"x": round(ux, 2), "y": round(pass_y, 2)},
+        "description": (
+            f"{passage_h}ft passage spanning full width, "
+            f"connecting dining zone to bedroom wing"
+        ),
+    }
+    return placed, circ_info
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SPACE-FILLING PLACEMENT HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fill_band_tiled(
+    rooms: List[Dict],
+    x0: float, y0: float, w: float, h: float,
+) -> List[Dict]:
+    """Fill a horizontal band completely with rooms.
+
+    If the band has mixed compact + main rooms and is deep enough,
+    sub-bands compact rooms into a shallow rear strip.
+    """
+    if not rooms:
+        return [_make_filler(x0, y0, w, h, "hallway", "Hall")]
+
+    main = [r for r in rooms if r["room_type"] not in COMPACT_ROOMS]
+    compact = [r for r in rooms if r["room_type"] in COMPACT_ROOMS]
+
+    # Sub-band if mixed, deep enough, and enough rooms (3+) to justify it
+    if compact and main and h >= 12 and len(rooms) >= 3:
+        compact_h = snap(max(4.5, min(6.5, h * 0.30)))
+        main_h = round(h - compact_h, 2)
+
+        if main_h < 7.0:
+            main_h = snap(max(7.0, h * 0.65))
+            compact_h = round(h - main_h, 2)
+            if compact_h < 4.0:
+                return _fill_row_tiled(rooms, x0, y0, w, h)
+
+        placed: List[Dict] = []
+        placed.extend(_fill_row_tiled(main, x0, y0, w, main_h))
+        placed.extend(_fill_row_tiled(compact, x0, round(y0 + main_h, 2), w, compact_h))
+        return placed
+
+    return _fill_row_tiled(rooms, x0, y0, w, h)
+
+
+def _fill_rear_tiled(
+    rooms: List[Dict],
+    x0: float, y0: float, w: float, h: float,
+) -> List[Dict]:
+    """Fill rear zone with bedrooms + bathrooms using column pairing.
+
+    Each bedroom gets paired with a bathroom in a vertical column:
+    - Bathroom at front of column (closest to passage)
+    - Bedroom at rear of column (deepest from entrance)
+    Columns fill 100% of available width.
+    """
+    beds = [r for r in rooms if r["room_type"] not in COMPACT_ROOMS]
+    baths = [r for r in rooms if r["room_type"] in COMPACT_ROOMS]
+
+    if not baths or not beds or h < 10:
+        return _fill_row_tiled(rooms, x0, y0, w, h)
+
+    # Bathroom strip depth (front of zone, closest to passage)
+    bath_h = snap(max(4.5, min(6.0, h * 0.28)))
+    bed_h = round(h - bath_h, 2)
+
+    if bed_h < 7.0:
+        bed_h = snap(max(7.0, h * 0.65))
+        bath_h = round(h - bed_h, 2)
+        if bath_h < 4.0:
+            return _fill_row_tiled(rooms, x0, y0, w, h)
+
+    # Sort beds by priority (master_bedroom first)
+    beds.sort(key=lambda r: r.get("priority", 50), reverse=True)
+
+    total_bed_area = sum(r["target_area"] for r in beds) or 1
+    placed: List[Dict] = []
+    cx = x0
+    bath_idx = 0
+
+    for i, bed in enumerate(beds):
+        is_last = (i == len(beds) - 1)
+        if is_last:
+            col_w = round(x0 + w - cx, 2)
+        else:
+            col_w = snap(w * bed["target_area"] / total_bed_area)
+            col_w = max(col_w, 9.0)
+        remaining = round(x0 + w - cx, 2)
+        col_w = min(col_w, remaining)
+
+        if col_w < 3.0:
+            continue
+
+        # Bedroom at rear (bottom of zone)
+        placed.append(_make_placed_room(
+            bed, cx, round(y0 + bath_h, 2), col_w, bed_h, i, rooms,
+        ))
+
+        # Paired bathroom at front of column
+        if bath_idx < len(baths):
+            placed.append(_make_placed_room(
+                baths[bath_idx], cx, y0, col_w, bath_h, bath_idx, rooms,
+            ))
+            bath_idx += 1
+        else:
+            placed.append(_make_filler(
+                cx, y0, col_w, bath_h, "hallway", "Hall",
+            ))
+
+        cx = round(cx + col_w, 2)
+
+    return placed
+
+
+def _fill_row_tiled(
+    rooms: List[Dict],
+    x0: float, y0: float, w: float, h: float,
+    ar_override: Optional[Dict] = None,
+) -> List[Dict]:
+    """Fill a single row completely — proportional widths, last room absorbs remainder.
+
+    This is the core space-filling primitive. Guarantees 100% horizontal coverage.
+    """
+    if not rooms:
+        return [_make_filler(x0, y0, w, h, "hallway", "Hall")]
+
+    total_area = sum(r["target_area"] for r in rooms) or 1
+    placed: List[Dict] = []
+    cx = x0
+
+    # MIN_WIDTH enforcement for habitable rooms
+    _MIN_W = {
+        "living": 10.0, "master_bedroom": 9.0, "bedroom": 9.0,
+        "kitchen": 7.0, "dining": 8.0,
+    }
+
+    for i, room in enumerate(rooms):
+        rtype = room["room_type"]
+
+        # Compute min width first (needed by safety cap)
+        min_w = _MIN_W.get(rtype, 4.0)
+
+        if i == len(rooms) - 1:
+            # Last room absorbs all remaining width
+            rw = round(x0 + w - cx, 2)
+            # Safety cap only for wet/service rooms to prevent oversized baths
+            _CAPPED = {"bathroom", "toilet", "wash_area"}
+            max_a = MAX_AREAS.get(rtype)
+            if max_a and rtype in _CAPPED and rw * h > max_a * 1.5:
+                rw = snap(max(min_w, (max_a * 1.2) / h))
+        else:
+            rw = snap(w * room["target_area"] / total_area)
+
+        # Enforce min width for habitable rooms
+        rw = max(rw, min_w)
+
+        # AR constraint: max width = h * AR
+        ar = COMFORT_AR.get(rtype, 2.0)
+        if ar_override and rtype in ar_override:
+            ar = ar_override[rtype]
+        max_w = h * ar
+        if rw > max_w and i < len(rooms) - 1:
+            rw = snap(max_w)
+
+        # MAX_AREA constraint
+        max_a = MAX_AREAS.get(rtype)
+        if max_a and rw * h > max_a * 1.2 and i < len(rooms) - 1:
+            rw = snap(max(min_w, max_a / h))
+
+        # Don't exceed remaining width
+        remaining = round(x0 + w - cx, 2)
+        rw = min(rw, remaining)
+
+        if rw < 3.5:
+            # Room too narrow — stretch previous room to absorb the gap
+            if placed:
+                prev = placed[-1]
+                new_w = round(prev["width"] + remaining, 2)
+                px = prev["position"]["x"]
+                prev["width"] = new_w
+                prev["area"] = round(new_w * h, 1)
+                prev["actual_area"] = prev["area"]
+                prev["polygon"] = [
+                    [round(px, 2), round(y0, 2)],
+                    [round(px + new_w, 2), round(y0, 2)],
+                    [round(px + new_w, 2), round(y0 + h, 2)],
+                    [round(px, 2), round(y0 + h, 2)],
+                    [round(px, 2), round(y0, 2)],
+                ]
+                prev["centroid"] = [round(px + new_w / 2, 2), round(y0 + h / 2, 2)]
+            cx = round(x0 + w, 2)
+            continue
+
+        placed.append(_make_placed_room(room, cx, y0, rw, h, i, rooms))
+        cx = round(cx + rw, 2)
+
+    # Fill any remaining gap — stretch last room or add hall for compact rooms
+    leftover = round(x0 + w - cx, 2)
+    if leftover > 0.1 and placed:
+        last = placed[-1]
+        max_a = MAX_AREAS.get(last["room_type"])
+        last_area_after = (last["width"] + leftover) * h
+        # Only create hall filler if last room is wet/service AND would exceed 1.5x cap
+        _CAPPED = {"bathroom", "toilet", "wash_area"}
+        if max_a and last["room_type"] in _CAPPED and last_area_after > max_a * 1.5:
+            placed.append(_make_filler(cx, y0, leftover, h, "hallway", "Hall"))
+        else:
+            new_w = round(last["width"] + leftover, 2)
+            lx = last["position"]["x"]
+            last["width"] = new_w
+            last["area"] = round(new_w * h, 1)
+            last["actual_area"] = last["area"]
+            last["polygon"] = [
+                [round(lx, 2), round(y0, 2)],
+                [round(lx + new_w, 2), round(y0, 2)],
+                [round(lx + new_w, 2), round(y0 + h, 2)],
+                [round(lx, 2), round(y0 + h, 2)],
+                [round(lx, 2), round(y0, 2)],
+            ]
+            last["centroid"] = [round(lx + new_w / 2, 2), round(y0 + h / 2, 2)]
+
+    return placed
+
+
+def _make_filler(
+    x0: float, y0: float, w: float, h: float,
+    rtype: str, name: str,
+) -> Dict:
+    """Create a filler room (passage/hall) for complete space coverage."""
+    area = round(w * h, 1)
+    return {
+        "name": name, "room_type": rtype,
+        "zone": "circulation", "layer": 0,
+        "width": round(w, 2), "length": round(h, 2),
+        "area": area, "actual_area": area, "target_area": area,
+        "position": {"x": round(x0, 2), "y": round(y0, 2)},
+        "polygon": [
+            [round(x0, 2), round(y0, 2)],
+            [round(x0 + w, 2), round(y0, 2)],
+            [round(x0 + w, 2), round(y0 + h, 2)],
+            [round(x0, 2), round(y0 + h, 2)],
+            [round(x0, 2), round(y0, 2)],
+        ],
+        "centroid": [round(x0 + w / 2, 2), round(y0 + h / 2, 2)],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1168,7 +1504,7 @@ def _place_bedroom_zone(
     Special placement for Layer 3 (bedroom zone) with split sub-bands.
 
     Handles three scenarios:
-      1. MULTI-ROW: When band is ≥1.8× max depth, split into 2-3 rows
+      1. MULTI-ROW: When band is >=1.8x max depth, split into 2-3 rows
          (each row gets sub-banding). Maximizes coverage on large plots.
       2. SINGLE ROW with sub-bands: Bedrooms at rear, bathrooms at front.
       3. FALLBACK: Standard band placement for shallow bands.
@@ -1973,6 +2309,125 @@ def _external_walls(room: Dict, plot_w: float, plot_l: float) -> List[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION 8b — DEAD-ZONE FILLING (passage room + gap coverage)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fill_dead_zones(
+    placed: List[Dict], circ_info: Dict,
+    plot_w: float, plot_l: float,
+) -> List[Dict]:
+    """Detect uncovered areas in the layout and fill them with passage/hall rooms."""
+    ux, uy, uw, ul = _buildable_rect(plot_w, plot_l)
+    right = round(ux + uw, 2)
+    top = round(uy + ul, 2)
+
+    # Passage Y range for labeling dead zones in the passage area
+    pass_y1, pass_y2 = None, None
+    if circ_info and circ_info.get("position"):
+        pass_y1 = circ_info["position"]["y"]
+        pass_y2 = pass_y1 + circ_info.get("depth_ft", 3.0)
+
+    # ── 1. Detect dead zones via Y-strip decomposition ──
+    y_edges = sorted(set(
+        [uy, top]
+        + [round(r["position"]["y"], 2) for r in placed]
+        + [round(r["position"]["y"] + r["length"], 2) for r in placed]
+    ))
+
+    candidates = []
+    for i in range(len(y_edges) - 1):
+        y1, y2 = y_edges[i], y_edges[i + 1]
+        strip_h = round(y2 - y1, 2)
+        if strip_h < 2.5:
+            continue
+
+        # X-ranges covered by rooms in this strip
+        x_ranges = sorted(
+            (r["position"]["x"], r["position"]["x"] + r["width"])
+            for r in placed
+            if r["position"]["y"] < y2 - 0.1
+            and r["position"]["y"] + r["length"] > y1 + 0.1
+        )
+
+        # Merge overlapping X ranges
+        merged = []
+        for x1, x2 in x_ranges:
+            if merged and x1 <= merged[-1][1] + 0.5:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], x2))
+            else:
+                merged.append([x1, x2])
+
+        # Uncovered segments
+        prev_x = ux
+        for mx1, mx2 in merged:
+            if round(mx1 - prev_x, 2) >= 3.0:
+                candidates.append((round(prev_x, 2), y1, round(mx1, 2), y2))
+            prev_x = mx2
+        if round(right - prev_x, 2) >= 3.0:
+            candidates.append((round(prev_x, 2), y1, right, y2))
+
+    # ── 2. Merge vertically-adjacent candidates with same X span ──
+    candidates.sort()
+    merged_zones = []
+    for cand in candidates:
+        fx1, fy1, fx2, fy2 = cand
+        found = False
+        for j, mz in enumerate(merged_zones):
+            mx1, my1, mx2, my2 = mz
+            if abs(fx1 - mx1) < 0.5 and abs(fx2 - mx2) < 0.5 and abs(fy1 - my2) < 0.5:
+                merged_zones[j] = (mx1, my1, mx2, fy2)
+                found = True
+                break
+        if not found:
+            merged_zones.append(list(cand))
+
+    # ── 3. Fill dead zones ──
+    for fx1, fy1, fx2, fy2 in merged_zones:
+        fw = round(fx2 - fx1, 2)
+        fh = round(fy2 - fy1, 2)
+        area = round(fw * fh, 1)
+        if area < 12:
+            continue
+
+        # Verify no overlap with existing rooms
+        has_overlap = False
+        for r in placed:
+            rx, ry = r["position"]["x"], r["position"]["y"]
+            ox = max(0, min(rx + r["width"], fx2) - max(rx, fx1))
+            oy = max(0, min(ry + r["length"], fy2) - max(ry, fy1))
+            if ox * oy > 2.0:
+                has_overlap = True
+                break
+        if has_overlap:
+            continue
+
+        # Label: "Passage" if in passage zone, else "Hall"
+        rtype, name = "hallway", "Hall"
+        if pass_y1 is not None:
+            mid_y = (fy1 + fy2) / 2
+            if pass_y1 - 0.5 <= mid_y <= pass_y2 + 0.5:
+                rtype, name = "passage", "Passage"
+
+        placed.append({
+            "name": name, "room_type": rtype,
+            "zone": "circulation", "layer": 0,
+            "width": fw, "length": fh,
+            "area": area, "actual_area": area, "target_area": area,
+            "position": {"x": round(fx1, 2), "y": round(fy1, 2)},
+            "polygon": [
+                [round(fx1, 2), round(fy1, 2)],
+                [round(fx2, 2), round(fy1, 2)],
+                [round(fx2, 2), round(fy2, 2)],
+                [round(fx1, 2), round(fy2, 2)],
+                [round(fx1, 2), round(fy1, 2)],
+            ],
+            "centroid": [round((fx1 + fx2) / 2, 2), round((fy1 + fy2) / 2, 2)],
+        })
+
+    return placed
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION 9 — AUTO-CORRECTION (boundary clamping, polygon rebuild)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1982,9 +2437,11 @@ def _auto_correct(placed: List[Dict], plot_w: float, plot_l: float) -> List[Dict
         x, y = room["position"]["x"], room["position"]["y"]
         w, h = room["width"], room["length"]
 
-        # Enforce minimum size
-        w = max(4.0, w)
-        h = max(4.0, h)
+        # Enforce minimum size (passages/corridors can be narrow)
+        is_circulation = room["room_type"] in ("passage", "hallway", "corridor")
+        min_dim = 2.5 if is_circulation else 4.0
+        w = max(min_dim, w)
+        h = max(min_dim, h)
 
         # Clamp to plot boundary (shift first, then shrink)
         if x < 0:
@@ -1992,9 +2449,9 @@ def _auto_correct(placed: List[Dict], plot_w: float, plot_l: float) -> List[Dict
         if y < 0:
             y = 0
         if x + w > plot_w:
-            w = snap(max(4.0, plot_w - x))
+            w = snap(max(min_dim, plot_w - x))
         if y + h > plot_l:
-            h = snap(max(4.0, plot_l - y))
+            h = snap(max(min_dim, plot_l - y))
         # Re-check: if room still exceeds after min-size, shift position
         if x + w > plot_w:
             x = snap(max(0, plot_w - w))
@@ -2278,6 +2735,92 @@ def _build_output(
         [0, 0], [plot_w, 0], [plot_w, plot_l], [0, plot_l], [0, 0]
     ]
 
+    # ── Enrich: top-level doors with hinge/swing geometry ──
+    top_doors = []
+    for room in placed:
+        rx, ry = room["position"]["x"], room["position"]["y"]
+        rw, rh = room["width"], room["length"]
+        for door in room.get("doors", []):
+            dw = door.get("width", 3.0)
+            wall = door.get("wall", "south")
+            pos = door.get("position", rx + rw / 2)
+            if wall == "south":
+                hinge = [round(pos - dw / 2, 2), round(ry, 2)]
+                door_end = [round(pos + dw / 2, 2), round(ry, 2)]
+                swing_dir = [0, 1]
+            elif wall == "north":
+                hinge = [round(pos - dw / 2, 2), round(ry + rh, 2)]
+                door_end = [round(pos + dw / 2, 2), round(ry + rh, 2)]
+                swing_dir = [0, -1]
+            elif wall == "west":
+                hinge = [round(rx, 2), round(pos - dw / 2, 2)]
+                door_end = [round(rx, 2), round(pos + dw / 2, 2)]
+                swing_dir = [1, 0]
+            elif wall == "east":
+                hinge = [round(rx + rw, 2), round(pos - dw / 2, 2)]
+                door_end = [round(rx + rw, 2), round(pos + dw / 2, 2)]
+                swing_dir = [-1, 0]
+            else:
+                continue
+            top_doors.append({
+                "room": room["name"],
+                "wall": wall,
+                "width": dw,
+                "type": door.get("type", "standard"),
+                "hinge": hinge,
+                "door_end": door_end,
+                "swing_dir": swing_dir,
+                "position": [(hinge[0] + door_end[0]) / 2, (hinge[1] + door_end[1]) / 2],
+            })
+
+    # ── Enrich: top-level windows with start/end coordinates ──
+    top_windows = []
+    for room in placed:
+        rx, ry = room["position"]["x"], room["position"]["y"]
+        rw, rh = room["width"], room["length"]
+        for win in room.get("windows", []):
+            ww = win.get("width", 3.0)
+            wall = win.get("wall", "south")
+            cx_w = rx + rw / 2
+            cy_w = ry + rh / 2
+            if wall == "south":
+                start = [round(cx_w - ww / 2, 2), round(ry, 2)]
+                end = [round(cx_w + ww / 2, 2), round(ry, 2)]
+            elif wall == "north":
+                start = [round(cx_w - ww / 2, 2), round(ry + rh, 2)]
+                end = [round(cx_w + ww / 2, 2), round(ry + rh, 2)]
+            elif wall == "west":
+                start = [round(rx, 2), round(cy_w - ww / 2, 2)]
+                end = [round(rx, 2), round(cy_w + ww / 2, 2)]
+            elif wall == "east":
+                start = [round(rx + rw, 2), round(cy_w - ww / 2, 2)]
+                end = [round(rx + rw, 2), round(cy_w + ww / 2, 2)]
+            else:
+                continue
+            top_windows.append({
+                "room": room["name"],
+                "wall": wall,
+                "width": ww,
+                "type": win.get("type", "standard"),
+                "start": start,
+                "end": end,
+            })
+
+    # ── Enrich: columns at boundary corners + room corners on boundary ──
+    col_set = set()
+    for pt in boundary[:-1]:
+        col_set.add((round(pt[0], 1), round(pt[1], 1)))
+    tol_col = WALL_EXT + 0.5  # rooms are inset by wall thickness
+    for room in placed:
+        rx, ry = room["position"]["x"], room["position"]["y"]
+        rw, rh = room["width"], room["length"]
+        for cx, cy in [(rx, ry), (rx + rw, ry), (rx + rw, ry + rh), (rx, ry + rh)]:
+            on_bnd = (cx < tol_col or cx > plot_w - tol_col or
+                      cy < tol_col or cy > plot_l - tol_col)
+            if on_bnd:
+                col_set.add((round(cx, 1), round(cy, 1)))
+    columns = [[c[0], c[1]] for c in sorted(col_set)]
+
     return {
         # -- Spec output format --
         "layout_strategy": strategy,
@@ -2285,6 +2828,11 @@ def _build_output(
         "rooms": out_rooms,
         "circulation": circ_info,
         "validation": validation,
+
+        # -- Frontend drawing data --
+        "doors": top_doors,
+        "windows": top_windows,
+        "columns": columns,
 
         # -- Metadata --
         "plot": {"width": plot_w, "length": plot_l, "unit": "ft"},
