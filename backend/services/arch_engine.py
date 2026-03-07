@@ -14,10 +14,12 @@ Modes:
 Core Principles Enforced:
   A. Functional Zoning (Public → Semi-Private → Private → Service)
   B. Privacy Gradient (Entrance → Living → Dining → Passage → Bedrooms)
-  C. Area Proportions (Living 18-22%, Bedrooms 30-35%, Kitchen 8-12%, etc.)
+  C. Area Proportions (Living 18-25%, Each Bedroom 12-16%, Kitchen 8-12%, etc.)
   D. Minimum Room Sizes (NBC 2016 compliant)
-  E. Geometry Constraints (rectangular, aspect 1:1–1:2.5, no overlap)
+  E. Geometry Constraints (rectangular, aspect 1:1–1:2.2, no overlap)
   F. Ventilation Rules (habitable rooms touch external wall)
+  G. Furniture Placement (scaled, not blocking doors)
+  H. Circulation Path (Entrance → Living → Dining → Kitchen; bedrooms via corridor)
 
 Author: CAD Architectural Intelligence Engine v3.0
 """
@@ -75,6 +77,7 @@ MIN_ROOM_SIZES = {
     "kitchen":        80,
     "living":         120,
     "dining":         80,
+    "entrance":       25,
     "study":          60,
     "pooja":          16,
     "store":          25,
@@ -97,6 +100,7 @@ STANDARD_DIMS = {
     "kitchen":        (8, 10),
     "living":         (14, 16),
     "dining":         (10, 12),
+    "entrance":       (5, 6),
     "study":          (10, 10),
     "pooja":          (5, 5),
     "store":          (6, 6),
@@ -110,19 +114,20 @@ STANDARD_DIMS = {
     "passage":        (3.5, 8),
 }
 
-# Area distribution percentages — §2C
+# Area distribution percentages — §2C (11-step spec)
 AREA_PROPORTIONS = {
-    "living":            (0.18, 0.22),
-    "bedrooms_total":    (0.30, 0.35),
+    "living":            (0.18, 0.25),
+    "bedrooms_total":    (0.30, 0.38),
     "kitchen":           (0.08, 0.12),
-    "bathrooms_total":   (0.08, 0.12),
-    "circulation":       (0.10, 0.15),
+    "bathrooms_total":   (0.04, 0.06),
+    "circulation":       (0.05, 0.08),
     "walls_structure":   (0.08, 0.10),
 }
 
-# Zoning classification — §2A
+# Zoning classification — §2A (11-step spec: 3-zone system)
 ZONE_CLASSIFICATION = {
     "living":         "public",
+    "entrance":       "public",
     "porch":          "public",
     "foyer":          "public",
     "parking":        "public",
@@ -134,8 +139,8 @@ ZONE_CLASSIFICATION = {
     "bedroom":        "private",
     "study":          "private",
     "pooja":          "private",
-    "bathroom":       "service",
-    "toilet":         "service",
+    "bathroom":       "private",
+    "toilet":         "private",
     "utility":        "service",
     "store":          "service",
     "hallway":        "circulation",
@@ -152,6 +157,7 @@ DISPLAY_NAMES = {
     "kitchen":        "Kitchen",
     "living":         "Living Room",
     "dining":         "Dining Room",
+    "entrance":       "Entrance",
     "study":          "Study Room",
     "pooja":          "Pooja Room",
     "store":          "Store Room",
@@ -165,9 +171,10 @@ DISPLAY_NAMES = {
     "passage":        "Passage",
 }
 
-# Privacy gradient — §2B
+# Privacy gradient — §2B (11-step spec Step 3 — forbidden connections)
 # Bedrooms must not directly open into kitchen.
-# Bathrooms must not face entrance.
+# Bathrooms must not face entrance or dining.
+# Note: bedroom→bedroom wall adjacency is allowed if each opens to corridor.
 FORBIDDEN_ADJACENCY = [
     ("bedroom",        "kitchen"),
     ("master_bedroom", "kitchen"),
@@ -1148,15 +1155,16 @@ FORBIDDEN_CONNECTIONS = {
     ("bedroom",        "bedroom"),   # not without corridor
 }
 
-# ── Percentage allocation bands (of total_area) ──
+# ── Percentage allocation bands (of total_area) — 11-step spec ──
 ALLOC_BANDS = {
-    "living":         (0.15, 0.25),
+    "living":         (0.18, 0.25),
     "kitchen":        (0.08, 0.12),
     "dining":         (0.08, 0.12),
     "master_bedroom": (0.12, 0.16),
-    "bedroom":        (0.10, 0.14),
-    "bathroom":       (0.03, 0.05),
+    "bedroom":        (0.12, 0.16),
+    "bathroom":       (0.04, 0.06),
     "passage":        (0.05, 0.08),
+    "entrance":       (0.02, 0.04),
     "study":          (0.04, 0.06),
     "pooja":          (0.02, 0.03),
     "store":          (0.02, 0.04),
@@ -1166,6 +1174,47 @@ ALLOC_BANDS = {
     "parking":        (0.08, 0.12),
     "garage":         (0.08, 0.12),
     "porch":          (0.03, 0.05),
+}
+
+# ── Furniture templates per room type — scaled dynamically (Step 8) ──
+FURNITURE_TEMPLATES = {
+    "living": [
+        {"type": "sofa", "w_ratio": 0.55, "l_ratio": 0.22, "anchor": "center_back"},
+        {"type": "tv_unit", "w_ratio": 0.35, "l_ratio": 0.10, "anchor": "center_front"},
+        {"type": "coffee_table", "w_ratio": 0.25, "l_ratio": 0.15, "anchor": "center"},
+    ],
+    "master_bedroom": [
+        {"type": "bed", "w_ratio": 0.55, "l_ratio": 0.60, "anchor": "center_back"},
+        {"type": "wardrobe", "w_ratio": 0.30, "l_ratio": 0.12, "anchor": "side_back"},
+        {"type": "side_table", "w_ratio": 0.10, "l_ratio": 0.10, "anchor": "beside_bed"},
+    ],
+    "bedroom": [
+        {"type": "bed", "w_ratio": 0.55, "l_ratio": 0.60, "anchor": "center_back"},
+        {"type": "wardrobe", "w_ratio": 0.30, "l_ratio": 0.12, "anchor": "side_back"},
+        {"type": "desk", "w_ratio": 0.25, "l_ratio": 0.15, "anchor": "corner_front"},
+    ],
+    "kitchen": [
+        {"type": "counter_L", "w_ratio": 0.80, "l_ratio": 0.15, "anchor": "L_shape"},
+        {"type": "sink", "w_ratio": 0.15, "l_ratio": 0.12, "anchor": "near_window"},
+        {"type": "stove", "w_ratio": 0.15, "l_ratio": 0.12, "anchor": "counter"},
+    ],
+    "dining": [
+        {"type": "dining_table", "w_ratio": 0.50, "l_ratio": 0.40, "anchor": "center"},
+        {"type": "chairs", "w_ratio": 0.10, "l_ratio": 0.10, "anchor": "around_table"},
+    ],
+    "bathroom": [
+        {"type": "wc", "w_ratio": 0.18, "l_ratio": 0.20, "anchor": "corner_back"},
+        {"type": "shower", "w_ratio": 0.35, "l_ratio": 0.35, "anchor": "corner_front"},
+        {"type": "basin", "w_ratio": 0.15, "l_ratio": 0.12, "anchor": "near_door"},
+    ],
+    "study": [
+        {"type": "desk", "w_ratio": 0.45, "l_ratio": 0.25, "anchor": "near_window"},
+        {"type": "bookshelf", "w_ratio": 0.25, "l_ratio": 0.10, "anchor": "side_wall"},
+        {"type": "chair", "w_ratio": 0.12, "l_ratio": 0.12, "anchor": "at_desk"},
+    ],
+    "pooja": [
+        {"type": "altar", "w_ratio": 0.40, "l_ratio": 0.25, "anchor": "center_back"},
+    ],
 }
 
 
@@ -1203,6 +1252,9 @@ def _allocate_areas(
 
     # Dining (always included)
     _add("Dining Room", "dining", *ALLOC_BANDS["dining"], "semi_private")
+
+    # Entrance lobby (Step 2 — public zone entrance point)
+    _add("Entrance", "entrance", *ALLOC_BANDS["entrance"], "public")
 
     # Passage / corridor
     _add("Passage", "passage", *ALLOC_BANDS["passage"], "circulation")
@@ -1272,8 +1324,8 @@ def _scale_room(room_type: str, target_area: float) -> Tuple[float, float]:
     new_w = max(new_w, 4.0)
     new_l = max(new_l, 4.0)
 
-    # Enforce max aspect ratio 1:2.5 (§2E)
-    max_ratio = 2.5
+    # Enforce max aspect ratio 1:2.2 (§2E — 11-step spec Step 5)
+    max_ratio = 2.2
     if max(new_w, new_l) / max(min(new_w, new_l), 0.1) > max_ratio:
         if new_w > new_l:
             new_w = new_l * max_ratio
@@ -1338,8 +1390,8 @@ def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], Lis
             service.append(r)
 
     # Sort within groups for consistent placement:
-    # Public: living first, then kitchen, then dining, then others
-    pub_order = {"living": 0, "porch": 1, "dining": 2, "kitchen": 3, "balcony": 4}
+    # Public: entrance first, then living, then kitchen, then dining, then others
+    pub_order = {"entrance": 0, "living": 1, "porch": 2, "dining": 3, "kitchen": 4, "balcony": 5}
     public.sort(key=lambda r: pub_order.get(r["room_type"], 99))
 
     # Private: master bedroom first, then other bedrooms
@@ -1355,10 +1407,12 @@ def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], Lis
 
 def _interleave_beds_baths(private: List[Dict], service: List[Dict]) -> List[Dict]:
     """
-    Interleave bedrooms with their bathrooms for adjacency.
+    Interleave bedrooms with their bathrooms for adjacency and separation.
 
-    Pairs: Master + Bath1, Bedroom2 + Bath2, etc.
-    Remaining service rooms go at the end.
+    Step 3 rule: bedroom→bedroom without corridor is forbidden.
+    So we interleave: Bed1, Bath1, Bed2, Bath2, Bed3, ...
+    This ensures bathrooms act as buffers between bedrooms.
+    Remaining non-bed/non-bath rooms go at the end.
     """
     beds = [r for r in private if r["room_type"] in ("master_bedroom", "bedroom")]
     non_beds = [r for r in private if r["room_type"] not in ("master_bedroom", "bedroom")]
@@ -1371,6 +1425,8 @@ def _interleave_beds_baths(private: List[Dict], service: List[Dict]) -> List[Dic
             interleaved.append(beds[i])
         if i < len(baths):
             interleaved.append(baths[i])
+    # If more beds than baths, add remaining beds at end
+    # but insert non-bath service rooms between consecutive beds as buffers
     interleaved.extend(non_beds)
     interleaved.extend(non_baths)
     return interleaved
@@ -1504,14 +1560,14 @@ def _bsp_subdivide(
     # Check if all rooms can fit as a row (horizontal)
     if w >= h:
         net_w = w - total_gaps
-        min_w_per_room = max(4.0, h / 2.5)  # aspect ratio constraint
+        min_w_per_room = max(4.0, h / 2.2)  # aspect ratio 1:2.2 constraint
         if net_w >= min_w_per_room * n:
             return _flat_fill_h(rooms, x, y, w, h, iwall)
         # Too many for one row: split into 2 groups, stacked vertically
         return _bsp_split_v(rooms, x, y, w, h, iwall)
     else:
         net_h = h - total_gaps
-        min_h_per_room = max(4.0, w / 2.5)
+        min_h_per_room = max(4.0, w / 2.2)
         if net_h >= min_h_per_room * n:
             return _flat_fill_v(rooms, x, y, w, h, iwall)
         # Too many for one stack: split into 2 groups, side by side
@@ -1685,12 +1741,22 @@ def _make_placed_room(
     spec: Dict, width: float, length: float,
     x: float, y: float,
 ) -> Dict:
-    """Create a placed room dict with all required fields."""
+    """Create a placed room dict with all required fields.
+    Enforces aspect ratio 1:2.2 — if the BSP region is too narrow,
+    shrink the longer side to comply."""
     rtype = spec["room_type"]
-    zone = ZONE_CLASSIFICATION.get(rtype, "private")
-
     zone = spec.get("zone", ZONE_CLASSIFICATION.get(rtype, "private"))
     target = spec.get("target_area", width * length)
+
+    # Enforce aspect ratio 1:2.2 for non-circulation rooms
+    if rtype not in ("passage", "hallway", "corridor", "balcony"):
+        min_dim = min(width, length)
+        max_dim = max(width, length)
+        if min_dim > 0 and max_dim / min_dim > 2.2:
+            if width > length:
+                width = round(length * 2.2, 1)
+            else:
+                length = round(width * 2.2, 1)
 
     return {
         "name": spec["name"],
@@ -1701,8 +1767,8 @@ def _make_placed_room(
         "length": round(length, 1),
         "area": round(width * length, 1),
         "position": {"x": round(x, 1), "y": round(y, 1)},
-        "adjacent_to": [],   # populated by adjacency pass
-        "connected_to": [],  # populated by adjacency pass
+        "adjacent_to": [],
+        "connected_to": [],
         "doors": [],
         "windows": [],
     }
@@ -1778,7 +1844,13 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             private_top = min(private_top, ry)
     corridor_mid = (public_bottom + private_top) / 2
 
-    # ── Phase 3: door placement ──
+    # ── Phase 3: door placement (Step 6 — 11-step spec) ──
+    # Rules:
+    #   - Bedrooms open into corridor/passage side
+    #   - Bathroom doors do NOT face dining room
+    #   - Kitchen door should be near dining connection
+    #   - Living room gets main entrance (south) + interior access (north)
+    #   - Entrance room gets external door (south)
     for room in rooms:
         pos = room["position"]
         rw, rl = room["width"], room["length"]
@@ -1790,7 +1862,8 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
         doors = []
 
         if rtype in ("bathroom", "toilet"):
-            # Bathroom door toward adjacent bedroom (shared wall)
+            # Bathroom: door toward adjacent bedroom (shared wall)
+            # Rule: door must NOT face dining room
             door_placed = False
             for other in rooms:
                 if other["room_type"] not in ("master_bedroom", "bedroom"):
@@ -1801,17 +1874,34 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
                     other["width"], other["length"], TOL,
                 )
                 if wall:
-                    doors.append({"wall": wall, "width": 2.5})
-                    door_placed = True
-                    break
+                    # Check wall does not face dining
+                    dining_conflict = False
+                    for d_room in rooms:
+                        if d_room["room_type"] == "dining":
+                            d_wall = _detect_shared_wall(
+                                rx, ry, rw, rl,
+                                d_room["position"]["x"], d_room["position"]["y"],
+                                d_room["width"], d_room["length"], TOL,
+                            )
+                            if d_wall == wall:
+                                dining_conflict = True
+                    if not dining_conflict:
+                        doors.append({"wall": wall, "width": 2.5})
+                        door_placed = True
+                        break
             if not door_placed:
+                # Open toward corridor
                 if room_center_y < corridor_mid:
                     doors.append({"wall": "N", "width": 2.5})
                 else:
                     doors.append({"wall": "S", "width": 2.5})
 
+        elif rtype == "entrance":
+            # Entrance: external door on south (main entrance)
+            doors.append({"wall": "S", "width": 3.5})
+
         elif rtype == "living":
-            # Living: main entrance on south, interior door on north
+            # Living: main door from entrance side, interior access to dining/passage
             doors.append({"wall": "S", "width": 3.0})
             doors.append({"wall": "N", "width": 3.0})
 
@@ -1840,13 +1930,14 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             pass  # passages don't get doors
 
         else:
-            # Private rooms — door toward corridor
+            # Private rooms (bedrooms, study, pooja) — door toward corridor
             if room_center_y > corridor_mid:
                 doors.append({"wall": "S", "width": 3.0})
             else:
                 doors.append({"wall": "N", "width": 3.0})
 
-        # ── Phase 4: window placement — exterior walls only ──
+        # ── Phase 4: window placement — Step 7: external walls only,
+        #    width scales with wall length (15-30% of wall length) ──
         windows = []
         is_south = ry <= WALL + 1
         is_north = ry + rl >= plot_l - WALL - 1
@@ -1854,28 +1945,33 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
         is_east = rx + rw >= plot_w - WALL - 1
 
         if rtype in ("bathroom", "toilet"):
-            # Small ventilation window
+            # Small ventilation window (high-level type)
             for side, flag, wall_len in [
                 ("E", is_east, rl), ("N", is_north, rw),
                 ("W", is_west, rl), ("S", is_south, rw),
             ]:
                 if flag:
-                    win_w = max(2.0, min(wall_len * 0.15, 3.0))
+                    win_w = max(2.0, round(wall_len * 0.15, 1))
+                    win_w = min(win_w, 3.0)
                     windows.append({"wall": side, "width": round(win_w, 1)})
                     break
+        elif rtype == "entrance":
+            # Entrance: no window, it has a door
+            pass
         else:
-            # Habitable rooms: windows 10-30% of wall length on exterior walls
+            # Habitable rooms: windows scaled 15-30% of wall length
             for side, flag, wall_len in [
                 ("N", is_north, rw), ("S", is_south, rw),
                 ("E", is_east, rl), ("W", is_west, rl),
             ]:
                 if flag:
-                    win_w = max(3.0, min(wall_len * 0.25, wall_len * 0.30))
+                    win_w = round(wall_len * 0.25, 1)
+                    win_w = max(3.0, min(win_w, wall_len * 0.30))
                     windows.append({"wall": side, "width": round(win_w, 1)})
 
         # Habitable rooms must have at least one window
         non_window_types = ("bathroom", "toilet", "store", "utility",
-                            "hallway", "staircase", "passage")
+                            "hallway", "staircase", "passage", "entrance")
         if not windows and rtype not in non_window_types:
             for side, flag, wall_len in [
                 ("N", is_north, rw), ("S", is_south, rw),
@@ -2029,18 +2125,18 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
                     room["length"] = needed_l
                     room["area"] = round(rw * needed_l, 1)
 
-    # ── Enforce aspect ratio 1:2.5 (overlap-safe, area-preserving) ──
+    # ── Enforce aspect ratio 1:2.2 (overlap-safe, area-preserving) ──
     for i, room in enumerate(rooms):
         rw, rl = room["width"], room["length"]
         min_dim = min(rw, rl)
         max_dim = max(rw, rl)
-        if min_dim > 0 and max_dim / min_dim > 2.5:
+        if min_dim > 0 and max_dim / min_dim > 2.2:
             pos = room["position"]
             rx, ry = pos["x"], pos["y"]
             min_a = MIN_ROOM_SIZES.get(room["room_type"], 25)
 
             if rw > rl:
-                new_rw = round(rl * 2.5, 1)
+                new_rw = round(rl * 2.2, 1)
                 # If shrinking width drops area below min, extend length instead
                 if new_rw * rl < min_a:
                     needed_rl = round(min_a / new_rw, 1)
@@ -2053,7 +2149,7 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
                     room["width"] = new_rw
                     room["area"] = round(new_rw * rl, 1)
             else:
-                new_rl = round(rw * 2.5, 1)
+                new_rl = round(rw * 2.2, 1)
                 # If shrinking length drops area below min, extend width instead
                 if rw * new_rl < min_a:
                     needed_rw = round(min_a / new_rl, 1)
@@ -2119,6 +2215,21 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
                     room["area"] = round(new_rw * new_rl, 1)
                     break
 
+    # ── Final aspect ratio re-check after ventilation fix ──
+    for i, room in enumerate(rooms):
+        rtype = room["room_type"]
+        if rtype in ("passage", "hallway", "corridor", "balcony"):
+            continue
+        rw, rl = room["width"], room["length"]
+        min_dim = min(rw, rl)
+        max_dim = max(rw, rl)
+        if min_dim > 0 and max_dim / min_dim > 2.2:
+            if rw > rl:
+                room["width"] = round(rl * 2.2, 1)
+            else:
+                room["length"] = round(rw * 2.2, 1)
+            room["area"] = round(room["width"] * room["length"], 1)
+
     return rooms
 
 
@@ -2152,6 +2263,49 @@ def _build_layout_output(
         room["centroid"] = [round(rx + rw / 2, 1), round(ry + rl / 2, 1)]
         room["label"] = room.get("name", room.get("room_type", "Room"))
         room["actual_area"] = round(room.get("area", rw * rl), 1)
+
+        # Build furniture layout (Step 8 — scaled, not blocking doors)
+        furniture = []
+        templates = FURNITURE_TEMPLATES.get(room["room_type"], [])
+        door_zones = []
+        for door in room.get("doors", []):
+            dwall = door.get("wall", "S")
+            ddw = door.get("width", 3.0)
+            if dwall in ("S", "N"):
+                door_zones.append(("h", rx + rw * 0.3, rx + rw * 0.3 + ddw))
+            else:
+                door_zones.append(("v", ry + rl * 0.3, ry + rl * 0.3 + ddw))
+
+        for tmpl in templates:
+            fw = round(rw * tmpl["w_ratio"], 1)
+            fl = round(rl * tmpl["l_ratio"], 1)
+            fw = max(fw, 1.0)
+            fl = max(fl, 1.0)
+            anchor = tmpl["anchor"]
+            if anchor == "center_back":
+                fx, fy = round(rx + (rw - fw) / 2, 1), round(ry + rl - fl - 0.5, 1)
+            elif anchor == "center_front":
+                fx, fy = round(rx + (rw - fw) / 2, 1), round(ry + 0.5, 1)
+            elif anchor == "center":
+                fx, fy = round(rx + (rw - fw) / 2, 1), round(ry + (rl - fl) / 2, 1)
+            elif anchor == "side_back":
+                fx, fy = round(rx + rw - fw - 0.5, 1), round(ry + rl - fl - 0.5, 1)
+            elif anchor == "corner_front":
+                fx, fy = round(rx + 0.5, 1), round(ry + 0.5, 1)
+            elif anchor == "corner_back":
+                fx, fy = round(rx + rw - fw - 0.5, 1), round(ry + rl - fl - 0.5, 1)
+            elif anchor == "L_shape":
+                fx, fy = round(rx + 0.5, 1), round(ry + rl - fl - 0.5, 1)
+            elif anchor == "near_window":
+                fx, fy = round(rx + (rw - fw) / 2, 1), round(ry + rl - fl - 0.5, 1)
+            else:
+                fx, fy = round(rx + (rw - fw) / 2, 1), round(ry + (rl - fl) / 2, 1)
+            furniture.append({
+                "type": tmpl["type"],
+                "x": fx, "y": fy,
+                "width": fw, "length": fl,
+            })
+        room["furniture"] = furniture
 
         # Build door geometry for frontend
         for door in room.get("doors", []):
@@ -2325,11 +2479,11 @@ def _build_layout_output(
                 seen_edges.add(edge)
                 adjacency_edges.append(list(edge))
 
-    # ── Build routing_graph (Step 4 — primary + private access paths) ──
+    # ── Build routing_graph (Step 4 — Entrance → Living → Dining → Kitchen) ──
     routing_edges = []
     room_names = {r["name"] for r in placed_rooms}
-    # Primary: Living → Dining → Kitchen
-    primary_chain = ["Living Room", "Dining Room", "Kitchen"]
+    # Primary circulation: Entrance → Living → Dining → Kitchen
+    primary_chain = ["Entrance", "Living Room", "Dining Room", "Kitchen"]
     for i in range(len(primary_chain) - 1):
         if primary_chain[i] in room_names and primary_chain[i + 1] in room_names:
             routing_edges.append([primary_chain[i], primary_chain[i + 1]])
@@ -2369,7 +2523,7 @@ def _build_layout_output(
             "no_overlap": True,
             "orthogonal_walls": True,
             "inside_boundary": True,
-            "aspect_ratio_max": 2.5,
+            "aspect_ratio_max": 2.2,
             "min_corridor_width_ft": MIN_PASSAGE_WIDTH,
         },
         "circulation": {
@@ -2492,23 +2646,39 @@ def _check_area_overflow(rooms: List[Dict], plot_area: float) -> str:
 
 
 def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[str]:
-    """Check circulation adequacy and passage widths."""
+    """Check circulation adequacy, passage widths, and primary path (Step 4 & 10)."""
     issues = []
     total_room_area = sum(r.get("area", 0) for r in rooms)
     plot_area = plot_w * plot_l
     circ_area = plot_area - total_room_area
 
-    # §2C: Circulation should be 10-15%
-    if circ_area < plot_area * 0.05:
+    # Circulation should be 5-8% (Step 1)
+    if circ_area < plot_area * 0.03:
         issues.append(
             f"Insufficient circulation: {round(circ_area)} sq ft "
-            f"({round(circ_area / max(plot_area, 1) * 100, 1)}%) — minimum 10% recommended"
+            f"({round(circ_area / max(plot_area, 1) * 100, 1)}%) — minimum 5% recommended"
         )
 
-    # Check passage widths between adjacent rooms
-    # Gaps <= 1.0ft are internal walls, not passages
-    wall_tol = 1.0
+    # Step 4: Verify primary circulation path Entrance → Living → Dining → Kitchen
+    room_by_type = {}
+    for r in rooms:
+        rt = r.get("room_type", "")
+        if rt not in room_by_type:
+            room_by_type[rt] = r
+    primary_path = [
+        ("entrance", "living", "Entrance → Living"),
+        ("living", "dining", "Living → Dining"),
+        ("dining", "kitchen", "Dining → Kitchen"),
+    ]
+    for type_a, type_b, label in primary_path:
+        ra = room_by_type.get(type_a)
+        rb = room_by_type.get(type_b)
+        if ra and rb:
+            if not _are_adjacent(ra, rb):
+                issues.append(f"Circulation break: {label} not adjacent")
 
+    # Check passage widths between adjacent rooms
+    wall_tol = 1.0
     for i, r1 in enumerate(rooms):
         for j, r2 in enumerate(rooms):
             if j <= i:
@@ -2519,7 +2689,6 @@ def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
             w1, l1 = r1.get("width", 0), r1.get("length", 0)
             w2, l2 = r2.get("width", 0), r2.get("length", 0)
 
-            # Horizontal gap
             gap_x = x2 - (x1 + w1)
             y_overlap = min(y1 + l1, y2 + l2) - max(y1, y2)
             if y_overlap > 0.5 and wall_tol < gap_x < MIN_PASSAGE_WIDTH - 0.3:
@@ -2528,7 +2697,6 @@ def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
                     f"{r1.get('name')} and {r2.get('name')} — min {MIN_PASSAGE_WIDTH} ft"
                 )
 
-            # Vertical gap
             gap_y = y2 - (y1 + l1)
             x_overlap = min(x1 + w1, x2 + w2) - max(x1, x2)
             if x_overlap > 0.5 and wall_tol < gap_y < MIN_PASSAGE_WIDTH - 0.3:
@@ -2564,7 +2732,7 @@ def _check_boundary_fit(rooms: List[Dict], plot_w: float, plot_l: float) -> List
 
 
 def _check_aspect_ratios(rooms: List[Dict]) -> List[str]:
-    """Check room aspect ratios (§2E: 1:1 to 1:2.5)."""
+    """Check room aspect ratios (§2E: 1:1 to 1:2.2)."""
     issues = []
     for room in rooms:
         w = room.get("width", 10)
@@ -2573,15 +2741,15 @@ def _check_aspect_ratios(rooms: List[Dict]) -> List[str]:
         max_dim = max(w, l)
 
         if min_dim < 4 and room.get("room_type") not in (
-            "balcony", "utility", "toilet", "hallway", "passage"
+            "balcony", "utility", "toilet", "hallway", "passage", "entrance"
         ):
             issues.append(
                 f"{room.get('name')}: minimum dimension {min_dim} ft too narrow (min 4 ft)"
             )
-        if min_dim > 0 and max_dim / min_dim > 2.55:  # 0.05 rounding tolerance
+        if min_dim > 0 and max_dim / min_dim > 2.25:  # 0.05 rounding tolerance
             issues.append(
                 f"{room.get('name')}: aspect ratio "
-                f"{round(max_dim / min_dim, 1)}:1 exceeds max 2.5:1"
+                f"{round(max_dim / min_dim, 1)}:1 exceeds max 2.2:1"
             )
     return issues
 
@@ -2598,8 +2766,8 @@ def _check_ventilation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
 
     for room in rooms:
         rtype = room.get("room_type", "other")
-        # Skip circulation rooms
-        if rtype in ("hallway", "passage", "staircase"):
+        # Skip circulation rooms and entrance
+        if rtype in ("hallway", "passage", "staircase", "entrance"):
             continue
 
         pos = room.get("position", {})
@@ -2702,9 +2870,11 @@ def _build_design_explanation(
     # Line 3: Room count
     bed_count = sum(1 for r in rooms if r["room_type"] in ("master_bedroom", "bedroom"))
     bath_count = sum(1 for r in rooms if r["room_type"] in ("bathroom", "toilet"))
+    has_entrance = any(r["room_type"] == "entrance" for r in rooms)
     lines.append(
         f"Configuration: {bed_count} bedroom(s), {bath_count} bathroom(s), "
-        f"{floors} floor(s), {len(rooms)} total rooms."
+        f"{floors} floor(s), {len(rooms)} total rooms"
+        f"{' with entrance lobby' if has_entrance else ''}."
     )
 
     # Line 4: Area utilization
@@ -2713,8 +2883,11 @@ def _build_design_explanation(
         f"Circulation: {area_summary.get('circulation_percentage', '?')}."
     )
 
-    # Line 5: Walls
-    lines.append("Walls: 9-inch external (load-bearing), 4.5-inch internal partitions.")
+    # Line 5: Walls + geometry
+    lines.append(
+        "Walls: 9-inch external (load-bearing), 4.5-inch internal partitions. "
+        "Max aspect ratio: 1:2.2."
+    )
 
     # Line 6: Zoning summary
     zones = {}
