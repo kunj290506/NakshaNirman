@@ -20,6 +20,9 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
     const [step, setStep] = useState(0)
     const [inputMode, setInputMode] = useState('plot') // 'plot' or 'boundary'
     const [totalArea, setTotalArea] = useState(1200)
+    const [plotWidth, setPlotWidth] = useState(30)
+    const [plotLength, setPlotLength] = useState(40)
+    const [areaInputMode, setAreaInputMode] = useState('dimensions') // 'dimensions' or 'sqft'
     const [selectedRooms, setSelectedRooms] = useState({
         master_bedroom: { selected: true, qty: 1 },
         bedroom: { selected: true, qty: 1 },
@@ -112,6 +115,8 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
             floors: requirements?.floors || 1,
             bedrooms: rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0),
             bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0),
+            plot_width: plotWidth || null,
+            plot_length: plotLength || null,
         }
         onGenerate(rooms, totalArea, mergedRequirements)
     }
@@ -194,22 +199,93 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
                         <>
                             <h3>Plot Details</h3>
                             <div className="form-group">
-                                <label>Total Area (sq ft)</label>
-                                <input
-                                    className="form-input"
-                                    type="number"
-                                    value={totalArea}
-                                    onChange={(e) => setTotalArea(parseInt(e.target.value) || 0)}
-                                    min={100}
-                                    max={50000}
-                                    placeholder="Enter total plot area"
-                                />
-                                <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.35rem' }}>
-                                    Typical: 600 (1BHK) / 1200 (2BHK) / 1800 (3BHK) / 2500+ (4BHK)
+                                {/* Area input mode toggle */}
+                                <div style={{ display: 'flex', gap: 0, marginBottom: '0.75rem',
+                                    border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                                    <button
+                                        onClick={() => setAreaInputMode('dimensions')}
+                                        style={{
+                                            flex: 1, padding: '0.5rem', border: 'none', cursor: 'pointer',
+                                            fontSize: '0.78rem', fontWeight: 600,
+                                            background: areaInputMode === 'dimensions' ? '#111' : '#fff',
+                                            color: areaInputMode === 'dimensions' ? '#fff' : '#64748b',
+                                        }}
+                                    >Width × Length</button>
+                                    <button
+                                        onClick={() => setAreaInputMode('sqft')}
+                                        style={{
+                                            flex: 1, padding: '0.5rem', border: 'none', cursor: 'pointer',
+                                            fontSize: '0.78rem', fontWeight: 600, borderLeft: '1px solid #e2e8f0',
+                                            background: areaInputMode === 'sqft' ? '#111' : '#fff',
+                                            color: areaInputMode === 'sqft' ? '#fff' : '#64748b',
+                                        }}
+                                    >Total Sq Ft</button>
                                 </div>
+
+                                {areaInputMode === 'dimensions' ? (
+                                    <div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '0.5rem',
+                                            alignItems: 'center', marginBottom: '0.4rem' }}>
+                                            <div>
+                                                <label style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600 }}>Width (ft)</label>
+                                                <input
+                                                    className="form-input"
+                                                    type="number"
+                                                    value={plotWidth}
+                                                    onChange={(e) => {
+                                                        const w = parseInt(e.target.value) || 0
+                                                        setPlotWidth(w)
+                                                        setTotalArea(w * plotLength)
+                                                    }}
+                                                    min={10} max={200} placeholder="30"
+                                                />
+                                            </div>
+                                            <span style={{ textAlign: 'center', fontWeight: 700, color: '#94a3b8',
+                                                paddingTop: '1.2rem' }}>×</span>
+                                            <div>
+                                                <label style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600 }}>Length (ft)</label>
+                                                <input
+                                                    className="form-input"
+                                                    type="number"
+                                                    value={plotLength}
+                                                    onChange={(e) => {
+                                                        const l = parseInt(e.target.value) || 0
+                                                        setPlotLength(l)
+                                                        setTotalArea(plotWidth * l)
+                                                    }}
+                                                    min={10} max={200} placeholder="40"
+                                                />
+                                            </div>
+                                        </div>
+                                        <div style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 600, textAlign: 'center' }}>
+                                            = {plotWidth * plotLength} sq ft total area
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600 }}>Total Area (sq ft)</label>
+                                        <input
+                                            className="form-input"
+                                            type="number"
+                                            value={totalArea}
+                                            onChange={(e) => {
+                                                setTotalArea(parseInt(e.target.value) || 0)
+                                                setPlotWidth(null)
+                                                setPlotLength(null)
+                                            }}
+                                            min={100} max={50000} placeholder="1200"
+                                        />
+                                        <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '0.3rem' }}>
+                                            2BHK: ~1200 sqft | 3BHK: ~1800 sqft | 4BHK: ~2500 sqft
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                             <button className="btn btn-primary" onClick={() => setStep(1)} style={{ width: '100%', marginTop: '1rem' }}
-                                disabled={!totalArea || totalArea < 100}
+                                disabled={areaInputMode === 'dimensions'
+                                    ? !plotWidth || !plotLength || plotWidth < 10 || plotLength < 10
+                                    : !totalArea || totalArea < 100
+                                }
                             >
                                 Next
                                 <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">

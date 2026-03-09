@@ -8,8 +8,11 @@ Includes fallback rule-based chatbot when Groq is unavailable.
 import json
 import re
 import asyncio
+import logging
 from typing import Optional
 from config import GROQ_API_KEY, GROQ_MODEL
+
+logger = logging.getLogger(__name__)
 
 # Groq client (lazy init)
 _groq_client = None
@@ -458,35 +461,29 @@ async def chat_with_groq(message: str, history: list) -> dict:
 
         # Extract structured data (pure JSON expected from new prompt)
         extracted = _extract_json_from_response(reply)
-        should_generate = False
 
-        if extracted:
-            mode = extracted.get("mode", "")
-            # Designing or modifying mode → trigger plan generation
-            should_generate = mode in ("designing", "modifying")
-            # Legacy fallback
-            if not should_generate:
-                should_generate = extracted.get("ready_to_generate", False) or extracted.get("requirements_complete", False)
+        if not extracted:
+            # Groq returned plain text — treat as collecting, show text as-is
+            return {
+                "reply": reply,
+                "extracted_data": {"mode": "collecting"},
+                "should_generate": False,
+            }
+
+        mode = extracted.get("mode", "collecting")
+        should_generate = mode in ("designing", "modifying")
 
         # Build a human-readable reply for display
-        if extracted:
-            mode = extracted.get("mode", "")
-            if mode == "collecting":
-                # Show the question to the user
-                clean_reply = extracted.get("question", "")
-                context = extracted.get("context_understood", "")
-                if context and clean_reply:
-                    clean_reply = f"{context}\n\n{clean_reply}"
-                elif not clean_reply:
-                    clean_reply = reply
-            elif mode in ("designing", "modifying"):
-                # Show the architect note
-                clean_reply = extracted.get("architect_note", "Your floor plan is being generated!")
+        if mode == "collecting":
+            question = extracted.get("question", "")
+            context = extracted.get("context_understood", "")
+            if context and question:
+                clean_reply = f"{context}\n\n{question}"
             else:
-                # Legacy format: strip JSON/code fences for display
-                clean_reply = re.sub(r'```(?:json)?\s*.*?\s*```', '', reply, flags=re.DOTALL).strip()
-                if not clean_reply:
-                    clean_reply = reply
+                clean_reply = question or context or reply
+        elif mode in ("designing", "modifying"):
+            clean_reply = extracted.get("architect_note",
+                "Your floor plan is being generated based on your requirements.")
         else:
             clean_reply = reply
 
@@ -497,7 +494,7 @@ async def chat_with_groq(message: str, history: list) -> dict:
         }
 
     except Exception as e:
-        # Fallback on any Groq error
+        logger.warning(f"Groq API call failed: {e}. Falling back to rule-based chat.")
         return _fallback_chat(message, history)
 
 

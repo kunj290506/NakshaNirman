@@ -130,6 +130,8 @@ export default function Workspace() {
             const roomPayload = {
                 project_id: pid,
                 total_area: totalArea,
+                plot_width: requirements?.plot_width || null,
+                plot_length: requirements?.plot_length || null,
                 rooms: rooms,
                 bedrooms: requirements?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
                 bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
@@ -141,35 +143,28 @@ export default function Workspace() {
 
             console.log('[Design] Sending payload:', JSON.stringify(roomPayload, null, 2))
 
-            // Use Multi-Factor Architectural Reasoning Engine (primary)
-            // Falls back to GNN engine if architect engine is unavailable
             let data
             try {
-                // Try multi-factor architect engine first
-                let res = await fetch('/api/architect/design', {
+                const res = await fetch('/api/architect/design', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(roomPayload),
                 })
+
+                const json = await res.json().catch(() => ({}))
+
                 if (!res.ok) {
-                    // Fallback to GNN engine
-                    console.warn('[Design] Architect engine failed, falling back to GNN')
-                    res = await fetch('/api/gnn/design', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(roomPayload),
-                    })
+                    throw new Error(json.detail || json.error || 'Floor plan generation failed. Please check your inputs.')
                 }
-                if (res.ok) {
-                    const json = await res.json()
-                    if (json.layout) {
-                        data = { plan: json.layout, project_id: json.project_id || pid }
-                    } else if (json.plan) {
-                        data = json
-                    }
+
+                if (json.layout) {
+                    data = { plan: json.layout, project_id: json.project_id || pid }
+                } else if (json.plan) {
+                    data = json
+                } else if (json.error) {
+                    throw new Error(json.error + (json.suggestion ? ' ' + json.suggestion : ''))
                 } else {
-                    const errData = await res.json().catch(() => ({}))
-                    throw new Error(errData.detail || 'Design generation failed')
+                    throw new Error('No floor plan was returned. Please try again.')
                 }
             } catch (err) {
                 throw new Error(err.message || 'Failed to connect to design engine')

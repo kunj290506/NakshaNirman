@@ -379,15 +379,15 @@ export default function AIDesignChat({
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ message: text, project_id: projectId }))
     } else {
-      fetch('/api/ai-design/analyze', {
+      fetch('/api/architect/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, project_id: projectId }),
+        body: JSON.stringify({ message: text, history: [], project_id: projectId }),
       })
         .then(res => res.json())
         .then(data => {
           setIsTyping(false)
-          const reply = data.reasoning || data.reply || data.message || 'Understood. Please continue.'
+          const reply = data.reply || data.message || 'Understood. Please continue.'
           addAssistantMessage(reply)
           handleDataFromResponse(data)
         })
