@@ -20,6 +20,9 @@ from typing import Optional, List, Dict, Any
 from services.engine_registry import generate as engine_generate, DEFAULT_ENGINE
 from services.cad_export import generate_dxf
 from services.chat import chat_with_groq
+from services.design_intelligence import (
+    build_design_brief, score_layout, generate_architect_narrative,
+)
 from config import EXPORT_DIR
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,8 @@ class ArchitectDesignResponse(BaseModel):
     dxf_url: Optional[str] = None
     error: Optional[str] = None
     suggestion: Optional[str] = None
+    design_score: Optional[Dict] = None
+    architect_narrative: Optional[str] = None
 
 
 # ──────────── DXF Generation Helper ────────────
@@ -113,7 +118,11 @@ async def architect_design(req: ArchitectDesignRequest):
             "boundary_polygon": req.boundary_polygon,
         }
 
-        result = engine_generate(DEFAULT_ENGINE, input_data)
+        # Enrich input with design intelligence
+        brief = build_design_brief(input_data)
+        engine_input = brief["engine_input"]
+
+        result = engine_generate(DEFAULT_ENGINE, engine_input)
 
         if "error" in result:
             return ArchitectDesignResponse(
@@ -126,6 +135,12 @@ async def architect_design(req: ArchitectDesignRequest):
         if req.project_id and layout.get("rooms"):
             dxf_url = await _generate_dxf(req.project_id, layout)
 
+        # Score the layout
+        pw = engine_input.get("plot_width") or 30
+        pl = engine_input.get("plot_length") or 40
+        score_data = score_layout(layout.get("rooms", []), pw, pl, engine_input)
+        narrative = generate_architect_narrative(engine_input, score_data, pw, pl)
+
         return ArchitectDesignResponse(
             engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
@@ -133,6 +148,8 @@ async def architect_design(req: ArchitectDesignRequest):
             layout=layout,
             validation=result.get("validation"),
             dxf_url=dxf_url,
+            design_score=score_data,
+            architect_narrative=narrative,
         )
 
     except Exception as e:
@@ -161,7 +178,11 @@ async def architect_redesign(req: ArchitectRedesignRequest):
             "boundary_polygon": req.boundary_polygon,
         }
 
-        result = engine_generate(DEFAULT_ENGINE, input_data)
+        # Enrich input with design intelligence
+        brief = build_design_brief(input_data)
+        engine_input = brief["engine_input"]
+
+        result = engine_generate(DEFAULT_ENGINE, engine_input)
 
         if "error" in result:
             return ArchitectDesignResponse(
@@ -174,6 +195,12 @@ async def architect_redesign(req: ArchitectRedesignRequest):
         if req.project_id and layout.get("rooms"):
             dxf_url = await _generate_dxf(req.project_id, layout)
 
+        # Score the layout
+        pw = engine_input.get("plot_width") or 30
+        pl = engine_input.get("plot_length") or 40
+        score_data = score_layout(layout.get("rooms", []), pw, pl, engine_input)
+        narrative = generate_architect_narrative(engine_input, score_data, pw, pl)
+
         return ArchitectDesignResponse(
             engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
@@ -181,6 +208,8 @@ async def architect_redesign(req: ArchitectRedesignRequest):
             layout=layout,
             validation=result.get("validation"),
             dxf_url=dxf_url,
+            design_score=score_data,
+            architect_narrative=narrative,
         )
 
     except Exception as e:
@@ -298,6 +327,10 @@ async def architect_ws(websocket: WebSocket):
                     }))
                     continue
 
+                # Enrich with design intelligence
+                brief = build_design_brief(engine_input)
+                engine_input = brief["engine_input"]
+
                 try:
                     result = engine_generate(DEFAULT_ENGINE, engine_input)
                 except Exception as eng_err:
@@ -316,7 +349,14 @@ async def architect_ws(websocket: WebSocket):
                     continue
 
                 layout = result.get("layout", {})
-                architect_note = extracted.get("architect_note", "") or result.get("explanation", "Your floor plan is ready.")
+
+                # Score the layout
+                pw = engine_input.get("plot_width") or 30
+                pl = engine_input.get("plot_length") or 40
+                score_data = score_layout(layout.get("rooms", []), pw, pl, engine_input)
+                narrative = generate_architect_narrative(engine_input, score_data, pw, pl)
+
+                architect_note = narrative or extracted.get("architect_note", "") or result.get("explanation", "Your floor plan is ready.")
 
                 dxf_url = None
                 if project_id and layout.get("rooms"):
@@ -337,6 +377,8 @@ async def architect_ws(websocket: WebSocket):
                     "validation": result.get("validation"),
                     "dxf_url": dxf_url,
                     "should_generate": True,
+                    "design_score": score_data,
+                    "architect_notes": brief.get("architect_notes", []),
                     "extracted_data": {
                         "rooms": rooms_list,
                         "total_area": engine_input.get("total_area"),
