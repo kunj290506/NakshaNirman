@@ -19,6 +19,7 @@ from typing import Optional, List, Dict, Any
 
 from services.engine_registry import generate as engine_generate, DEFAULT_ENGINE
 from services.cad_export import generate_dxf
+from services.chat import chat_with_groq
 from config import EXPORT_DIR
 
 logger = logging.getLogger(__name__)
@@ -335,35 +336,87 @@ async def architect_ws(websocket: WebSocket):
                 })
 
             else:
-                # CHAT MODE — collect more info
-                missing = []
-                if not has_area:
-                    missing.append("plot size (e.g., 30x40 feet or 1200 sq ft)")
-                if not has_beds:
-                    missing.append("number of bedrooms")
-                if not has_baths:
-                    missing.append("number of bathrooms")
+                # CHAT MODE — use Groq AI for intelligent conversation
+                groq_result = await chat_with_groq(user_text, history)
 
-                if missing:
-                    reply = (
-                        f"I still need: {', '.join(missing)}. "
-                        f"Please provide these details so I can generate "
-                        f"your architectural plan."
-                    )
+                extracted = groq_result.get("extracted_data")
+                should_gen = groq_result.get("should_generate", False)
+
+                if should_gen and extracted and extracted.get("mode") in ("designing", "modifying"):
+                    # Groq says it has enough info — translate and generate
+                    engine_input = _groq_to_engine(extracted, collected_requirements)
+                    collected_requirements.update(engine_input)
+
+                    result = engine_generate(DEFAULT_ENGINE, collected_requirements)
+
+                    if "error" in result:
+                        await websocket.send_text(json.dumps({
+                            "mode": "error",
+                            "reply": result["error"],
+                            "suggestion": result.get("suggestion"),
+                        }))
+                    else:
+                        layout = result.get("layout", {})
+                        last_strategy = layout.get("zoning_strategy")
+
+                        dxf_url = None
+                        if project_id and layout.get("rooms"):
+                            try:
+                                dxf_url = await _generate_dxf(project_id, layout)
+                            except Exception:
+                                pass
+
+                        architect_note = extracted.get("architect_note", result.get("explanation", ""))
+
+                        await websocket.send_text(json.dumps({
+                            "mode": "design",
+                            "reply": architect_note,
+                            "layout": layout,
+                            "validation": result.get("validation"),
+                            "dxf_url": dxf_url,
+                            "should_generate": True,
+                            "extracted_data": {
+                                "rooms": [
+                                    {"room_type": r["room_type"], "quantity": 1}
+                                    for r in layout.get("rooms", [])
+                                ],
+                                "total_area": collected_requirements.get("total_area"),
+                                "ready_to_generate": True,
+                            },
+                        }))
+
+                    history.append({
+                        "role": "assistant",
+                        "content": extracted.get("architect_note", "Plan generated."),
+                    })
                 else:
-                    reply = (
-                        "All requirements collected. "
-                        "Say 'generate plan' to create your floor plan."
-                    )
+                    # Groq is still collecting — send its question to user
+                    if extracted and extracted.get("mode") == "collecting":
+                        reply = extracted.get("question", groq_result.get("reply", "Could you tell me more?"))
+                        context = extracted.get("context_understood", "")
+                        if context and reply:
+                            reply = f"{context}\n\n{reply}"
+                    else:
+                        reply = groq_result.get("reply", "Please tell me about your plot size and room requirements.")
 
-                await websocket.send_text(json.dumps({
-                    "mode": "chat",
-                    "reply": reply,
-                    "collected": collected_requirements,
-                    "ready": is_complete,
-                }))
+                    # Update collected_requirements from Groq's collected_so_far
+                    if extracted and extracted.get("collected_so_far"):
+                        csf = extracted["collected_so_far"]
+                        for key in ("plot_width", "plot_depth", "total_area", "bedrooms", "bathrooms", "floors"):
+                            if csf.get(key) is not None:
+                                mapped_key = "plot_length" if key == "plot_depth" else key
+                                collected_requirements[mapped_key] = csf[key]
+                        if csf.get("extras"):
+                            collected_requirements["extras"] = csf["extras"]
 
-                history.append({"role": "assistant", "content": reply})
+                    await websocket.send_text(json.dumps({
+                        "mode": "chat",
+                        "reply": reply,
+                        "collected": collected_requirements,
+                        "ready": is_complete,
+                    }))
+
+                    history.append({"role": "assistant", "content": reply})
 
     except WebSocketDisconnect:
         pass
@@ -376,6 +429,51 @@ async def architect_ws(websocket: WebSocket):
             }))
         except Exception:
             pass
+
+
+def _groq_to_engine(groq_json: dict, existing: dict) -> dict:
+    """Translate Groq's designing-mode JSON into engine input format."""
+    result = dict(existing)
+
+    # Extract from Groq's plot object
+    plot = groq_json.get("plot", {})
+    if plot.get("width"): result["plot_width"] = plot["width"]
+    if plot.get("depth"): result["plot_length"] = plot["depth"]
+    if plot.get("total_area"): result["total_area"] = plot["total_area"]
+
+    # Count rooms from Groq's rooms array
+    rooms = groq_json.get("rooms", [])
+    if rooms:
+        bedrooms = sum(1 for r in rooms if r.get("type") in ("master_bedroom", "bedroom"))
+        bathrooms = sum(1 for r in rooms if r.get("type") in ("bathroom", "toilet"))
+        extras = [r["type"] for r in rooms
+                  if r.get("type") not in ("master_bedroom", "bedroom", "bathroom",
+                                           "toilet", "living", "kitchen", "dining", "passage")]
+
+        if bedrooms > 0: result["bedrooms"] = bedrooms
+        if bathrooms > 0: result["bathrooms"] = bathrooms
+        if extras: result["extras"] = extras
+
+        # Pass Groq's room specs as constraints for the engine
+        result["groq_room_specs"] = [
+            {
+                "room_type": r.get("type"),
+                "target_area": r.get("target_area"),
+                "min_area": r.get("min_area"),
+                "preferred_width": r.get("preferred_width"),
+                "preferred_depth": r.get("preferred_depth"),
+                "zone": r.get("zone"),
+                "vastu_zone": r.get("vastu_zone"),
+            }
+            for r in rooms if r.get("type")
+        ]
+
+    # Facing/orientation from Groq
+    if plot.get("facing"): result["facing"] = plot["facing"]
+    if groq_json.get("design_strategy", {}).get("entrance_position"):
+        result["entrance_position"] = groq_json["design_strategy"]["entrance_position"]
+
+    return result
 
 
 import re as _re

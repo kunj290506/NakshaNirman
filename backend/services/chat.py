@@ -7,6 +7,7 @@ Includes fallback rule-based chatbot when Groq is unavailable.
 
 import json
 import re
+import asyncio
 from typing import Optional
 from config import GROQ_API_KEY, GROQ_MODEL
 
@@ -437,15 +438,20 @@ async def chat_with_groq(message: str, history: list) -> dict:
 
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in history:
+        for msg in history[-8:]:  # last 8 turns — keeps context window manageable
             messages.append({"role": msg["role"], "content": msg["content"]})
         messages.append({"role": "user", "content": message})
 
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=4096,
+        # Run synchronous Groq SDK in thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                temperature=0.4,
+                max_tokens=3000,
+            )
         )
 
         reply = response.choices[0].message.content
