@@ -30,6 +30,10 @@ const initialState = {
     constraints: {},
     circulation: null,
 
+    // Design Intelligence
+    designScore: null,         // { composite, grade, breakdown, issues, vastu_bonuses, ... }
+    architectNarrative: null,  // professional architect text
+
     // Editing
     selectedRoomId: null,
     editHistory: [],   // undo stack
@@ -115,6 +119,8 @@ function layoutReducer(state, action) {
                 constraints: layout.constraints || {},
                 circulation: layout.circulation || null,
                 plot: layout.plot || state.plot,
+                designScore: action.designScore || null,
+                architectNarrative: action.architectNarrative || null,
                 selectedRoomId: null,
                 isDirty: false,
                 previewMode: '2d',
@@ -255,7 +261,7 @@ export function useLayoutActions() {
         setProject: useCallback((id) => dispatch({ type: Actions.SET_PROJECT, projectId: id }), [dispatch]),
         setPlot: useCallback((plot) => dispatch({ type: Actions.SET_PLOT, plot }), [dispatch]),
         setBoundary: useCallback((boundary, data) => dispatch({ type: Actions.SET_BOUNDARY, boundary, boundaryData: data }), [dispatch]),
-        setLayout: useCallback((layout) => dispatch({ type: Actions.SET_LAYOUT, layout }), [dispatch]),
+        setLayout: useCallback((layout, designScore, architectNarrative) => dispatch({ type: Actions.SET_LAYOUT, layout, designScore, architectNarrative }), [dispatch]),
         clearLayout: useCallback(() => dispatch({ type: Actions.CLEAR_LAYOUT }), [dispatch]),
         newProject: useCallback(() => dispatch({ type: Actions.NEW_PROJECT }), [dispatch]),
         selectRoom: useCallback((id) => dispatch({ type: Actions.SELECT_ROOM, roomId: id }), [dispatch]),

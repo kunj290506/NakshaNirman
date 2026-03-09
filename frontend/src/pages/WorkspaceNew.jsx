@@ -72,6 +72,8 @@ export default function Workspace() {
             const payload = {
                 project_id: pid,
                 total_area: totalArea,
+                plot_width: requirements?.plot_width || null,
+                plot_length: requirements?.plot_length || null,
                 rooms,
                 bedrooms: requirements?.bedrooms || rooms.filter(r => ['bedroom', 'master_bedroom'].includes(r.room_type)).reduce((s, r) => s + (r.quantity || 1), 0) || 2,
                 bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
@@ -84,7 +86,7 @@ export default function Workspace() {
             const json = await api.generateDesign(payload)
 
             if (json.layout) {
-                actions.setLayout(json.layout)
+                actions.setLayout(json.layout, json.design_score, json.architect_narrative)
                 if (json.project_id) actions.setProject(json.project_id)
             } else if (json.error) {
                 actions.setError(json.error)

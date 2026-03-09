@@ -29,7 +29,7 @@ const ZONE_LABELS = {
 export default function PropertyPanel() {
     const { state } = useLayout()
     const actions = useLayoutActions()
-    const { rooms, selectedRoomId, layout, zones } = state
+    const { rooms, selectedRoomId, layout, zones, designScore, architectNarrative } = state
 
     const selectedRoom = rooms.find(r => r.id === selectedRoomId)
 
@@ -147,6 +147,104 @@ export default function PropertyPanel() {
                         <span>{layout.area_summary.utilization_percentage}</span>
                         <label>Circulation</label>
                         <span>{layout.area_summary.circulation_percentage}</span>
+                    </div>
+                </div>
+            )}
+
+            {/* Design Score Card */}
+            {designScore && (
+                <div className="property-section score-card">
+                    <div className="property-section-title">Design Quality</div>
+
+                    {/* Score Ring */}
+                    <div className="score-ring-container">
+                        <svg width="100" height="100" viewBox="0 0 100 100">
+                            <circle cx="50" cy="50" r="42" fill="none" stroke="#e5e7eb" strokeWidth="8" />
+                            <circle cx="50" cy="50" r="42" fill="none" stroke={
+                                designScore.composite >= 80 ? '#22c55e' :
+                                designScore.composite >= 60 ? '#eab308' : '#ef4444'
+                            } strokeWidth="8" strokeDasharray={`${designScore.composite * 2.64} 264`}
+                              strokeLinecap="round" transform="rotate(-90 50 50)"
+                              style={{ transition: 'stroke-dasharray 0.8s ease' }} />
+                            <text x="50" y="46" textAnchor="middle" fontSize="22" fontWeight="700" fill="#1f2937">
+                                {designScore.composite}
+                            </text>
+                            <text x="50" y="62" textAnchor="middle" fontSize="12" fill="#6b7280">
+                                {designScore.grade}
+                            </text>
+                        </svg>
+                    </div>
+
+                    {/* Breakdown Bars */}
+                    {designScore.breakdown && (
+                        <div className="score-breakdown">
+                            {Object.entries(designScore.breakdown).map(([dim, info]) => (
+                                <div key={dim} className="score-bar-row">
+                                    <span className="score-bar-label">
+                                        {dim.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                                    </span>
+                                    <div className="score-bar-track">
+                                        <div
+                                            className="score-bar-fill"
+                                            style={{
+                                                width: `${info.score}%`,
+                                                background: info.score >= 80 ? '#22c55e' : info.score >= 60 ? '#eab308' : '#ef4444',
+                                                transition: 'width 0.6s ease',
+                                            }}
+                                        />
+                                    </div>
+                                    <span className="score-bar-value">{info.score}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Climate + Family badges */}
+                    {(designScore.climate_zone || designScore.family_type) && (
+                        <div className="score-badges">
+                            {designScore.climate_zone && (
+                                <span className="badge badge-climate">{designScore.climate_zone}</span>
+                            )}
+                            {designScore.family_type && (
+                                <span className="badge badge-family">
+                                    {designScore.family_type.replace(/_/g, ' ')}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Vastu Bonuses */}
+                    {designScore.vastu_bonuses?.length > 0 && (
+                        <div className="score-issues">
+                            <div className="score-issues-title vastu-bonus">Vastu Highlights</div>
+                            {designScore.vastu_bonuses.slice(0, 5).map((b, i) => (
+                                <div key={i} className="score-issue-item bonus">✓ {b.message}</div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Issues */}
+                    {designScore.issues?.length > 0 && (
+                        <div className="score-issues">
+                            <div className="score-issues-title">Issues ({designScore.issues.length})</div>
+                            {designScore.issues.slice(0, 6).map((issue, i) => (
+                                <div key={i} className={`score-issue-item ${issue.severity || 'warning'}`}>
+                                    {issue.severity === 'critical' ? '✗' : '○'} {issue.message}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Architect Narrative */}
+            {architectNarrative && (
+                <div className="property-section">
+                    <div className="property-section-title">Architect's Note</div>
+                    <div className="architect-narrative">
+                        {architectNarrative.split('\n').filter(Boolean).map((line, i) => (
+                            <p key={i}>{line}</p>
+                        ))}
                     </div>
                 </div>
             )}
