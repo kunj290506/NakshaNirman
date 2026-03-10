@@ -7,7 +7,7 @@ A house is a spatial journey — entry sequence -> public zone -> private retrea
 Core design philosophy:
   1. Spatial hierarchy   — Entry -> Living -> Dining -> Circulation -> Bedrooms
   2. Privacy layering    — Public -> Semi-private -> Private (3-layer depth)
-  3. Controlled circulation — Min 3 ft passages, no room-through-room access
+  3. Controlled circulation — Min 3 ft corridors, no room-through-room access
   4. Visual privacy      — Bedrooms never exposed, bathrooms never dominant
   5. Functional adjacency — Kitchen<->Dining, MasterBR<->Bath
   6. Comfort proportions — Aspect ratio 1:1 to 1:2 for habitable rooms
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 WALL_EXT = WALL_EXTERNAL_FT     # 0.75 ft  (9 inches)
 WALL_INT = WALL_INTERNAL_FT     # 0.375 ft (4.5 inches)
-MIN_PASSAGE = 3.0               # Minimum passage/corridor width in ft
+MIN_CORRIDOR = 3.0               # Minimum corridor width in ft
 
 # Layout strategies (never repeat on redesign)
 STRATEGIES = ["side_corridor", "central_corridor", "cluster"]
@@ -61,8 +61,7 @@ COMFORT_AR: Dict[str, float] = {
     "store": 2.0, "utility": 2.0, "foyer": 3.0,
     "entrance": 2.0, "porch": 2.0, "wash_area": 2.5,
     "balcony": 3.0, "staircase": 2.5, "garage": 2.5,
-    "parking": 2.5, "passage": 10.0, "corridor": 10.0,
-    "hallway": 5.0,
+    "parking": 2.5, "corridor": 10.0,
 }
 
 # ── Minimum room areas (sq ft) ──
@@ -70,9 +69,9 @@ MIN_ROOM_AREA: Dict[str, float] = {
     "master_bedroom": 120, "bedroom": 100, "living": 130,
     "kitchen": 80, "dining": 80, "bathroom": 35,
     "toilet": 15, "study": 60, "pooja": 16,
-    "store": 25, "utility": 20, "hallway": 30,
+    "store": 25, "utility": 20,
     "porch": 40, "parking": 150, "balcony": 25,
-    "staircase": 40, "garage": 150, "passage": 15,
+    "staircase": 40, "garage": 150,
     "wash_area": 15, "foyer": 25, "entrance": 20,
 }
 
@@ -111,8 +110,8 @@ DISPLAY_NAMES: Dict[str, str] = {
     "pooja": "Pooja Room", "store": "Store Room",
     "utility": "Utility", "balcony": "Balcony",
     "staircase": "Staircase", "garage": "Garage",
-    "parking": "Parking", "hallway": "Hallway",
-    "passage": "Passage", "wash_area": "Wash Area",
+    "parking": "Parking",
+    "wash_area": "Wash Area",
     "porch": "Porch", "foyer": "Entrance Foyer",
     "entrance": "Entrance", "corridor": "Corridor",
 }
@@ -599,7 +598,7 @@ def _balance_layers(layers: Dict[int, List[Dict]], uw: float, ul: float) -> None
                 "min_area": 15, "zone": "semi_private", "layer": 2,
                 "priority": 30,
             })
-        # Otherwise: Layer 2 stays empty, passage extends between L1 and L3
+        # Otherwise: Layer 2 stays empty, corridor extends between L1 and L3
 
 
 def _interleave_beds_baths(rooms: List[Dict]) -> List[Dict]:
@@ -692,8 +691,8 @@ def _place_rooms(
     middle = layers[2]
     rear = layers[3]
 
-    # ── Passage depth ──
-    passage_h = snap(max(MIN_PASSAGE, min(4.0, ul * 0.07)))
+    # ── Corridor depth ──
+    corridor_h = snap(max(MIN_CORRIDOR, min(4.0, ul * 0.07)))
 
     # ── Area-proportional depth allocation ──
     a1 = sum(r["target_area"] for r in front) or 1
@@ -701,7 +700,7 @@ def _place_rooms(
     a3 = sum(r["target_area"] for r in rear) or 1
     a_total = a1 + a2 + a3
 
-    available = ul - passage_h
+    available = ul - corridor_h
 
     d1 = snap(available * a1 / a_total) if front else 0
     d2 = snap(available * a2 / a_total) if middle else 0
@@ -747,7 +746,7 @@ def _place_rooms(
     if front:
         placed.extend(_fill_band_tiled(front, ux, y_cur, uw, d1))
     else:
-        placed.append(_make_filler(ux, y_cur, uw, d1, "hallway", "Hall"))
+        placed.append(_make_filler(ux, y_cur, uw, d1, "foyer", "Foyer"))
     y_cur = round(y_cur + d1, 2)
 
     # Zone 2: Middle (semi-private)
@@ -755,28 +754,28 @@ def _place_rooms(
         placed.extend(_fill_band_tiled(middle, ux, y_cur, uw, d2))
         y_cur = round(y_cur + d2, 2)
     elif d2 > 0:
-        placed.append(_make_filler(ux, y_cur, uw, d2, "hallway", "Hall"))
+        placed.append(_make_filler(ux, y_cur, uw, d2, "foyer", "Foyer"))
         y_cur = round(y_cur + d2, 2)
 
-    # Passage
-    pass_y = y_cur
-    placed.append(_make_filler(ux, pass_y, uw, passage_h, "passage", "Passage"))
-    y_cur = round(y_cur + passage_h, 2)
+    # Corridor
+    corr_y = y_cur
+    placed.append(_make_filler(ux, corr_y, uw, corridor_h, "corridor", "Corridor"))
+    y_cur = round(y_cur + corridor_h, 2)
 
     # Zone 3: Rear (private) — fills all remaining depth
     d3_actual = round(uy + ul - y_cur, 2)
     if rear:
         placed.extend(_fill_rear_tiled(rear, ux, y_cur, uw, d3_actual))
     else:
-        placed.append(_make_filler(ux, y_cur, uw, d3_actual, "hallway", "Hall"))
+        placed.append(_make_filler(ux, y_cur, uw, d3_actual, "foyer", "Foyer"))
 
     circ_info = {
-        "type": "horizontal_passage",
+        "type": "horizontal_corridor",
         "width_ft": round(uw, 1),
-        "depth_ft": round(passage_h, 1),
-        "position": {"x": round(ux, 2), "y": round(pass_y, 2)},
+        "depth_ft": round(corridor_h, 1),
+        "position": {"x": round(ux, 2), "y": round(corr_y, 2)},
         "description": (
-            f"{passage_h}ft passage spanning full width, "
+            f"{corridor_h}ft corridor spanning full width, "
             f"connecting dining zone to bedroom wing"
         ),
     }
@@ -797,7 +796,7 @@ def _fill_band_tiled(
     sub-bands compact rooms into a shallow rear strip.
     """
     if not rooms:
-        return [_make_filler(x0, y0, w, h, "hallway", "Hall")]
+        return [_make_filler(x0, y0, w, h, "foyer", "Foyer")]
 
     main = [r for r in rooms if r["room_type"] not in COMPACT_ROOMS]
     compact = [r for r in rooms if r["room_type"] in COMPACT_ROOMS]
@@ -882,7 +881,7 @@ def _fill_rear_tiled(
             bath_idx += 1
         else:
             placed.append(_make_filler(
-                cx, y0, col_w, bath_h, "hallway", "Hall",
+                cx, y0, col_w, bath_h, "foyer", "Foyer",
             ))
 
         cx = round(cx + col_w, 2)
@@ -900,7 +899,7 @@ def _fill_row_tiled(
     This is the core space-filling primitive. Guarantees 100% horizontal coverage.
     """
     if not rooms:
-        return [_make_filler(x0, y0, w, h, "hallway", "Hall")]
+        return [_make_filler(x0, y0, w, h, "foyer", "Foyer")]
 
     total_area = sum(r["target_area"] for r in rooms) or 1
     placed: List[Dict] = []
@@ -981,7 +980,7 @@ def _fill_row_tiled(
         # Only create hall filler if last room is wet/service AND would exceed 1.5x cap
         _CAPPED = {"bathroom", "toilet", "wash_area"}
         if max_a and last["room_type"] in _CAPPED and last_area_after > max_a * 1.5:
-            placed.append(_make_filler(cx, y0, leftover, h, "hallway", "Hall"))
+            placed.append(_make_filler(cx, y0, leftover, h, "foyer", "Foyer"))
         else:
             new_w = round(last["width"] + leftover, 2)
             lx = last["position"]["x"]
@@ -1048,7 +1047,7 @@ def _place_central_corridor(
     placed: List[Dict] = []
     MIN_DEPTH = 7.0
 
-    passage_h = snap(max(MIN_PASSAGE, min(4.5, ul * 0.08)))
+    corridor_h = snap(max(MIN_CORRIDOR, min(4.5, ul * 0.08)))
 
     # Area needs per layer
     a1 = sum(r["target_area"] for r in layers[1]) or 1
@@ -1056,7 +1055,7 @@ def _place_central_corridor(
     a3 = sum(r["target_area"] for r in layers[3]) or 1
     total_a = a1 + a2 + a3
 
-    available = ul - passage_h
+    available = ul - corridor_h
 
     # Proportional depth allocation
     d1 = available * (a1 / total_a)
@@ -1202,7 +1201,7 @@ def _place_central_corridor(
     y1 = uy                    # Layer 1 -- front (entrance)
     y2 = y1 + d1               # Layer 2 -- middle
     y_pass = y2 + d2           # Passage
-    y3 = y_pass + passage_h    # Layer 3 -- rear
+    y3 = y_pass + corridor_h    # Layer 3 -- rear
 
     # Recalculate d3 to fill remaining space exactly
     d3_actual = snap(uy + ul - y3)
@@ -1231,10 +1230,10 @@ def _place_central_corridor(
     circ = {
         "type": "horizontal_passage",
         "width_ft": round(uw, 1),
-        "depth_ft": round(passage_h, 1),
+        "depth_ft": round(corridor_h, 1),
         "position": {"x": round(ux, 2), "y": round(y_pass, 2)},
         "description": (
-            f"{passage_h}ft passage spanning full width, "
+            f"{corridor_h}ft passage spanning full width, "
             f"connecting dining zone to bedroom wing"
         ),
     }
@@ -1263,7 +1262,7 @@ def _place_side_corridor(
 ) -> Tuple[List[Dict], Dict]:
     placed: List[Dict] = []
 
-    passage_w = snap(max(MIN_PASSAGE, min(4.0, uw * 0.08)))
+    corridor_w = snap(max(MIN_CORRIDOR, min(4.0, uw * 0.08)))
 
     # Public rooms (layers 1+2) on left, private (layer 3) on right
     left_rooms = layers[1] + layers[2]
@@ -1273,7 +1272,7 @@ def _place_side_corridor(
     right_area = sum(r["target_area"] for r in right_rooms) or 1
     total = left_area + right_area
 
-    avail_w = uw - passage_w
+    avail_w = uw - corridor_w
     left_w = snap(max(8, avail_w * (left_area / total)))
     right_w = snap(avail_w - left_w)
 
@@ -1282,17 +1281,17 @@ def _place_side_corridor(
         placed.extend(_place_band_v(left_rooms, ux, uy, left_w, ul))
 
     # Place right column (private rooms with bedroom zone sub-banding)
-    right_x = ux + left_w + passage_w
+    right_x = ux + left_w + corridor_w
     if right_rooms:
         placed.extend(_place_bedroom_zone_v(right_rooms, right_x, uy, right_w, ul))
 
     circ = {
-        "type": "vertical_passage",
-        "width_ft": round(passage_w, 1),
+        "type": "vertical_corridor",
+        "width_ft": round(corridor_w, 1),
         "depth_ft": round(ul, 1),
         "position": {"x": round(ux + left_w, 2), "y": round(uy, 2)},
         "description": (
-            f"{passage_w}ft side corridor separating public and private zones"
+            f"{corridor_w}ft side corridor separating public and private zones"
         ),
     }
     return placed, circ
@@ -1321,7 +1320,7 @@ def _place_cluster(
     placed: List[Dict] = []
     MIN_DEPTH = 7.0
 
-    passage_h = snap(max(MIN_PASSAGE, min(4.0, ul * 0.07)))
+    corridor_h = snap(max(MIN_CORRIDOR, min(4.0, ul * 0.07)))
 
     # Front zone = layers 1+2, Rear zone = layer 3
     front_rooms = layers[1] + layers[2]
@@ -1331,7 +1330,7 @@ def _place_cluster(
     rear_area = sum(r["target_area"] for r in rear_rooms) or 1
     total_a = front_area + rear_area
 
-    available_h = ul - passage_h
+    available_h = ul - corridor_h
     front_h = snap(max(MIN_DEPTH, available_h * (front_area / total_a)))
     rear_h = snap(available_h - front_h)
     rear_h = max(MIN_DEPTH, rear_h)
@@ -1361,8 +1360,8 @@ def _place_cluster(
 
     # Y positions
     front_y = uy
-    pass_y = front_y + front_h
-    rear_y = pass_y + passage_h
+    corr_y = front_y + front_h
+    rear_y = corr_y + corridor_h
 
     # Recalculate rear_h to fill remaining exactly
     rear_h_actual = snap(uy + ul - rear_y)
@@ -1416,10 +1415,10 @@ def _place_cluster(
     circ = {
         "type": "central_passage",
         "width_ft": round(uw, 1),
-        "depth_ft": round(passage_h, 1),
-        "position": {"x": round(ux, 2), "y": round(pass_y, 2)},
+        "depth_ft": round(corridor_h, 1),
+        "position": {"x": round(ux, 2), "y": round(corr_y, 2)},
         "description": (
-            f"{passage_h}ft passage connecting living zone to bedroom zone"
+            f"{corridor_h}ft passage connecting living zone to bedroom zone"
         ),
     }
     return placed, circ
@@ -2322,10 +2321,10 @@ def _fill_dead_zones(
     top = round(uy + ul, 2)
 
     # Passage Y range for labeling dead zones in the passage area
-    pass_y1, pass_y2 = None, None
+    corr_y1, corr_y2 = None, None
     if circ_info and circ_info.get("position"):
-        pass_y1 = circ_info["position"]["y"]
-        pass_y2 = pass_y1 + circ_info.get("depth_ft", 3.0)
+        corr_y1 = circ_info["position"]["y"]
+        corr_y2 = corr_y1 + circ_info.get("depth_ft", 3.0)
 
     # ── 1. Detect dead zones via Y-strip decomposition ──
     y_edges = sorted(set(
@@ -2401,12 +2400,12 @@ def _fill_dead_zones(
         if has_overlap:
             continue
 
-        # Label: "Passage" if in passage zone, else "Hall"
-        rtype, name = "hallway", "Hall"
-        if pass_y1 is not None:
+        # Label: "Corridor" if in corridor zone, else "Foyer"
+        rtype, name = "foyer", "Foyer"
+        if corr_y1 is not None:
             mid_y = (fy1 + fy2) / 2
-            if pass_y1 - 0.5 <= mid_y <= pass_y2 + 0.5:
-                rtype, name = "passage", "Passage"
+            if corr_y1 - 0.5 <= mid_y <= corr_y2 + 0.5:
+                rtype, name = "corridor", "Corridor"
 
         placed.append({
             "name": name, "room_type": rtype,
@@ -2437,8 +2436,8 @@ def _auto_correct(placed: List[Dict], plot_w: float, plot_l: float) -> List[Dict
         x, y = room["position"]["x"], room["position"]["y"]
         w, h = room["width"], room["length"]
 
-        # Enforce minimum size (passages/corridors can be narrow)
-        is_circulation = room["room_type"] in ("passage", "hallway", "corridor")
+        # Enforce minimum size (corridors can be narrow)
+        is_circulation = room["room_type"] in ("corridor", "foyer")
         min_dim = 2.5 if is_circulation else 4.0
         w = max(min_dim, w)
         h = max(min_dim, h)
@@ -2544,9 +2543,9 @@ def _validate_circulation(placed: List[Dict], circ_info: Dict) -> Dict:
     # Check passage width
     pw = circ_info.get("width_ft", 0)
     pd = circ_info.get("depth_ft", 0)
-    passage_dim = min(pw, pd) if circ_info.get("type") == "vertical_passage" else pd
-    if passage_dim < MIN_PASSAGE - 0.1:
-        issues.append(f"Passage width {passage_dim}ft is below minimum {MIN_PASSAGE}ft")
+    passage_dim = min(pw, pd) if circ_info.get("type") == "vertical_corridor" else pd
+    if passage_dim < MIN_CORRIDOR - 0.1:
+        issues.append(f"Corridor width {passage_dim}ft is below minimum {MIN_CORRIDOR}ft")
 
     # Check bedroom isolation (no bedroom door opens into another bedroom)
     bedrooms = [r for r in placed if r["room_type"] in ("master_bedroom", "bedroom")]

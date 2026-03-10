@@ -1581,17 +1581,17 @@ def _layout_column_3(rl, ux, uy, uw, ul, place_fn):
             scale = sh / total_h if total_h > 0 else 1
             heights = [h * scale for h in heights]
 
-        # Add passage filler for service column
+        # Add foyer filler for service column
         if cap_service:
             actual = sum(heights)
             capped_total = sum(min(h, 7.0) for h in heights)
             if capped_total < sh * 0.7:
-                passage_h = sh - capped_total
-                passage = {'room_type': 'foyer', 'name': 'Passage',
-                           'zone': 'public', 'target_area': passage_h * sw}
+                filler_h = sh - capped_total
+                filler = {'room_type': 'foyer', 'name': 'Foyer',
+                           'zone': 'public', 'target_area': filler_h * sw}
                 rooms = list(rooms)
-                rooms.insert(0, passage)
-                heights = [passage_h] + [min(h, 7.0) for h in heights[1:] if h > 0]
+                rooms.insert(0, filler)
+                heights = [filler_h] + [min(h, 7.0) for h in heights[1:] if h > 0]
                 # Recalc
                 n = len(rooms)
                 total_h = sum(heights)
@@ -2816,11 +2816,11 @@ class FloorPlanBuilder:
                 pass
 
             elif rtype == 'foyer':
-                # Passage room: doors on opposite walls
+                # Foyer room: doors on opposite walls
                 walls_used = set()
                 for (ni, wall, overlap) in neighbors:
                     if wall not in walls_used and len(walls_used) < 2:
-                        doors.append({'wall': wall, 'width': 3, 'type': 'passage'})
+                        doors.append({'wall': wall, 'width': 3, 'type': 'open'})
                         walls_used.add(wall)
 
             else:

@@ -80,7 +80,7 @@ Every Indian residential home MUST follow this exact 3-band layout from road sid
     |   | (left/wide) | (SE cor) | (center)  |   |
     |   +-------------+----------+-----------+   |
     +--------------------------------------------+
-    |   BAND 2 — PASSAGE (3.5 to 4 ft strip)     |
+    |   BAND 2 — CORRIDOR (3.5 to 4 ft strip)     |
     |   Central corridor connecting front/back   |
     +--------------------------------------------+
     |   BAND 3 — PRIVATE ZONE (45% of plot depth)|
@@ -100,7 +100,7 @@ This zoning is NON-NEGOTIABLE. Public spaces always face the road. Private space
 === SECTION 4: ZONING RULES ===
 
 PUBLIC zone (front): Main entrance, Sit-out, Living Room, Dining Room
-SEMI-PRIVATE zone (middle): Kitchen, Utility, Passage, Staircase
+SEMI-PRIVATE zone (middle): Kitchen, Utility, Staircase
 PRIVATE zone (rear/sides): All Bedrooms, Attached Bathrooms
 SERVICE zone (rear corner): Store, Servant Room, Utility, Garage
 
@@ -143,7 +143,7 @@ Pooja Room         4 x 4 ft        5 x 5 ft        6 x 6 ft        16 sqft
 Store Room         4 x 5 ft        6 x 6 ft        8 x 8 ft        20 sqft
 Utility Room       4 x 5 ft        5 x 6 ft        6 x 8 ft        20 sqft
 Balcony            3.5 x 5 ft      5 x 8 ft        6 x 10 ft       15 sqft
-Passage Width      3.5 ft min      4 ft standard   5 ft generous   N/A
+Corridor Width     3.5 ft min      4 ft standard   5 ft generous   N/A
 Staircase Width    3.5 ft min      4 ft standard   4 ft standard   N/A
 
 === SECTION 7: AREA DISTRIBUTION PERCENTAGES ===
@@ -158,7 +158,7 @@ Dining Room:            7% to 10% of total plot area
 Each Bathroom:          4% to 6% of total plot area
 Study Room:             4% to 7% of total plot area
 Pooja Room:             2% to 4% of total plot area
-Passage / Corridor:     5% to 8% of total plot area
+Corridor:               5% to 8% of total plot area
 Walls and Structure:    10% to 12% of total plot area (deducted automatically)
 
 CRITICAL RULE: Sum of all room areas must NOT exceed 88% of total plot area. The remaining 12% is consumed by walls, corridors, and structural elements.
@@ -166,17 +166,17 @@ CRITICAL RULE: Sum of all room areas must NOT exceed 88% of total plot area. The
 === SECTION 8: ADJACENCY REQUIREMENTS ===
 
 REQUIRED adjacencies — these rooms MUST share a wall or be next to each other:
-  Kitchen <-> Dining Room (direct connection, no passage needed)
+  Kitchen <-> Dining Room (direct connection, no corridor needed)
   Master Bedroom <-> Master Bathroom (attached, inside bedroom)
   Living Room <-> Main Entrance (direct, no other room in between)
   Living Room <-> Dining Room (movement and social flow)
-  Pooja Room <-> Passage (accessible, not inside a bedroom)
+  Pooja Room <-> Living Room (accessible, not inside a bedroom)
   Utility Room <-> Kitchen (service connection)
 
 FORBIDDEN adjacencies — these rooms must NEVER share a wall or be next to each other:
   Bathroom != Kitchen (never share a wall)
   Pooja Room != Bathroom (never adjacent)
-  Main Bedroom != Main Entrance (privacy — must have passage)
+  Main Bedroom != Main Entrance (privacy — must have corridor)
   Garage != Living Room (noise and fumes)
   Bedroom must NEVER be adjacent to Kitchen (privacy violation)
   Bathroom must NEVER face or be adjacent to Living Room (unhygienic)
@@ -234,7 +234,7 @@ MANDATORY rules that cannot be violated:
 Think about these realities of Indian family life when designing:
 
 Joint family cooking: Kitchen must be spacious with a window. Women spend 2-4 hours daily here. Never make it a corridor kitchen.
-Daily pooja ritual: Family gathers every morning. Pooja room must be accessible from passage, face East, and have enough space for 3-4 people to stand.
+Daily pooja ritual: Family gathers every morning. Pooja room must be accessible from living area, face East, and have enough space for 3-4 people to stand.
 Guest culture: Indians have frequent guests. Living room must be large and impressive. A separate guest bedroom or sofa-bed space is ideal.
 Cross-ventilation: Indian summers are brutal. Every room must have cross-ventilation — windows on two walls or opposite walls to create airflow.
 Privacy gradient: In Indian homes, bedrooms are completely private. A guest should NEVER be able to see into a bedroom from the living room.
@@ -295,7 +295,7 @@ Step 8 — Quality check:
 Step 9 — Traffic flow check:
   Verify clear path from entrance to all rooms
   Verify no dead-end corridors
-  Verify passage width adequate throughout
+  Verify corridor width adequate throughout
   Verify Living to Dining direct access
   Verify Dining to Kitchen direct access
   Verify Master Bedroom to Attached Bathroom direct access from inside bedroom
@@ -367,7 +367,7 @@ When generating a design analysis, always produce this JSON structure exactly:
   "ready_to_generate": true
 }
 
-Valid room_type values: master_bedroom, bedroom, bathroom, toilet, kitchen, living, dining, study, pooja, store, utility, balcony, garage, staircase, porch, hallway, passage, wash_area"""
+Valid room_type values: master_bedroom, bedroom, bathroom, toilet, kitchen, living, dining, study, pooja, store, utility, balcony, garage, staircase, porch, corridor, wash_area"""
 
 
 ANALYZE_PROMPT = """Analyze the user's house design requirements and produce a structured plan.
@@ -411,7 +411,7 @@ FORMAT YOUR RESPONSE AS:
 ```
 
 Valid room_type values: master_bedroom, bedroom, bathroom, toilet, kitchen, living, dining, study, \
-pooja, store, utility, balcony, garage, staircase, porch, hallway, passage, wash_area."""
+pooja, store, utility, balcony, garage, staircase, porch, corridor, wash_area."""
 
 
 REVIEW_PROMPT = """You are reviewing a generated Indian residential floor plan as a senior professional architect. Analyze the floor plan data provided and give a comprehensive professional review.
@@ -433,7 +433,7 @@ REVIEW_PROMPT = """You are reviewing a generated Indian residential floor plan a
 
 3. Indian Building Code (NBC 2016):
    Does every room meet minimum area requirements?
-   Is the passage at least 3.5 ft wide?
+   Is the corridor at least 3.5 ft wide?
    Do all habitable rooms have exterior wall exposure?
    Are wall thicknesses as per standard (9 inch exterior, 4.5 inch interior)?
 
@@ -450,7 +450,7 @@ REVIEW_PROMPT = """You are reviewing a generated Indian residential floor plan a
 6. Circulation Quality:
    Is there a clear path from entrance to all rooms?
    Are there any dead-end corridors?
-   Is the passage width adequate throughout?
+   Is the corridor width adequate throughout?
 
 7. Functional Flow:
    Living Room to Dining Room: direct access?

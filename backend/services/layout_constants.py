@@ -63,7 +63,7 @@ def get_standard_room_sizes() -> Dict:
 
 
 def get_architectural_rules() -> Dict:
-    """Get architectural rules (wall thickness, passage width, etc.)."""
+    """Get architectural rules (wall thickness, corridor width, etc.)"""
     vastu = get_vastu_rules()
     return vastu.get('architectural_rules', {})
 
@@ -111,11 +111,9 @@ MIN_DIMS = {
     'garage':         (10, 18),
     'staircase':      (4, 8),
     'corridor':       (3.0, 3.0),
-    'hallway':        (3.0, 3.0),
     'foyer':          (5, 5),
     'porch':          (6, 5),
     'wash_area':      (4, 4),
-    'passage':        (2.5, 2.5),
 }
 
 # Maximum aspect ratio per room type (11-step spec: max 1:2.2)
@@ -136,11 +134,9 @@ MAX_ASPECT = {
     'garage':         2.2,
     'staircase':      2.2,
     'corridor':       10.0,
-    'hallway':        5.0,
     'foyer':          2.0,
     'porch':          2.2,
     'wash_area':      2.2,
-    'passage':        20.0,
 }
 
 # Hard minimum areas in sqft
@@ -149,9 +145,9 @@ MIN_AREAS = {
     'kitchen': 50, 'bathroom': 35, 'toilet': 15,
     'dining': 64, 'entrance': 20, 'study': 48, 'pooja': 16,
     'store': 20, 'balcony': 15, 'utility': 16,
-    'garage': 150, 'staircase': 36, 'hallway': 21,
+    'garage': 150, 'staircase': 36,
     'foyer': 25, 'porch': 30,
-    'wash_area': 20, 'passage': 15,
+    'wash_area': 20,
 }
 
 # Hard maximum areas — prevent ANY room from bloating on large plots
@@ -188,7 +184,6 @@ AREA_FRACTIONS = {
     'garage':         (0.08, 0.12, 0.16),
     'staircase':      (0.03, 0.045, 0.06),
     'wash_area':      (0.01, 0.015, 0.025),
-    'passage':        (0.05, 0.10, 0.15),
 }
 
 # ===========================================================================
@@ -212,11 +207,9 @@ ZONE_MAP = {
     'garage': 'public',
     'staircase': 'service',
     'corridor': 'circulation',
-    'hallway': 'circulation',
     'foyer': 'public',
     'porch': 'public',
     'wash_area': 'service',
-    'passage': 'circulation',
 }
 
 # Room placement priority (higher = placed first, gets better position)
@@ -226,8 +219,8 @@ PRIORITY = {
     'bathroom': 55, 'toilet': 50, 'pooja': 45,
     'staircase': 40, 'balcony': 35, 'store': 30,
     'utility': 25, 'garage': 20, 'foyer': 65,
-    'porch': 18, 'hallway': 15,
-    'wash_area': 40, 'passage': 10,
+    'porch': 18,
+    'wash_area': 40,
 }
 
 # ===========================================================================
@@ -260,6 +253,23 @@ FORBIDDEN_ADJACENCIES = [
     ('bathroom',       'dining'),
     ('toilet',         'pooja'),
 ]
+
+# ===========================================================================
+# ARCHITECTURAL FLOW — Professional adjacency rules (Indian residential)
+# ===========================================================================
+
+ARCHITECTURAL_FLOW = {
+    "entrance":       {"must": ["living"],     "should": [],                        "forbidden": ["kitchen","bathroom","toilet","bedroom"]},
+    "living":         {"must": ["entrance","dining"], "should":["master_bedroom","pooja"], "forbidden":["bathroom","toilet"]},
+    "master_bedroom": {"must": ["bathroom"],   "should": ["living","study"],         "forbidden": ["kitchen","entrance","dining"]},
+    "bedroom":        {"must": [],             "should": ["bathroom","study","living"], "forbidden":["kitchen","entrance","dining"]},
+    "kitchen":        {"must": ["dining"],     "should": ["utility","wash_area"],    "forbidden":["bedroom","master_bedroom","entrance"]},
+    "dining":         {"must": ["kitchen","living"], "should": [],                   "forbidden":["bathroom","toilet","bedroom"]},
+    "pooja":          {"must": ["living"],     "should": [],                        "forbidden":["toilet","bathroom","kitchen"]},
+    "study":          {"must": [],             "should": ["master_bedroom","bedroom","living"], "forbidden":["kitchen","bathroom","toilet"]},
+}
+
+ROAD_FACING_SIDE = "south"   # HARDCODED — road is always south
 
 # ===========================================================================
 # VASTU SHASTRA PREFERENCES

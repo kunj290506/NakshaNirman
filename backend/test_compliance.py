@@ -20,7 +20,6 @@ RANGES = {
     "Bedroom 1":         (15, 18),
     "Attached Bathroom": (4, 6),
     "Wash Area":         (4, 6),
-    "Passage":           (None, None),  # remainder
 }
 
 print(f"Plot: {result['plot']['width']}x{result['plot']['length']} = {total} sqft\n")
@@ -34,7 +33,7 @@ for r in rooms:
     if lo is not None and hi is not None:
         in_range = lo <= pct <= hi
     else:
-        in_range = True  # Passage = remainder
+        in_range = True  # Corridor/other = remainder
     status = "OK" if in_range else "OUT"
     if not in_range:
         all_ok = False

@@ -25,20 +25,10 @@ def find_entrance_wall_segment(
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     """
     Pick a wall segment on the boundary for the entrance.
-
-    Parameters
-    ----------
-    boundary : Polygon
-        The usable boundary polygon.
-    preferred_side : str
-        ``"south"``, ``"north"``, ``"east"``, or ``"west"``.
-        The entrance is placed on the wall closest to this direction.
-
-    Returns
-    -------
-    tuple
-        (start_point, end_point) of the chosen wall segment.
+    Always uses south wall (road-facing). preferred_side parameter is kept
+    for API compatibility but overridden to "south".
     """
+    preferred_side = "south"   # ALWAYS south — road is always south
     coords = list(boundary.exterior.coords)[:-1]  # drop closing duplicate
     segments = [(coords[i], coords[(i + 1) % len(coords)]) for i in range(len(coords))]
 
@@ -81,30 +71,10 @@ def place_entrance(
     preferred_side: str = "south",
 ) -> Optional[Room]:
     """
-    Place an entrance rectangle on the outer boundary.
-
-    The entrance is a thin rectangle placed at the midpoint of the
-    chosen wall segment, extending inward.  It is guaranteed to
-    intersect at least one interior room.
-
-    Parameters
-    ----------
-    boundary : Polygon
-        The usable floor boundary.
-    rooms : list[Room]
-        Existing rooms (used to verify connection).
-    entrance_width : float
-        Width of the entrance opening (meters).
-    entrance_depth : float
-        Depth of the entrance vestibule inward (meters).
-    preferred_side : str
-        Which side to place the entrance on.
-
-    Returns
-    -------
-    Room or None
-        The entrance Room, or None if placement failed.
+    Place an entrance rectangle on the south wall of the boundary.
+    preferred_side is kept for API compatibility but always overridden to south.
     """
+    preferred_side = "south"   # ALWAYS south — road is always south
     seg_start, seg_end = find_entrance_wall_segment(boundary, preferred_side)
 
     # Midpoint of the segment

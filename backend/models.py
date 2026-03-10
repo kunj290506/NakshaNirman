@@ -28,7 +28,7 @@ class RoomType(enum.Enum):
     STUDY = "study"
     GARAGE = "garage"
     GARDEN = "garden"
-    HALLWAY = "hallway"
+    CORRIDOR = "corridor"
     BALCONY = "balcony"
     POOJA = "pooja"
     STORE = "store"

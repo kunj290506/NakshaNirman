@@ -1,25 +1,25 @@
-"""
-Advanced Architectural Intelligence Engine — Constraint-Aware Residential Floor Plan Generator.
+﻿"""
+Advanced Architectural Intelligence Engine â€” Constraint-Aware Residential Floor Plan Generator.
 
 This is NOT a template generator. It is a constraint-aware, zoning-aware,
 geometry-aware architectural planning system that produces realistic,
 buildable, architect-grade residential floor plans dynamically.
 
 Modes:
-  CHAT       — Conversational requirement collection
-  DESIGN     — Full layout generation (deterministic, CAD-ready)
-  REDESIGN   — Fresh layout with same requirements, different strategy
-  VALIDATION — Structural compliance check on existing layout JSON
+  CHAT       â€” Conversational requirement collection
+  DESIGN     â€” Full layout generation (deterministic, CAD-ready)
+  REDESIGN   â€” Fresh layout with same requirements, different strategy
+  VALIDATION â€” Structural compliance check on existing layout JSON
 
 Core Principles Enforced:
-  A. Functional Zoning (Public → Semi-Private → Private → Service)
-  B. Privacy Gradient (Entrance → Living → Dining → Passage → Bedrooms)
+  A. Functional Zoning (Public â†’ Semi-Private â†’ Private â†’ Service)
+  B. Privacy Gradient (Entrance â†’ Living â†’ Dining â†’ Bedrooms)
   C. Area Proportions (Living 18-25%, Each Bedroom 12-16%, Kitchen 8-12%, etc.)
   D. Minimum Room Sizes (NBC 2016 compliant)
-  E. Geometry Constraints (rectangular, aspect 1:1–1:2.2, no overlap)
+  E. Geometry Constraints (rectangular, aspect 1:1â€“1:2.2, no overlap)
   F. Ventilation Rules (habitable rooms touch external wall)
   G. Furniture Placement (scaled, not blocking doors)
-  H. Circulation Path (Entrance → Living → Dining → Kitchen; bedrooms via corridor)
+  H. Circulation Path (Entrance â†’ Living â†’ Dining â†’ Kitchen; bedrooms via corridor)
 
 Author: CAD Architectural Intelligence Engine v3.0
 """
@@ -29,6 +29,8 @@ import math
 import re
 import hashlib
 import time
+import random
+import os
 from typing import Optional, Dict, List, Any, Tuple
 from enum import Enum
 from copy import deepcopy
@@ -42,9 +44,9 @@ from services.layout_constants import (
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # ENGINE MODES
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class EngineMode(str, Enum):
     CHAT = "chat"
@@ -54,9 +56,9 @@ class EngineMode(str, Enum):
     VALIDATION = "validation"
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ARCHITECTURAL CONSTANTS (SPEC §2)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ARCHITECTURAL CONSTANTS (SPEC Â§2)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 # Wall thickness
 WALL_EXT_INCHES = 9
@@ -64,11 +66,11 @@ WALL_INT_INCHES = 4.5
 WALL_EXT_FT = WALL_EXT_INCHES / 12   # 0.75 ft
 WALL_INT_FT = WALL_INT_INCHES / 12   # 0.375 ft
 
-# Minimum passage / stair width
-MIN_PASSAGE_WIDTH = 3.0
+# Minimum corridor / stair width
+MIN_CORRIDOR_WIDTH = 3.0
 MIN_STAIR_WIDTH = 3.0
 
-# Minimum room sizes (sq ft) — §2D
+# Minimum room sizes (sq ft) â€” Â§2D
 MIN_ROOM_SIZES = {
     "master_bedroom": 120,
     "bedroom":        100,
@@ -82,13 +84,11 @@ MIN_ROOM_SIZES = {
     "pooja":          16,
     "store":          25,
     "utility":        20,
-    "hallway":        30,
     "porch":          40,
     "parking":        150,
     "balcony":        25,
     "staircase":      40,
     "garage":         150,
-    "passage":        15,
 }
 
 # Standard room proportions (width, length) in feet
@@ -105,16 +105,14 @@ STANDARD_DIMS = {
     "pooja":          (5, 5),
     "store":          (6, 6),
     "utility":        (5, 6),
-    "hallway":        (3.5, 10),
     "porch":          (10, 8),
     "parking":        (10, 18),
     "balcony":        (5, 10),
     "staircase":      (5, 10),
     "garage":         (10, 18),
-    "passage":        (3.5, 8),
 }
 
-# Area distribution percentages — §2C (11-step spec)
+# Area distribution percentages â€” Â§2C (11-step spec)
 AREA_PROPORTIONS = {
     "living":            (0.18, 0.25),
     "bedrooms_total":    (0.30, 0.38),
@@ -124,7 +122,7 @@ AREA_PROPORTIONS = {
     "walls_structure":   (0.08, 0.10),
 }
 
-# Zoning classification — §2A (11-step spec: 3-zone system)
+# Zoning classification â€” Â§2A (11-step spec: 3-zone system)
 ZONE_CLASSIFICATION = {
     "living":         "public",
     "entrance":       "public",
@@ -143,9 +141,7 @@ ZONE_CLASSIFICATION = {
     "toilet":         "private",
     "utility":        "service",
     "store":          "service",
-    "hallway":        "circulation",
     "staircase":      "circulation",
-    "passage":        "circulation",
 }
 
 # Display names
@@ -162,19 +158,17 @@ DISPLAY_NAMES = {
     "pooja":          "Pooja Room",
     "store":          "Store Room",
     "utility":        "Utility Room",
-    "hallway":        "Hallway",
     "porch":          "Porch",
     "parking":        "Parking",
     "balcony":        "Balcony",
     "staircase":      "Staircase",
     "garage":         "Garage",
-    "passage":        "Passage",
 }
 
-# Privacy gradient — §2B (11-step spec Step 3 — forbidden connections)
+# Privacy gradient â€” Â§2B (11-step spec Step 3 â€” forbidden connections)
 # Bedrooms must not directly open into kitchen.
 # Bathrooms must not face entrance or dining.
-# Note: bedroom→bedroom wall adjacency is allowed if each opens to corridor.
+# Note: bedroomâ†’bedroom wall adjacency is allowed if each opens to corridor.
 FORBIDDEN_ADJACENCY = [
     ("bedroom",        "kitchen"),
     ("master_bedroom", "kitchen"),
@@ -188,7 +182,7 @@ FORBIDDEN_ADJACENCY = [
     ("pooja",          "bathroom"),
 ]
 
-# Zoning strategies — §4 Step A
+# Zoning strategies â€” Â§4 Step A
 ZONING_STRATEGIES = ["linear", "central_corridor", "split", "adaptive"]
 
 # Mandatory rooms
@@ -198,20 +192,20 @@ MANDATORY_ROOMS = ["living", "kitchen"]
 REQUIRED_FIELDS = ["bedrooms", "bathrooms", "floors"]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 1 — INPUT MODE DETECTION
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SECTION 1 â€” INPUT MODE DETECTION
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def detect_mode(input_data: Any) -> EngineMode:
     """
     Intelligently auto-detect the engine mode from input data.
 
     Detection rules:
-      1. String with "generate new"/"regenerate"/"new layout" → REDESIGN
-      2. Dict with rooms containing position data → VALIDATION
-      3. Dict with generatePlan=True or string "generate plan" → DESIGN
-      4. Dict with structured fields (bedrooms, etc.) → FORM
-      5. String (natural language) → CHAT
+      1. String with "generate new"/"regenerate"/"new layout" â†’ REDESIGN
+      2. Dict with rooms containing position data â†’ VALIDATION
+      3. Dict with generatePlan=True or string "generate plan" â†’ DESIGN
+      4. Dict with structured fields (bedrooms, etc.) â†’ FORM
+      5. String (natural language) â†’ CHAT
     """
     if isinstance(input_data, str):
         text = input_data.lower().strip()
@@ -272,9 +266,9 @@ def detect_mode(input_data: Any) -> EngineMode:
     return EngineMode.CHAT
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 3 — CHAT MODE
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SECTION 3 â€” CHAT MODE
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def chat_response(message: str, history: List[Dict]) -> Dict:
     """
@@ -312,7 +306,7 @@ def chat_response(message: str, history: List[Dict]) -> Dict:
 
     turn = len([h for h in history if h.get("role") == "user"])
 
-    # ── First turn — greeting ──
+    # â”€â”€ First turn â€” greeting â”€â”€
     if turn == 0:
         if collected["has_dimensions"] and collected["has_bedrooms"]:
             summary = _build_summary(collected)
@@ -343,10 +337,10 @@ def chat_response(message: str, history: List[Dict]) -> Dict:
                 "reply": (
                     "Welcome! I'll help you design your residential floor plan.\n\n"
                     "To get started, I need:\n"
-                    "  • Plot size (e.g., 30×40 feet or 1200 sq ft)\n"
-                    "  • Number of bedrooms\n"
-                    "  • Number of bathrooms\n"
-                    "  • Number of floors (default: 1)\n\n"
+                    "  â€¢ Plot size (e.g., 30Ã—40 feet or 1200 sq ft)\n"
+                    "  â€¢ Number of bedrooms\n"
+                    "  â€¢ Number of bathrooms\n"
+                    "  â€¢ Number of floors (default: 1)\n\n"
                     "You can provide all at once (e.g., '30x40, 3 bedrooms, 2 bathrooms') "
                     "or one at a time. I'll suggest reasonable defaults where appropriate."
                 ),
@@ -355,7 +349,7 @@ def chat_response(message: str, history: List[Dict]) -> Dict:
                 "ready": False,
             }
 
-    # ── Follow-up turns — ask for what's missing ──
+    # â”€â”€ Follow-up turns â€” ask for what's missing â”€â”€
     missing = _get_missing_fields(collected)
 
     if not missing:
@@ -376,7 +370,7 @@ def chat_response(message: str, history: List[Dict]) -> Dict:
         return {
             "reply": (
                 "What is your plot size?\n"
-                "You can specify as dimensions (e.g., '30×40 feet') or "
+                "You can specify as dimensions (e.g., '30Ã—40 feet') or "
                 "total area (e.g., '1200 sq ft'). "
                 "For reference, a typical 2BHK needs 800-1000 sq ft, "
                 "3BHK needs 1200-1500 sq ft."
@@ -438,9 +432,9 @@ def chat_response(message: str, history: List[Dict]) -> Dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# FORM MODE — Validate structured input
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# FORM MODE â€” Validate structured input
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def form_validate(data: Dict) -> Dict:
     """
@@ -485,7 +479,7 @@ def form_validate(data: Dict) -> Dict:
             "mode": EngineMode.FORM,
         }
 
-    # If generatePlan flag → switch to DESIGN
+    # If generatePlan flag â†’ switch to DESIGN
     if data.get("generatePlan") is True or data.get("generate_plan") is True:
         return design_generate(normalized)
 
@@ -496,9 +490,9 @@ def form_validate(data: Dict) -> Dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 4 — DESIGN MODE (Full Layout Generation)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SECTION 4 â€” DESIGN MODE (Full Layout Generation)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
     """
@@ -507,14 +501,17 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
     Generates full architect-grade layout. No questions. No conversation.
 
     Procedure:
-      Step A — Determine zoning strategy dynamically from plot ratio
-      Step B — Allocate areas proportionally (§2C)
-      Step C — Place rooms by zone with privacy gradient
-      Step D — Validate geometry (overlap, size, adjacency, aspect ratio)
+      Step A â€” Determine zoning strategy dynamically from plot ratio
+      Step B â€” Allocate areas proportionally (Â§2C)
+      Step C â€” Place rooms by zone with privacy gradient
+      Step D â€” Validate geometry (overlap, size, adjacency, aspect ratio)
 
     Returns professional explanation (max 8 lines) + strict JSON.
     """
     req = _normalize_form_data(requirements)
+
+    # Fresh random seed for every generation call
+    random.seed(os.urandom(16))
 
     plot_w = req["plot_width"]
     plot_l = req["plot_length"]
@@ -524,7 +521,7 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
     bathrooms = req.get("bathrooms", 1)
     extras = req.get("extras", [])
 
-    # ── Check minimum area ──
+    # â”€â”€ Check minimum area â”€â”€
     min_required = _calculate_minimum_area(bedrooms, bathrooms, extras)
     if total_area < min_required:
         return {
@@ -536,10 +533,10 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
             "mode": EngineMode.DESIGN,
         }
 
-    # ── Step A: Determine zoning strategy (§4A) ──
+    # â”€â”€ Step A: Determine zoning strategy (Â§4A) â”€â”€
     strategy = strategy_override or _select_zoning_strategy(plot_w, plot_l)
 
-    # ── Step B: Allocate room areas (§4B) ──
+    # â”€â”€ Step B: Allocate room areas (Â§4B) â”€â”€
     room_specs = _allocate_areas(
         total_area=total_area,
         usable_w=plot_w - 2 * WALL_EXT_FT,
@@ -549,7 +546,7 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
         extras=extras,
     )
 
-    # ── Step C: Spatial placement (§4C) ──
+    # â”€â”€ Step C: Spatial placement (Â§4C) â”€â”€
     placed_rooms = _place_rooms_by_strategy(
         room_specs=room_specs,
         plot_w=plot_w,
@@ -557,22 +554,22 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
         strategy=strategy,
     )
 
-    # ── Assign doors and windows ──
+    # â”€â”€ Assign doors and windows â”€â”€
     placed_rooms = _assign_doors_windows(placed_rooms, plot_w, plot_l)
 
-    # ── Step D: Geometry validation (§4D) ──
+    # â”€â”€ Step D: Geometry validation (Â§4D) â”€â”€
     # Auto-correct violations before output
     placed_rooms = _auto_correct(placed_rooms, plot_w, plot_l)
 
-    # ── Build output layout ──
+    # â”€â”€ Build output layout â”€â”€
     layout = _build_layout_output(
         placed_rooms, plot_w, plot_l, total_area, floors, strategy
     )
 
-    # ── Validate ──
+    # â”€â”€ Validate â”€â”€
     validation = validate_layout(layout)
 
-    # ── Explanation (max 8 lines) ──
+    # â”€â”€ Explanation (max 8 lines) â”€â”€
     explanation = _build_design_explanation(req, layout, validation, strategy)
 
     return {
@@ -583,9 +580,9 @@ def design_generate(requirements: Dict, strategy_override: str = None) -> Dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 5 — RE-DESIGN MODE
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SECTION 5 â€” RE-DESIGN MODE
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def redesign_generate(requirements: Dict, previous_strategy: str = None) -> Dict:
     """
@@ -605,21 +602,19 @@ def redesign_generate(requirements: Dict, previous_strategy: str = None) -> Dict
     if not available:
         available = ZONING_STRATEGIES
 
-    # Use a high-resolution seed for guaranteed variety on every call
-    import random as _rand
-    _rand.seed(int(time.time() * 1000000) % 999983)
-    new_strategy = _rand.choice(available)
+    # Fresh random seed for guaranteed variety on every call
+    random.seed(os.urandom(16))
+    new_strategy = random.choice(available)
 
-    # Add a redesign salt to force different placement
+    # Salt is unused but kept for API compat
     requirements = dict(requirements)
-    requirements["_redesign_salt"] = int(time.time())
 
     return design_generate(requirements, strategy_override=new_strategy)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 7 — VALIDATION MODE
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SECTION 7 â€” VALIDATION MODE
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def validate_layout(layout: Dict) -> Dict:
     """
@@ -635,7 +630,7 @@ def validate_layout(layout: Dict) -> Dict:
       - Aspect ratio compliance
       - Ventilation (external wall access)
 
-    Returns structured validation report (§7 format).
+    Returns structured validation report (Â§7 format).
     """
     rooms = layout.get("rooms", [])
     plot = layout.get("plot", {})
@@ -688,9 +683,9 @@ def validate_layout(layout: Dict) -> Dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# UNIFIED PROCESSOR — Single entry point
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# UNIFIED PROCESSOR â€” Single entry point
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def process(input_data: Any, history: List[Dict] = None) -> Dict:
     """
@@ -763,18 +758,18 @@ def process(input_data: Any, history: List[Dict] = None) -> Dict:
         }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Requirement Parsing from Conversation
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Requirement Parsing from Conversation
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> Dict:
     """
     Parse all collected requirements from conversation history + current message.
 
     Handles:
-      - Dimensions: 30x40, 30×40, 30*40
+      - Dimensions: 30x40, 30Ã—40, 30*40
       - Area: 1200 sqft, 1200 sq ft
-      - BHK: 3BHK → 3 bedrooms, 2 bathrooms
+      - BHK: 3BHK â†’ 3 bedrooms, 2 bathrooms
       - Explicit bedrooms/bathrooms/floors
       - Contextual: number after "bedrooms?" question
       - Extras: dining, study, pooja, balcony, parking, etc.
@@ -800,21 +795,21 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
         "complete": False,
     }
 
-    # ── Dimensions: 30x40, 30*40, 30×40 ──
-    dim_match = re.search(r'(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)', text_lower)
+    # â”€â”€ Dimensions: 30x40, 30*40, 30Ã—40 â”€â”€
+    dim_match = re.search(r'(\d+(?:\.\d+)?)\s*[xÃ—*]\s*(\d+(?:\.\d+)?)', text_lower)
     if dim_match:
         data["has_dimensions"] = True
         data["plot_width"] = float(dim_match.group(1))
         data["plot_length"] = float(dim_match.group(2))
         data["total_area"] = data["plot_width"] * data["plot_length"]
 
-    # ── Area: 1200 sqft, 1200 sq ft, 1200 square feet ──
+    # â”€â”€ Area: 1200 sqft, 1200 sq ft, 1200 square feet â”€â”€
     area_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:sq\s*ft|sqft|square\s*feet?)', text_lower)
     if area_match:
         data["has_dimensions"] = True
         data["total_area"] = float(area_match.group(1))
 
-    # ── Standalone number > 100 (likely area) ──
+    # â”€â”€ Standalone number > 100 (likely area) â”€â”€
     if not data["has_dimensions"]:
         all_msgs = [m.get("content", "") for m in history if m.get("role") == "user"]
         all_msgs.append(current_msg)
@@ -826,7 +821,7 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
                     data["has_dimensions"] = True
                     data["total_area"] = float(val)
 
-    # ── BHK: 3BHK → 3 bedrooms, 2 bathrooms ──
+    # â”€â”€ BHK: 3BHK â†’ 3 bedrooms, 2 bathrooms â”€â”€
     bhk_match = re.search(r'(\d+)\s*bhk', text_lower)
     if bhk_match:
         bhk = int(bhk_match.group(1))
@@ -835,25 +830,25 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
         data["bedrooms"] = bhk
         data["bathrooms"] = max(1, bhk - 1)
 
-    # ── Explicit bedrooms ──
+    # â”€â”€ Explicit bedrooms â”€â”€
     bed_match = re.search(r'(\d+)\s*(?:bed(?:room)?s?)', text_lower)
     if bed_match:
         data["has_bedrooms"] = True
         data["bedrooms"] = int(bed_match.group(1))
 
-    # ── Explicit bathrooms ──
+    # â”€â”€ Explicit bathrooms â”€â”€
     bath_match = re.search(r'(\d+)\s*(?:bath(?:room)?s?|toilets?)', text_lower)
     if bath_match:
         data["has_bathrooms"] = True
         data["bathrooms"] = int(bath_match.group(1))
 
-    # ── Floors ──
+    # â”€â”€ Floors â”€â”€
     floor_match = re.search(r'(\d+)\s*(?:floor|storey|story|level)', text_lower)
     if floor_match:
         data["has_floors"] = True
         data["floors"] = int(floor_match.group(1))
 
-    # ── Contextual parsing: assistant question → user answer ──
+    # â”€â”€ Contextual parsing: assistant question â†’ user answer â”€â”€
     for i, msg in enumerate(history):
         if msg.get("role") != "user":
             continue
@@ -883,7 +878,7 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
                 data["floors"] = int(nums[0])
 
         if "plot" in prev_assistant and not data["has_dimensions"]:
-            dim_ctx = re.search(r'(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)', user_text.lower())
+            dim_ctx = re.search(r'(\d+(?:\.\d+)?)\s*[xÃ—*]\s*(\d+(?:\.\d+)?)', user_text.lower())
             if dim_ctx:
                 data["has_dimensions"] = True
                 data["plot_width"] = float(dim_ctx.group(1))
@@ -897,7 +892,7 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
                         data["has_dimensions"] = True
                         data["total_area"] = float(val)
 
-    # ── Also parse current message contextually ──
+    # â”€â”€ Also parse current message contextually â”€â”€
     if history:
         last_assistant = ""
         for msg in reversed(history):
@@ -922,7 +917,7 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
                     data["has_dimensions"] = True
                     data["total_area"] = float(val)
 
-    # ── Extras ──
+    # â”€â”€ Extras â”€â”€
     extras = []
     if "dining" in text_lower:
         extras.append("dining")
@@ -942,12 +937,12 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
         extras.append("utility")
     data["extras"] = extras
 
-    # ── Default floors to 1 ──
+    # â”€â”€ Default floors to 1 â”€â”€
     if not data["has_floors"]:
         data["floors"] = 1
         data["has_floors"] = True
 
-    # ── Completeness check ──
+    # â”€â”€ Completeness check â”€â”€
     data["complete"] = (
         data["has_dimensions"] and data["has_bedrooms"] and
         data["has_bathrooms"] and data["has_floors"]
@@ -956,15 +951,15 @@ def _parse_requirements_from_history(current_msg: str, history: List[Dict]) -> D
     return data
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Helpers
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Helpers
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _get_missing_fields(collected: Dict) -> List[str]:
     """Return list of missing required fields."""
     missing = []
     if not collected.get("has_dimensions"):
-        missing.append("plot size (width × length or total area)")
+        missing.append("plot size (width Ã— length or total area)")
     if not collected.get("has_bedrooms"):
         missing.append("number of bedrooms")
     if not collected.get("has_bathrooms"):
@@ -979,7 +974,7 @@ def _build_summary(collected: Dict) -> str:
     parts = []
     if collected.get("plot_width") and collected.get("plot_length"):
         parts.append(
-            f"  Plot: {collected['plot_width']} × {collected['plot_length']} ft "
+            f"  Plot: {collected['plot_width']} Ã— {collected['plot_length']} ft "
             f"({collected.get('total_area', '?')} sq ft)"
         )
     elif collected.get("total_area"):
@@ -1055,7 +1050,7 @@ def _normalize_form_data(data: Dict) -> Dict:
     elif ta:
         ta = float(ta)
         result["total_area"] = ta
-        # §8: If only total area, assume 1:1.3 ratio
+        # Â§8: If only total area, assume 1:1.3 ratio
         shorter = math.sqrt(ta / 1.3)
         longer = shorter * 1.3
         result["plot_width"] = round(shorter, 1)
@@ -1131,19 +1126,19 @@ def _calculate_minimum_area(bedrooms: int, bathrooms: int, extras: List[str]) ->
     return round(area)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Zoning Strategy Selection (§4 Step A)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Zoning Strategy Selection (Â§4 Step A)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _select_zoning_strategy(plot_w: float, plot_l: float) -> str:
     """
     Choose zoning strategy dynamically based on plot ratio.
 
     Rules:
-      width > depth  → linear (rooms along length)
-      depth > width  → central_corridor (corridor down the middle)
-      near square    → split (left-right split)
-      else           → adaptive
+      width > depth  â†’ linear (rooms along length)
+      depth > width  â†’ central_corridor (corridor down the middle)
+      near square    â†’ split (left-right split)
+      else           â†’ adaptive
     """
     ratio = plot_w / max(plot_l, 0.1)
 
@@ -1157,17 +1152,16 @@ def _select_zoning_strategy(plot_w: float, plot_l: float) -> str:
         return "adaptive"
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Area Allocation (§4 Step B)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Area Allocation (Â§4 Step B)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-# ── ADJACENCY GRAPH — mandatory room connectivity (Step 3) ──
+# â”€â”€ ADJACENCY GRAPH â€” mandatory room connectivity (Step 3) â”€â”€
 ADJACENCY_GRAPH_MANDATORY = {
     "entrance":       ["living"],
-    "living":         ["dining", "passage"],
+    "living":         ["dining"],
     "dining":         ["kitchen"],
     "kitchen":        ["utility", "store"],
-    "passage":        ["master_bedroom", "bedroom", "bathroom", "study", "pooja", "staircase"],
     "master_bedroom": ["bathroom"],
     "bedroom":        ["bathroom"],
 }
@@ -1187,7 +1181,7 @@ FORBIDDEN_CONNECTIONS = {
     ("bedroom",        "bedroom"),   # not without corridor
 }
 
-# ── Percentage allocation bands (of total_area) — 11-step spec ──
+# â”€â”€ Percentage allocation bands (of total_area) â€” 11-step spec â”€â”€
 ALLOC_BANDS = {
     "living":         (0.18, 0.25),
     "kitchen":        (0.08, 0.12),
@@ -1195,7 +1189,6 @@ ALLOC_BANDS = {
     "master_bedroom": (0.12, 0.16),
     "bedroom":        (0.12, 0.16),
     "bathroom":       (0.04, 0.06),
-    "passage":        (0.05, 0.08),
     "entrance":       (0.02, 0.04),
     "study":          (0.04, 0.06),
     "pooja":          (0.02, 0.03),
@@ -1208,7 +1201,7 @@ ALLOC_BANDS = {
     "porch":          (0.03, 0.05),
 }
 
-# ── Furniture templates per room type — scaled dynamically (Step 8) ──
+# â”€â”€ Furniture templates per room type â€” scaled dynamically (Step 8) â”€â”€
 FURNITURE_TEMPLATES = {
     "living": [
         {"type": "sofa", "w_ratio": 0.55, "l_ratio": 0.22, "anchor": "center_back"},
@@ -1266,7 +1259,8 @@ def _allocate_areas(
     rooms = []
 
     def _add(name, rtype, frac_lo, frac_hi, zone):
-        mid = (frac_lo + frac_hi) / 2
+        # Randomize within the allocation band for layout variety
+        mid = random.uniform(frac_lo, frac_hi)
         target = total_area * mid
         target = max(target, MIN_ROOM_SIZES.get(rtype, 25))
         if rtype in MAX_AREAS:
@@ -1296,19 +1290,19 @@ def _allocate_areas(
             _add(f"Bedroom {i + 1}", "bedroom",
                  *ALLOC_BANDS["bedroom"], "private")
 
-    # Bathrooms — paired with bedrooms
+    # Bathrooms â€” paired with bedrooms
     for i in range(bathrooms):
         name = f"Bathroom {i + 1}" if bathrooms > 1 else "Bathroom"
         _add(name, "bathroom", *ALLOC_BANDS["bathroom"], "service")
 
     # Extras
     for extra in extras:
-        if extra in ALLOC_BANDS and extra not in ("living", "kitchen", "dining", "passage"):
+        if extra in ALLOC_BANDS and extra not in ("living", "kitchen", "dining"):
             zone = ZONE_CLASSIFICATION.get(extra, "private")
             _add(DISPLAY_NAMES.get(extra, extra.title()), extra,
                  *ALLOC_BANDS[extra], zone)
 
-    # ── Normalize: total room area should not exceed usable ──
+    # â”€â”€ Normalize: total room area should not exceed usable â”€â”€
     total_allocated = sum(r["target_area"] for r in rooms)
     if total_allocated > usable_area * 0.92:  # keep 8% for walls
         scale = usable_area * 0.92 / total_allocated
@@ -1335,7 +1329,7 @@ def _scale_room(room_type: str, target_area: float) -> Tuple[float, float]:
 
     Enforces:
       - Minimum dimensions (4 ft)
-      - Aspect ratio 1:1 to 1:2.5 (§2E)
+      - Aspect ratio 1:1 to 1:2.5 (Â§2E)
       - Snap to 0.5 ft grid
     """
     std_w, std_l = STANDARD_DIMS.get(room_type, (10, 10))
@@ -1352,7 +1346,7 @@ def _scale_room(room_type: str, target_area: float) -> Tuple[float, float]:
     new_w = max(new_w, 4.0)
     new_l = max(new_l, 4.0)
 
-    # Enforce max aspect ratio 1:2.2 (§2E — 11-step spec Step 5)
+    # Enforce max aspect ratio 1:2.2 (Â§2E â€” 11-step spec Step 5)
     max_ratio = 2.2
     if max(new_w, new_l) / max(min(new_w, new_l), 0.1) > max_ratio:
         if new_w > new_l:
@@ -1367,9 +1361,9 @@ def _scale_room(room_type: str, target_area: float) -> Tuple[float, float]:
     return max(new_w, 4.0), max(new_l, 4.0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Room Placement by Strategy (§4 Step C)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Room Placement by Strategy (Â§4 Step C)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _place_rooms_by_strategy(
     room_specs: List[Dict],
@@ -1390,8 +1384,8 @@ def _place_rooms_by_strategy(
     public, private, service = _classify_rooms(room_specs)
     private_zone = _interleave_beds_baths(private, service)
 
-    # Step 4: corridor width = 3-5% of plot width, clamped to MIN_PASSAGE_WIDTH
-    dynamic_corridor = max(MIN_PASSAGE_WIDTH, min(plot_w * 0.04, plot_w * 0.05))
+    # Step 4: corridor width = 3-5% of plot width, clamped to MIN_CORRIDOR_WIDTH
+    dynamic_corridor = max(MIN_CORRIDOR_WIDTH, min(plot_w * 0.04, plot_w * 0.05))
     dynamic_corridor = round(dynamic_corridor, 1)
 
     return _place_bsp(
@@ -1425,22 +1419,25 @@ def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], Lis
         else:  # service, circulation
             service.append(r)
 
-    # Sort within groups for consistent placement:
-    # Public: living first (entrance removed in FIX 1), then porch, then balcony
-    pub_order = {"living": 0, "porch": 1, "balcony": 2, "foyer": 3}
-    public.sort(key=lambda r: pub_order.get(r["room_type"], 99))
+    # Sort within groups — living always stays, but shuffle other rooms
+    # for layout variety on each generation.
+    # Public: living is always present; shuffle remaining public rooms
+    living_rooms = [r for r in public if r["room_type"] == "living"]
+    other_pub = [r for r in public if r["room_type"] != "living"]
+    random.shuffle(other_pub)
+    public = living_rooms + other_pub
 
-    # Semi-private: dining first (adjacent to living), then kitchen
-    semi_order = {"dining": 0, "kitchen": 1}
-    semi_private.sort(key=lambda r: semi_order.get(r["room_type"], 99))
+    # Semi-private: dining-kitchen order randomized
+    random.shuffle(semi_private)
 
-    # Private: master bedroom first, then other bedrooms
-    priv_order = {"master_bedroom": 0, "bedroom": 1, "study": 2, "pooja": 3}
-    private.sort(key=lambda r: (priv_order.get(r["room_type"], 99), -r["target_area"]))
+    # Private: master bedroom first, then shuffle remaining
+    master = [r for r in private if r["room_type"] == "master_bedroom"]
+    other_priv = [r for r in private if r["room_type"] != "master_bedroom"]
+    random.shuffle(other_priv)
+    private = master + other_priv
 
-    # Service: bathrooms first
-    serv_order = {"bathroom": 0, "toilet": 1, "utility": 2, "store": 3}
-    service.sort(key=lambda r: serv_order.get(r["room_type"], 99))
+    # Service: shuffle
+    random.shuffle(service)
 
     # Merge semi_private into private so kitchen/dining go in rear band
     private = semi_private + private
@@ -1452,7 +1449,7 @@ def _interleave_beds_baths(private: List[Dict], service: List[Dict]) -> List[Dic
     """
     Interleave bedrooms with their bathrooms for adjacency and separation.
 
-    Step 3 rule: bedroom→bedroom without corridor is forbidden.
+    Step 3 rule: bedroomâ†’bedroom without corridor is forbidden.
     So we interleave: Bed1, Bath1, Bed2, Bath2, Bed3, ...
     This ensures bathrooms act as buffers between bedrooms.
     Remaining non-bed/non-bath rooms go at the end.
@@ -1482,16 +1479,15 @@ def _place_bsp(
     corridor_width: float,
 ) -> List[Dict]:
     """
-    BSP placement engine — subdivides usable area into bands then packs rooms.
+    BSP placement engine â€” subdivides usable area into bands then packs rooms.
 
     Layout (front = south entrance):
-      ┌──────────────────────────────────┐
-      │       PUBLIC BAND (front)        │  Living, Dining, Kitchen
-      ├──────────────────────────────────┤
-      │        PASSAGE / CORRIDOR        │  3–5% of plot width
-      ├──────────────────────────────────┤
-      │      PRIVATE BAND  (back)        │  Bedrooms, Bathrooms, etc.
-      └──────────────────────────────────┘
+      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+      â”‚       PUBLIC BAND (front 45%)    â”‚  Living, Porch, Balcony
+      â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+      â”‚      PRIVATE BAND  (rear 55%)    â”‚  Dining, Kitchen, Bedrooms, Baths
+      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+    No passage room. Rooms connect through shared walls + doors.
     """
     placed: List[Dict] = []
     WALL = WALL_EXT_FT
@@ -1500,33 +1496,15 @@ def _place_bsp(
     usable_w = plot_w - 2 * WALL
     usable_l = plot_l - 2 * WALL
 
-    # Remove passage from room lists — it'll be placed as corridor
-    passage_spec = None
-    filtered_pub = []
-    filtered_priv = []
-    for r in public_rooms:
-        if r["room_type"] == "passage":
-            passage_spec = r
-        else:
-            filtered_pub.append(r)
-    for r in private_rooms:
-        if r["room_type"] == "passage":
-            passage_spec = r
-        else:
-            filtered_priv.append(r)
+    # Filter out any lingering corridor rooms
+    filtered_pub = [r for r in public_rooms if r["room_type"] != "corridor"]
+    filtered_priv = [r for r in private_rooms if r["room_type"] != "corridor"]
 
     has_pub = len(filtered_pub) > 0
     has_priv = len(filtered_priv) > 0
-    n_corridors = 1 if (has_pub and has_priv) else 0
-    actual_corridor = corridor_width if n_corridors else 0
-    avail_h = usable_l - actual_corridor
+    avail_h = usable_l
 
-    if avail_h < 8:
-        avail_h = usable_l
-        actual_corridor = 0
-        n_corridors = 0
-
-    # ── Height proportions from area needs ──
+    # â”€â”€ Height proportions from area needs â”€â”€
     pub_area = sum(r["target_area"] for r in filtered_pub)
     priv_area = sum(r["target_area"] for r in filtered_priv)
     total_area = pub_area + priv_area or 1.0
@@ -1548,34 +1526,112 @@ def _place_bsp(
         pub_h = 0
         priv_h = avail_h
 
-    # ── PUBLIC BAND ──
+    # â”€â”€ PUBLIC BAND â”€â”€
     if has_pub:
         placed.extend(
-            _bsp_subdivide(filtered_pub, WALL, WALL, usable_w, round(pub_h, 1), IWALL)
+            _place_public_band_centered(filtered_pub, WALL, WALL, usable_w, round(pub_h, 1), IWALL)
         )
 
-    # ── CORRIDOR / PASSAGE as physical room ──
-    if n_corridors and actual_corridor > 0:
-        corridor_y = round(WALL + pub_h, 1)
-        spec = passage_spec or {
-            "name": "Passage", "room_type": "passage",
-            "target_area": round(usable_w * actual_corridor, 1),
-            "width": usable_w, "length": actual_corridor,
-            "zone": "circulation",
-        }
-        placed.append(_make_placed_room(
-            spec, usable_w, actual_corridor, WALL, corridor_y
-        ))
-
-    # ── PRIVATE BAND ──
+    # â”€â”€ PRIVATE BAND (no corridor gap â€” rooms connect via doors) â”€â”€
     if has_priv:
-        priv_y = WALL + (pub_h + actual_corridor if has_pub else 0)
+        priv_y = WALL + (pub_h if has_pub else 0)
         final_priv_h = round(WALL + usable_l - priv_y, 1)
         final_priv_h = max(final_priv_h, 8.0)
         placed.extend(
             _bsp_subdivide(filtered_priv, WALL, round(priv_y, 1),
                            usable_w, final_priv_h, IWALL)
         )
+
+    return placed
+
+
+def _place_public_band_centered(
+    rooms: List[Dict],
+    x: float, y: float,
+    w: float, h: float,
+    iwall: float,
+) -> List[Dict]:
+    """Place public rooms with the Drawing Room (living) centered.
+
+    If there's only 1 room (living), it fills the full band.
+    If there are 2+ rooms, living goes in the center, smaller rooms on sides.
+    """
+    if not rooms:
+        return []
+    if len(rooms) == 1:
+        return [_make_placed_room(rooms[0], w, h, x, y)]
+
+    # Separate living from side rooms
+    living = [r for r in rooms if r["room_type"] == "living"]
+    sides = [r for r in rooms if r["room_type"] != "living"]
+
+    if not living:
+        # No living room — fall back to normal BSP
+        return _bsp_subdivide(rooms, x, y, w, h, iwall)
+
+    living_room = living[0]
+    n_sides = len(sides)
+    total_gaps = iwall * (n_sides)  # gaps between living and each side room
+
+    # Living gets ~60% of width, side rooms share the rest
+    living_w = round(max(10.0, (w - total_gaps) * 0.60), 1)
+    side_total_w = w - living_w - total_gaps
+
+    placed = []
+
+    if n_sides == 0:
+        # Only living
+        placed.append(_make_placed_room(living_room, w, h, x, y))
+    elif n_sides == 1:
+        # 1 side room: randomly put it left or right of living
+        side_w = round(side_total_w, 1)
+        if random.random() < 0.5:
+            # Side left, living right
+            placed.append(_make_placed_room(sides[0], side_w, h, x, y))
+            placed.append(_make_placed_room(living_room, living_w, h,
+                                            round(x + side_w + iwall, 1), y))
+        else:
+            # Living left, side right
+            placed.append(_make_placed_room(living_room, living_w, h, x, y))
+            placed.append(_make_placed_room(sides[0], side_w, h,
+                                            round(x + living_w + iwall, 1), y))
+    else:
+        # 2+ side rooms: split sides into left and right groups, living in center
+        random.shuffle(sides)
+        mid = max(1, len(sides) // 2)
+        left_sides = sides[:mid]
+        right_sides = sides[mid:]
+
+        left_area = sum(r["target_area"] for r in left_sides) or 1
+        right_area = sum(r["target_area"] for r in right_sides) or 1
+        total_side_area = left_area + right_area
+
+        left_w = round(side_total_w * (left_area / total_side_area), 1)
+        right_w = round(side_total_w - left_w, 1)
+        left_w = max(4.0, left_w)
+        right_w = max(4.0, right_w)
+
+        # Recalculate living width to absorb any rounding
+        living_w = round(w - left_w - right_w - total_gaps, 1)
+        living_w = max(10.0, living_w)
+
+        cx = x
+        # Left side rooms
+        if len(left_sides) == 1:
+            placed.append(_make_placed_room(left_sides[0], left_w, h, cx, y))
+        else:
+            placed.extend(_bsp_subdivide(left_sides, cx, y, left_w, h, iwall))
+        cx = round(cx + left_w + iwall, 1)
+
+        # Center: living room
+        placed.append(_make_placed_room(living_room, living_w, h, cx, y))
+        cx = round(cx + living_w + iwall, 1)
+
+        # Right side rooms
+        if len(right_sides) == 1:
+            placed.append(_make_placed_room(right_sides[0], right_w, h, cx, y))
+        else:
+            placed.extend(_bsp_subdivide(right_sides, cx, y, right_w, h, iwall))
 
     return placed
 
@@ -1706,7 +1762,7 @@ def _bsp_split_h(
     gap = iwall if len(left_rooms) > 0 and len(right_rooms) > 0 else 0
     net_w = w - gap
     left_w = max(4.0, round(net_w * frac, 1))
-    # Right side fills remaining exactly — no rounding drift
+    # Right side fills remaining exactly â€” no rounding drift
     right_w = max(4.0, round(net_w - left_w, 1))
 
     # Ensure both sides get at least 4 ft
@@ -1785,14 +1841,14 @@ def _make_placed_room(
     x: float, y: float,
 ) -> Dict:
     """Create a placed room dict with all required fields.
-    Enforces aspect ratio 1:2.2 — if the BSP region is too narrow,
+    Enforces aspect ratio 1:2.2 â€” if the BSP region is too narrow,
     shrink the longer side to comply."""
     rtype = spec["room_type"]
     zone = spec.get("zone", ZONE_CLASSIFICATION.get(rtype, "private"))
     target = spec.get("target_area", width * length)
 
     # Enforce aspect ratio 1:2.2 for non-circulation rooms
-    if rtype not in ("passage", "hallway", "corridor", "balcony"):
+    if rtype not in ("corridor", "balcony"):
         min_dim = min(width, length)
         max_dim = max(width, length)
         if min_dim > 0 and max_dim / min_dim > 2.2:
@@ -1837,9 +1893,9 @@ def _split_into_rows(rooms: List[Dict], max_per_row: int) -> List[List[Dict]]:
     return [rooms[i:i + per_row] for i in range(0, len(rooms), per_row)]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Door & Window Placement
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Door & Window Placement
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
     """
@@ -1853,7 +1909,7 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
     WALL = WALL_EXT_FT
     TOL = 1.0  # adjacency tolerance in ft
 
-    # ── Phase 1 & 2: detect adjacency from geometry ──
+    # â”€â”€ Phase 1 & 2: detect adjacency from geometry â”€â”€
     for room in rooms:
         room["connected_to"] = []
         room["adjacent_to"] = []
@@ -1887,9 +1943,9 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             private_top = min(private_top, ry)
     corridor_mid = (public_bottom + private_top) / 2
 
-    # ── Phase 3: door placement (Step 6 — 11-step spec) ──
+    # â”€â”€ Phase 3: door placement (Step 6 â€” 11-step spec) â”€â”€
     # Rules:
-    #   - Bedrooms open into corridor/passage side
+    #   - Bedrooms open into corridor side
     #   - Bathroom doors do NOT face dining room
     #   - Kitchen door should be near dining connection
     #   - Living room gets main entrance (south) + interior access (north)
@@ -1944,7 +2000,7 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
             doors.append({"wall": "S", "width": 3.5})
 
         elif rtype == "living":
-            # Living: main door from entrance side, interior access to dining/passage
+            # Living: main door from entrance side, interior access to dining
             doors.append({"wall": "S", "width": 3.0})
             doors.append({"wall": "N", "width": 3.0})
 
@@ -1969,18 +2025,15 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
         elif zone in ("public", "semi_private"):
             doors.append({"wall": "N", "width": 3.0})
 
-        elif rtype == "passage":
-            pass  # passages don't get doors
-
         else:
-            # Private rooms (bedrooms, study, pooja) — door toward corridor
+            # Private rooms (bedrooms, study, pooja) â€” door toward corridor
             if room_center_y > corridor_mid:
                 doors.append({"wall": "S", "width": 3.0})
             else:
                 doors.append({"wall": "N", "width": 3.0})
 
-        # ── Phase 4: window placement — Step 7: external walls only,
-        #    width scales with wall length (15-30% of wall length) ──
+        # â”€â”€ Phase 4: window placement â€” Step 7: external walls only,
+        #    width scales with wall length (15-30% of wall length) â”€â”€
         windows = []
         is_south = ry <= WALL + 1
         is_north = ry + rl >= plot_l - WALL - 1
@@ -2014,7 +2067,7 @@ def _assign_doors_windows(rooms: List[Dict], plot_w: float, plot_l: float) -> Li
 
         # Habitable rooms must have at least one window
         non_window_types = ("bathroom", "toilet", "store", "utility",
-                            "hallway", "staircase", "passage", "entrance")
+                            "staircase", "entrance")
         if not windows and rtype not in non_window_types:
             for side, flag, wall_len in [
                 ("N", is_north, rw), ("S", is_south, rw),
@@ -2072,9 +2125,9 @@ def _detect_shared_wall(
     return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Auto-correct Geometry (§4 Step D)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Auto-correct Geometry (Â§4 Step D)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]:
     """
@@ -2105,7 +2158,7 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
         rl = room["length"]
         rx, ry = pos["x"], pos["y"]
 
-        # ── Clip to boundary (always safe) ──
+        # â”€â”€ Clip to boundary (always safe) â”€â”€
         if rx + rw > plot_w:
             rw = round(max(plot_w - rx, 4.0), 1)
         if ry + rl > plot_l:
@@ -2120,7 +2173,7 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
         room["area"] = round(rw * rl, 1)
         room["position"] = {"x": round(rx, 1), "y": round(ry, 1)}
 
-    # ── Enforce minimum size (overlap-safe, direction-aware) ──
+    # â”€â”€ Enforce minimum size (overlap-safe, direction-aware) â”€â”€
     # Only extend toward the nearest external wall to avoid eating corridor space
     for i, room in enumerate(rooms):
         rtype = room["room_type"]
@@ -2156,19 +2209,19 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
             # Try extending length toward nearest external wall only
             needed_l = round(min_a / max(rw, 1), 1)
             if dist_bottom <= dist_top and dist_bottom < 2.0:
-                # Near bottom wall — extend downward
+                # Near bottom wall â€” extend downward
                 new_ry = max(0, ry + rl - needed_l)
                 if not _would_overlap(i, rx, new_ry, rw, needed_l):
                     room["position"]["y"] = round(new_ry, 1)
                     room["length"] = needed_l
                     room["area"] = round(rw * needed_l, 1)
             elif dist_top < 2.0:
-                # Near top wall — extend upward
+                # Near top wall â€” extend upward
                 if needed_l <= plot_l - ry and not _would_overlap(i, rx, ry, rw, needed_l):
                     room["length"] = needed_l
                     room["area"] = round(rw * needed_l, 1)
 
-    # ── Enforce aspect ratio 1:2.2 (overlap-safe, area-preserving) ──
+    # â”€â”€ Enforce aspect ratio 1:2.2 (overlap-safe, area-preserving) â”€â”€
     for i, room in enumerate(rooms):
         rw, rl = room["width"], room["length"]
         min_dim = min(rw, rl)
@@ -2205,11 +2258,11 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
                     room["length"] = new_rl
                     room["area"] = round(rw * new_rl, 1)
 
-    # ── Ventilation fix: push interior habitable rooms to boundary ──
+    # â”€â”€ Ventilation fix: push interior habitable rooms to boundary â”€â”€
     tolerance = WALL_EXT_FT + 1.0
     for idx, room in enumerate(rooms):
         rtype = room["room_type"]
-        if rtype in ("hallway", "passage", "staircase", "store", "utility"):
+        if rtype in ("staircase", "store", "utility"):
             continue
 
         pos = room["position"]
@@ -2258,10 +2311,10 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
                     room["area"] = round(new_rw * new_rl, 1)
                     break
 
-    # ── Final aspect ratio re-check after ventilation fix ──
+    # â”€â”€ Final aspect ratio re-check after ventilation fix â”€â”€
     for i, room in enumerate(rooms):
         rtype = room["room_type"]
-        if rtype in ("passage", "hallway", "corridor", "balcony"):
+        if rtype in ("corridor", "balcony"):
             continue
         rw, rl = room["width"], room["length"]
         min_dim = min(rw, rl)
@@ -2276,9 +2329,9 @@ def _auto_correct(rooms: List[Dict], plot_w: float, plot_l: float) -> List[Dict]
     return rooms
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Build Output Layout (§6)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Build Output Layout (Â§6)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _build_layout_output(
     placed_rooms: List[Dict],
@@ -2286,7 +2339,7 @@ def _build_layout_output(
     total_area: float, floors: int,
     strategy: str,
 ) -> Dict:
-    """Build the final layout JSON in the format specified by §6."""
+    """Build the final layout JSON in the format specified by Â§6."""
     boundary = [
         [0, 0], [plot_w, 0], [plot_w, plot_l], [0, plot_l], [0, 0]
     ]
@@ -2307,7 +2360,7 @@ def _build_layout_output(
         room["label"] = room.get("name", room.get("room_type", "Room"))
         room["actual_area"] = round(room.get("area", rw * rl), 1)
 
-        # Build furniture layout (Step 8 — scaled, not blocking doors)
+        # Build furniture layout (Step 8 â€” scaled, not blocking doors)
         furniture = []
         templates = FURNITURE_TEMPLATES.get(room["room_type"], [])
         door_zones = []
@@ -2492,7 +2545,7 @@ def _build_layout_output(
     else:
         circ_type = "minimal"
 
-    # ── Build zones (Step 2 — array of {name, band} objects) ──
+    # â”€â”€ Build zones (Step 2 â€” array of {name, band} objects) â”€â”€
     ZONE_BANDS = {
         "public": "front", "semi_private": "middle",
         "private": "rear", "service": "rear", "circulation": "middle",
@@ -2512,7 +2565,7 @@ def _build_layout_output(
                 "rooms": zone_rooms_map[zname],
             })
 
-    # ── Build adjacency_graph (Step 3 — list of edge pairs) ──
+    # â”€â”€ Build adjacency_graph (Step 3 â€” list of edge pairs) â”€â”€
     adjacency_edges = []
     seen_edges = set()
     for room in placed_rooms:
@@ -2522,26 +2575,36 @@ def _build_layout_output(
                 seen_edges.add(edge)
                 adjacency_edges.append(list(edge))
 
-    # ── Build routing_graph (Step 4 — Entrance → Living → Dining → Kitchen) ──
+    # â”€â”€ Build routing_graph (Step 4 â€” Entrance â†’ Living â†’ Dining â†’ Kitchen) â”€â”€
     routing_edges = []
     room_names = {r["name"] for r in placed_rooms}
-    # Primary circulation: Entrance → Living → Dining → Kitchen
+    # Primary circulation: Entrance â†’ Living â†’ Dining â†’ Kitchen
     primary_chain = ["Entrance", "Living Room", "Dining Room", "Kitchen"]
     for i in range(len(primary_chain) - 1):
         if primary_chain[i] in room_names and primary_chain[i + 1] in room_names:
             routing_edges.append([primary_chain[i], primary_chain[i + 1]])
-    # Private access: living → passage → each bedroom
-    passage_names = [r["name"] for r in placed_rooms if r["room_type"] == "passage"]
+    # Private access: living â†’ each bedroom directly (no passage)
     bedroom_names = [r["name"] for r in placed_rooms
                      if r["room_type"] in ("master_bedroom", "bedroom")]
-    if passage_names and passage_names[0] in room_names:
-        routing_edges.append(["Living Room", passage_names[0]])
-        for bname in bedroom_names:
-            routing_edges.append([passage_names[0], bname])
+    for bname in bedroom_names:
+        if bname in room_names and "Living Room" in room_names:
+            routing_edges.append(["Living Room", bname])
+    # Master bedroom â†’ bathroom (attached)
+    if "Master Bedroom" in room_names:
+        bath_name = next((r["name"] for r in placed_rooms if r["room_type"] == "bathroom"), None)
+        if bath_name and bath_name in room_names:
+            routing_edges.append(["Master Bedroom", bath_name])
+    # Pooja â†’ Living
+    if "Pooja Room" in room_names and "Living Room" in room_names:
+        routing_edges.append(["Living Room", "Pooja Room"])
+    # Study â†’ Master Bedroom (or first bedroom)
+    if "Study Room" in room_names:
+        study_parent = "Master Bedroom" if "Master Bedroom" in room_names else (bedroom_names[0] if bedroom_names else None)
+        if study_parent and study_parent in room_names:
+            routing_edges.append([study_parent, "Study Room"])
 
-    # ── Corridor width from passage room ──
-    passage_room = next((r for r in placed_rooms if r["room_type"] == "passage"), None)
-    actual_corr_width = passage_room["length"] if passage_room else MIN_PASSAGE_WIDTH
+    # Corridor width â€” derived from gap between bands, no passage room
+    actual_corr_width = MIN_CORRIDOR_WIDTH
 
     return {
         "plot": {
@@ -2567,7 +2630,7 @@ def _build_layout_output(
             "orthogonal_walls": True,
             "inside_boundary": True,
             "aspect_ratio_max": 2.2,
-            "min_corridor_width_ft": MIN_PASSAGE_WIDTH,
+            "min_corridor_width_ft": MIN_CORRIDOR_WIDTH,
         },
         "circulation": {
             "type": circ_type,
@@ -2595,9 +2658,9 @@ def _build_layout_output(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Validation Checks (§7)
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Validation Checks (Â§7)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _check_overlaps(rooms: List[Dict]) -> List[str]:
     """Check for room overlaps using AABB collision detection."""
@@ -2625,7 +2688,7 @@ def _check_overlaps(rooms: List[Dict]) -> List[str]:
 
 
 def _check_minimum_sizes(rooms: List[Dict]) -> List[str]:
-    """Check rooms meet minimum size requirements (§2D). Allows 1 sqft rounding tolerance."""
+    """Check rooms meet minimum size requirements (Â§2D). Allows 1 sqft rounding tolerance."""
     issues = []
     TOLERANCE = 1.0  # rounding tolerance
     for room in rooms:
@@ -2640,7 +2703,7 @@ def _check_minimum_sizes(rooms: List[Dict]) -> List[str]:
 
 
 def _check_zoning(rooms: List[Dict]) -> List[str]:
-    """Check zoning rules — forbidden adjacency (§2B)."""
+    """Check zoning rules â€” forbidden adjacency (Â§2B)."""
     issues = []
     for i, r1 in enumerate(rooms):
         for j, r2 in enumerate(rooms):
@@ -2689,7 +2752,7 @@ def _check_area_overflow(rooms: List[Dict], plot_area: float) -> str:
 
 
 def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[str]:
-    """Check circulation adequacy, passage widths, and primary path (Step 4 & 10)."""
+    """Check circulation adequacy, corridor widths, and primary path (Step 4 & 10)."""
     issues = []
     total_room_area = sum(r.get("area", 0) for r in rooms)
     plot_area = plot_w * plot_l
@@ -2699,19 +2762,19 @@ def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
     if circ_area < plot_area * 0.03:
         issues.append(
             f"Insufficient circulation: {round(circ_area)} sq ft "
-            f"({round(circ_area / max(plot_area, 1) * 100, 1)}%) — minimum 5% recommended"
+            f"({round(circ_area / max(plot_area, 1) * 100, 1)}%) â€” minimum 5% recommended"
         )
 
-    # Step 4: Verify primary circulation path Entrance → Living → Dining → Kitchen
+    # Step 4: Verify primary circulation path Entrance â†’ Living â†’ Dining â†’ Kitchen
     room_by_type = {}
     for r in rooms:
         rt = r.get("room_type", "")
         if rt not in room_by_type:
             room_by_type[rt] = r
     primary_path = [
-        ("entrance", "living", "Entrance → Living"),
-        ("living", "dining", "Living → Dining"),
-        ("dining", "kitchen", "Dining → Kitchen"),
+        ("entrance", "living", "Entrance â†’ Living"),
+        ("living", "dining", "Living â†’ Dining"),
+        ("dining", "kitchen", "Dining â†’ Kitchen"),
     ]
     for type_a, type_b, label in primary_path:
         ra = room_by_type.get(type_a)
@@ -2720,7 +2783,7 @@ def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
             if not _are_adjacent(ra, rb):
                 issues.append(f"Circulation break: {label} not adjacent")
 
-    # Check passage widths between adjacent rooms
+    # Check corridor widths between adjacent rooms
     wall_tol = 1.0
     for i, r1 in enumerate(rooms):
         for j, r2 in enumerate(rooms):
@@ -2734,18 +2797,18 @@ def _check_circulation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
 
             gap_x = x2 - (x1 + w1)
             y_overlap = min(y1 + l1, y2 + l2) - max(y1, y2)
-            if y_overlap > 0.5 and wall_tol < gap_x < MIN_PASSAGE_WIDTH - 0.3:
+            if y_overlap > 0.5 and wall_tol < gap_x < MIN_CORRIDOR_WIDTH - 0.3:
                 issues.append(
-                    f"Narrow passage ({round(gap_x, 1)} ft) between "
-                    f"{r1.get('name')} and {r2.get('name')} — min {MIN_PASSAGE_WIDTH} ft"
+                    f"Narrow corridor ({round(gap_x, 1)} ft) between "
+                    f"{r1.get('name')} and {r2.get('name')} â€” min {MIN_CORRIDOR_WIDTH} ft"
                 )
 
             gap_y = y2 - (y1 + l1)
             x_overlap = min(x1 + w1, x2 + w2) - max(x1, x2)
-            if x_overlap > 0.5 and wall_tol < gap_y < MIN_PASSAGE_WIDTH - 0.3:
+            if x_overlap > 0.5 and wall_tol < gap_y < MIN_CORRIDOR_WIDTH - 0.3:
                 issues.append(
-                    f"Narrow passage ({round(gap_y, 1)} ft) between "
-                    f"{r1.get('name')} and {r2.get('name')} — min {MIN_PASSAGE_WIDTH} ft"
+                    f"Narrow corridor ({round(gap_y, 1)} ft) between "
+                    f"{r1.get('name')} and {r2.get('name')} â€” min {MIN_CORRIDOR_WIDTH} ft"
                 )
 
     return issues
@@ -2775,7 +2838,7 @@ def _check_boundary_fit(rooms: List[Dict], plot_w: float, plot_l: float) -> List
 
 
 def _check_aspect_ratios(rooms: List[Dict]) -> List[str]:
-    """Check room aspect ratios (§2E: 1:1 to 1:2.2)."""
+    """Check room aspect ratios (Â§2E: 1:1 to 1:2.2)."""
     issues = []
     for room in rooms:
         w = room.get("width", 10)
@@ -2784,7 +2847,7 @@ def _check_aspect_ratios(rooms: List[Dict]) -> List[str]:
         max_dim = max(w, l)
 
         if min_dim < 4 and room.get("room_type") not in (
-            "balcony", "utility", "toilet", "hallway", "passage", "entrance"
+            "balcony", "utility", "toilet", "entrance"
         ):
             issues.append(
                 f"{room.get('name')}: minimum dimension {min_dim} ft too narrow (min 4 ft)"
@@ -2799,7 +2862,7 @@ def _check_aspect_ratios(rooms: List[Dict]) -> List[str]:
 
 def _check_ventilation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[str]:
     """
-    Check ventilation compliance (§2F).
+    Check ventilation compliance (Â§2F).
 
     Every habitable room must touch external wall.
     Bathrooms must connect to external wall or ventilation shaft.
@@ -2810,7 +2873,7 @@ def _check_ventilation(rooms: List[Dict], plot_w: float, plot_l: float) -> List[
     for room in rooms:
         rtype = room.get("room_type", "other")
         # Skip circulation rooms and entrance
-        if rtype in ("hallway", "passage", "staircase", "entrance"):
+        if rtype in ("staircase", "entrance"):
             continue
 
         pos = room.get("position", {})
@@ -2879,14 +2942,14 @@ def _check_reachability(rooms: List[Dict]) -> List[str]:
     return issues
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL — Design Explanation Builder
-# ═══════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# INTERNAL â€” Design Explanation Builder
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _build_design_explanation(
     req: Dict, layout: Dict, validation: Dict, strategy: str
 ) -> str:
-    """Build professional explanation (max 8 lines) as per §6."""
+    """Build professional explanation (max 8 lines) as per Â§6."""
     plot = layout.get("plot", {})
     rooms = layout.get("rooms", [])
     area_summary = layout.get("area_summary", {})
@@ -2897,7 +2960,7 @@ def _build_design_explanation(
     # Line 1: Plot info
     assumed = " (dimensions estimated from area)" if req.get("assumed_dimensions") else ""
     lines.append(
-        f"Layout designed for {plot.get('width')}×{plot.get('length')} ft plot "
+        f"Layout designed for {plot.get('width')}Ã—{plot.get('length')} ft plot "
         f"({area_summary.get('plot_area', '?')} sq ft){assumed}."
     )
 

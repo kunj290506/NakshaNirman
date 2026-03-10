@@ -451,7 +451,7 @@ def _groq_to_engine_input(groq_json: dict, fallback: dict) -> dict:
     if rooms:
         bedroom_types = {"master_bedroom", "bedroom"}
         bath_types = {"bathroom", "toilet", "wc"}
-        core_types = bedroom_types | bath_types | {"living", "kitchen", "dining", "passage", "entrance"}
+        core_types = bedroom_types | bath_types | {"living", "kitchen", "dining", "entrance"}
 
         bedrooms = sum(1 for r in rooms if r.get("type") in bedroom_types)
         bathrooms = sum(1 for r in rooms if r.get("type") in bath_types)

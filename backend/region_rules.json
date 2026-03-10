@@ -182,7 +182,7 @@
         "internal_inches": 4.5,
         "partition_inches": 4
       },
-      "min_passage_width_ft": 3.5,
+      "min_corridor_width_ft": 3.5,
       "min_door_width_ft": 2.5,
       "main_door_width_ft": 3.5,
       "window_sill_height_ft": 3.0,

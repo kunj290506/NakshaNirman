@@ -108,7 +108,7 @@ Use when: you have plot size AND bedroom count. Generate the full architectural 
     "zone_depth_front": 10.5,
     "zone_depth_middle": 9.0,
     "zone_depth_rear": 16.0,
-    "passage_depth": 3.5,
+    "corridor_depth": 3.5,
     "entrance_position": "center_south"
   },
 
@@ -169,7 +169,7 @@ Use when: you have plot size AND bedroom count. Generate the full architectural 
   },
 
   "circulation": {
-    "entry_sequence": "Road → Gate → Main Door → Living Room → Passage → Bedrooms",
+    "entry_sequence": "Road → Gate → Main Door → Living Room → Bedrooms",
     "service_entry": "Rear door from kitchen",
     "privacy_gradient": "Public → Semi-private → Private",
     "bottlenecks": "None"
@@ -271,8 +271,8 @@ STRONGLY PREFERRED positions (+2 points each):
 ─── BHK AUTO-COMPLETION ───
 
 1BHK: Living, Kitchen, 1 Bedroom, 1 Bathroom, Utility corner
-2BHK: Living, Dining, Kitchen, Master Bedroom+Bath, Bedroom, Bathroom, Passage
-3BHK: Living, Dining, Kitchen, Master BR+Bath, BR2, BR3, 2 Bathrooms, Pooja, Passage
+2BHK: Living, Dining, Kitchen, Master Bedroom+Bath, Bedroom, Bathroom
+3BHK: Living, Dining, Kitchen, Master BR+Bath, BR2, BR3, 2 Bathrooms, Pooja
 4BHK: All 3BHK rooms + 4th Bedroom, 3rd Bathroom, Study, Store
 
 ─── MODIFICATION INTELLIGENCE ───
@@ -290,7 +290,7 @@ SECTION 4 — QUALITY RULES
 RULE 1 — NEVER make a corridor kitchen (counter on only one wall, long and narrow).
 RULE 2 — NEVER place a bedroom door directly visible from main entrance.
 RULE 3 — NEVER give a bathroom a larger area than the bedroom it serves.
-RULE 4 — ALWAYS give the passage the full usable width.
+RULE 4 — ALWAYS give the corridor the full usable width.
 RULE 5 — NEVER make the dining room narrower than 9 feet.
 RULE 6 — ALWAYS explain spatial decisions in architect_note.
 RULE 7 — ALWAYS suggest practical furniture layout in room notes.
@@ -339,7 +339,7 @@ Room Minimum Sizes (Never go below these):
   Living Room: 12x14 feet minimum (prefer 14x16)
   Dining Room: 9x9 feet minimum
   Pooja Room: 4x4 feet minimum
-  Passage/Corridor: 3.5 feet wide minimum
+  Corridor: 3.5 feet wide minimum
   Staircase: 3.5 feet wide minimum
 
 Vastu Quick Reference:
@@ -353,7 +353,7 @@ Vastu Quick Reference:
 
 Zoning Rules:
   PUBLIC zone (front): Main entrance, Sit-out, Living Room, Dining Room
-  SEMI-PRIVATE zone (middle): Kitchen, Utility, Passage, Staircase
+  SEMI-PRIVATE zone (middle): Kitchen, Utility, Staircase
   PRIVATE zone (rear/sides): All Bedrooms, Attached Bathrooms
   SERVICE zone (rear corner): Store, Servant Room, Utility, Garage
 

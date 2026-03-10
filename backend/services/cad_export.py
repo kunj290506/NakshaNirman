@@ -329,7 +329,7 @@ def generate_dxf(plan: dict, output_path: str) -> str:
         )
         
         # Project details
-        num_rooms = len([r for r in plan.get("rooms", []) if r.get("room_type") not in ["hallway", "corridor", "porch", "utility", "store"]])
+        num_rooms = len([r for r in plan.get("rooms", []) if r.get("room_type") not in ["corridor", "porch", "utility", "store"]])
         total_area_sqft = plan.get('total_area', 0)
         total_area_sqm = total_area_sqft * 0.092903  # Convert to sq meters
         

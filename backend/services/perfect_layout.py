@@ -16,7 +16,7 @@ Architecture:
   │  BACK ZONE (Private)                     │
   │  Master BR + Bathroom | BR2 | BR3 | Bath │
   ├──────────────────────────────────────────┤
-  │  CORRIDOR (3-4 ft passage)              │
+  │  CORRIDOR (3-4 ft)                       │
   ├──────────────────────────────────────────┤
   │  FRONT ZONE (Public)                     │
   │  Living Room | Kitchen | Dining          │
@@ -56,7 +56,7 @@ MIN_DIMS = {k: (float(v[0]), float(v[1])) for k, v in _LC_MIN_DIMS.items()}
 
 # Perfect-layout uses its own naming for aspect ratios; add a few extras
 MAX_ASPECT_RATIOS = dict(_LC_MAX_ASPECT)
-MAX_ASPECT_RATIOS.setdefault("hallway", 5.0)
+MAX_ASPECT_RATIOS.setdefault("corridor", 5.0)
 MAX_ASPECT_RATIO = 2.0  # default fallback
 
 # Derive (min, max) area targets from layout_constants (min, ideal, max) fractions
@@ -70,7 +70,7 @@ MAX_AREAS = dict(_LC_MAX_AREAS)
 ZONE_MAP = dict(_LC_ZONE_MAP)
 ZONE_MAP["dining"] = "semi_private"
 ZONE_MAP["kitchen"] = "semi_private"
-ZONE_MAP["hallway"] = "circulation"
+ZONE_MAP["corridor"] = "circulation"
 
 # Priority
 PRIORITY = dict(_LC_PRIORITY)
@@ -95,7 +95,6 @@ STRICT_8ROOM_LABELS = {
     "bedroom": "Bedroom 1",
     "bathroom": "Attached Bathroom",
     "wash_area": "Wash Area",
-    "passage": "Passage",
 }
 
 
@@ -334,20 +333,12 @@ def build_strict_8room_specs(total_area: float) -> List[Dict]:
         "priority": 80,
     })
 
-    # --- BAND 2 (Service) — 2 rooms ---
-    # Wash Area: 5% (within 4-6% range)
-    # Passage: sized to fill the rest of Band 2
+    # --- BAND 2 (Service) — wash area only, no passage room ---
     band2.append({
         "room_type": "wash_area", "name": "Wash Area",
         "zone": "service", "zone_group": "band2",
         "target_area": _area(0.05),
         "priority": 40,
-    })
-    band2.append({
-        "room_type": "passage", "name": "Passage",
-        "zone": "circulation", "zone_group": "band2",
-        "target_area": _area(0.08),   # remainder of band 2
-        "priority": 30,
     })
 
     # --- BAND 3 (Private) — 3 spaces ---
@@ -502,7 +493,7 @@ class PerfectLayoutEngine:
         back_total = sum(s["target_area"] for s in back_specs) or 1
         all_total = front_total + back_total
         
-        # Corridor width — architect's rule: MINIMAL passage, just enough
+        # Corridor width — architect's rule: MINIMAL corridor, just enough
         # for circulation. Every extra foot steals from bedrooms.
         has_back = len(back_specs) > 0
         if not has_back:
@@ -1080,9 +1071,9 @@ class PerfectLayoutEngine:
                     band1_ordered.append(match[0])
             _place_row(band1_ordered, self.ux, band1_y, self.uw, band1_h, "band1")
             
-            # Band 2: Wash Area + Passage (2 rooms only)
+            # Band 2: Wash Area only (no passage room)
             band2_ordered = []
-            for rtype in ["wash_area", "passage"]:
+            for rtype in ["wash_area"]:
                 match = [s for s in band2 if s["room_type"] == rtype]
                 if match:
                     band2_ordered.append(match[0])
@@ -1522,7 +1513,7 @@ class PerfectLayoutEngine:
                     windows.append({"wall": "E", "width": 3.0})
             
             elif rtype in ("master_bedroom", "bedroom"):
-                # Bedroom: door toward corridor/passage (north for band3)
+                # Bedroom: door toward corridor (north for band3)
                 zg = room.get("zone_group", "back")
                 if zg in ("back", "band3"):
                     doors.append({"wall": "N", "width": 2.5})
@@ -1603,10 +1594,10 @@ class PerfectLayoutEngine:
                 windows.append({"wall": "N", "width": 1.5, "type": "ventilation"})
             
             elif rtype == "wash_area":
-                # Wash area: door toward kitchen or passage
+                # Wash area: door toward kitchen or corridor
                 adjacent_wall = (
                     self._find_adjacent_wall(room, "kitchen", result)
-                    or self._find_adjacent_wall(room, "passage", result)
+                    or self._find_adjacent_wall(room, "corridor", result)
                 )
                 if adjacent_wall:
                     doors.append({"wall": adjacent_wall, "width": 2.0})
@@ -1620,8 +1611,8 @@ class PerfectLayoutEngine:
                 elif ry <= self.uy + 0.5:
                     windows.append({"wall": "S", "width": 1.5, "type": "ventilation"})
 
-            elif rtype == "passage":
-                # Passage connects front and back zones
+            elif rtype == "corridor":
+                # Corridor connects front and back zones
                 doors.append({"wall": "S", "width": 3.0, "type": "open"})
                 doors.append({"wall": "N", "width": 3.0, "type": "open"})
             
@@ -1815,7 +1806,7 @@ def generate_perfect_layout(
         rooms = result.get("rooms", [])
         room_names = [r.get("name", "") for r in rooms]
         required = {"Drawing Room", "Kitchen", "Dining Area", "Master Bedroom",
-                     "Bedroom 1", "Attached Bathroom", "Wash Area", "Passage"}
+                     "Bedroom 1", "Attached Bathroom", "Wash Area"}
         actual_names = set(room_names)
         
         if len(room_names) != len(set(room_names)):

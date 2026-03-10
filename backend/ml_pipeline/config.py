@@ -175,7 +175,7 @@ class PipelineConfig:
 
     # --- Rule-based constraints ---
     min_room_area_sqft: float = 25.0       # absolute minimum room area
-    min_passage_width_ft: float = 3.0
+    min_corridor_width_ft: float = 3.0
     wall_external_ft: float = 0.75
     wall_internal_ft: float = 0.375
     column_grid_ft: float = 10.0           # structural column spacing

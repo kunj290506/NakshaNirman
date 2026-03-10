@@ -468,12 +468,6 @@ VASTU_ROOM_RULES = {
         "acceptable": ["SE"],
         "forbidden": ["SW"],
     },
-    "passage": {
-        "ideal": ["CENTER"],
-        "good": ["N", "E"],
-        "acceptable": ["W", "S"],
-        "forbidden": [],
-    },
     "utility": {
         "ideal": ["NW"],
         "good": ["W"],
@@ -546,7 +540,7 @@ VASTU_SPECIAL_RULES = [
     },
     {
         "id": "brahmasthana",
-        "description": "Center of house (Brahmasthana) should be open/passage",
+        "description": "Center of house (Brahmasthana) should be open",
         "check": lambda rooms: not any(
             _room_in_zone(r, "CENTER") for r in rooms
             if _room_type_match(r, ("bathroom", "toilet", "kitchen", "store"))
@@ -736,7 +730,6 @@ NBC_MINIMUMS = {
     "pooja":          {"min_area": 16,  "min_width": 4,  "min_height": 8},
     "study":          {"min_area": 50,  "min_width": 7,  "min_height": 9.5},
     "store":          {"min_area": 20,  "min_width": 4,  "min_height": 8},
-    "passage":        {"min_area": 0,   "min_width": 3.5, "min_height": 9.5},
     "staircase":      {"min_area": 0,   "min_width": 3,  "min_height": 0},
     "balcony":        {"min_area": 0,   "min_width": 4,  "min_height": 0},
     "garage":         {"min_area": 100, "min_width": 8,  "min_height": 0},
@@ -768,7 +761,7 @@ ADJACENCY_PREFERRED = {
 # Privacy gradient: 1 = most public, 10 = most private
 PRIVACY_LEVELS = {
     "entrance": 1, "living": 2, "dining": 3, "kitchen": 4, "study": 5,
-    "passage": 3, "pooja": 5, "store": 5, "utility": 5, "balcony": 2,
+    "corridor": 1, "foyer": 1, "pooja": 5, "store": 5, "utility": 5, "balcony": 2,
     "staircase": 3, "garage": 2,
     "bedroom": 8, "master_bedroom": 9, "bathroom": 10, "toilet": 10,
 }
@@ -914,7 +907,7 @@ def score_circulation(rooms: List[Dict], plot_width: float,
     entrance_rooms = [
         r for r in rooms
         if r.get("room_type", r.get("type", "")).lower().replace(" ", "_")
-        in ("living", "entrance", "passage")
+        in ("living", "entrance")
     ]
     private_rooms = [
         r for r in rooms

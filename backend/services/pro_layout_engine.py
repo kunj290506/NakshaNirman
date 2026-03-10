@@ -308,11 +308,11 @@ def _determine_corridor(total_area: float, n_private_rooms: int) -> float:
     if total_area < 700 or n_private_rooms <= 1:
         return 0.0       # Compact homes: no corridor, living connects directly
     elif total_area < 1000:
-        return 3.0        # 2BHK: narrow passage
+        return 3.0        # 2BHK: narrow corridor
     elif total_area < 1500:
-        return 2.5        # 3BHK: efficient passage (saves ~10sqft vs 3ft)
+        return 2.5        # 3BHK: efficient corridor
     else:
-        return 3.5        # 4BHK+: comfortable passage
+        return 3.5        # 4BHK+: comfortable corridor
 
 
 def _assign_to_bands(
@@ -2058,7 +2058,7 @@ def _generate_candidate(
     # Smart corridor placement — living room gets a SMALL extension (max 1.5ft)
     # into the corridor zone, making the corridor PARTIAL-width. This mirrors
     # real Indian architecture where the living room acts as the circulation
-    # hub and the passage only serves the private zone.
+    # hub and the corridor only serves the private zone.
     if corr_h_used > 0:
         # Find the living room and give it a small depth extension
         max_ext = min(1.5, corr_h_used * 0.5)
@@ -2076,7 +2076,7 @@ def _generate_candidate(
                 if corr_w > 2.0:
                     corridor_room = {
                         'room_type': 'corridor',
-                        'name': 'Passage',
+                        'name': 'Corridor',
                         'zone': 'circulation',
                         'target_area': corr_w * corr_h_used,
                         'priority': 10,
@@ -2095,7 +2095,7 @@ def _generate_candidate(
             # No living room — full-width corridor
             corridor_room = {
                 'room_type': 'corridor',
-                'name': 'Passage',
+                'name': 'Corridor',
                 'zone': 'circulation',
                 'target_area': uw * corr_h_used,
                 'priority': 10,
@@ -2344,7 +2344,7 @@ def _generate_tall_layout(
         if band_idx == corridor_idx and corr_h > 0:
             placed.append({
                 'room_type': 'corridor',
-                'name': 'Passage',
+                'name': 'Corridor',
                 'zone': 'circulation',
                 'target_area': uw * corr_h,
                 '_placed': {

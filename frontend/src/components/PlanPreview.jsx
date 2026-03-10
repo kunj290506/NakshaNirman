@@ -13,8 +13,8 @@ const ROOM_LABELS = {
   study: 'STUDY', pooja: 'PUJA', store: 'STORE',
   balcony: 'BALCONY', porch: 'PORCH', terrace: 'TERRACE',
   garage: 'GARAGE', parking: 'PARKING',
-  hallway: 'HALL', utility: 'UTILITY', wash: 'WASH',
-  foyer: 'SIT OUT', passage: 'PASSAGE', entrance: 'ENTRANCE',
+  utility: 'UTILITY', wash: 'WASH',
+  foyer: 'FOYER', entrance: 'ENTRANCE',
   staircase: 'STAIRCASE', corridor: 'CORRIDOR', lobby: 'LOBBY',
   garden: 'GARDEN',
 }
@@ -438,7 +438,7 @@ function getFurniture(room, thin) {
   const t = room.room_type
   if (t === 'master_bedroom') return <BedFurniture {...room} isMaster thin={thin} />
   if (t === 'bedroom') return <BedFurniture {...room} isMaster={false} thin={thin} />
-  if (t === 'living' || t === 'drawing' || t === 'hall' || t === 'hallway') return <SofaFurniture {...room} thin={thin} />
+  if (t === 'living' || t === 'drawing' || t === 'hall') return <SofaFurniture {...room} thin={thin} />
   if (t === 'dining') return <DiningFurniture {...room} thin={thin} />
   if (t === 'kitchen') return <KitchenFurniture {...room} thin={thin} />
   if (t === 'bathroom' || t === 'toilet' || t === 'wc') return <BathroomFurniture {...room} thin={thin} />
@@ -448,7 +448,7 @@ function getFurniture(room, thin) {
   if (t === 'store') return <StoreFurniture {...room} thin={thin} />
   if (t === 'balcony' || t === 'porch' || t === 'terrace' || t === 'garden') return <BalconyFurniture {...room} thin={thin} />
   if (t === 'garage' || t === 'parking') return <GarageFurniture {...room} thin={thin} />
-  return null // passage, corridor, lobby, entrance, foyer — empty
+  return null // corridor, lobby, entrance, foyer — empty
 }
 
 // ═══════════════════════════════════════════════════════════════

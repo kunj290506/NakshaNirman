@@ -120,7 +120,7 @@ Room Minimum Sizes (Never go below these):
   Living Room: 12x14 feet minimum (prefer 14x16)
   Dining Room: 9x9 feet minimum
   Pooja Room: 4x4 feet minimum
-  Passage/Corridor: 3.5 feet wide minimum
+  Corridor: 3.5 feet wide minimum
 
 Vastu advice to give naturally:
   Kitchen: "In Indian homes, the kitchen works best in the South-East corner as per Vastu — promotes health and prosperity"
@@ -237,7 +237,7 @@ Band 1 height:     L multiplied by 0.35
 
 Band 2 starts at:  Band 1 end y value
 Band 2 ends at:    Band 2 start y plus 3.5
-Band 2 height:     3.5 ft (always exactly 3.5 ft, this is the passage)
+Band 2 height:     3.5 ft (always exactly 3.5 ft, this is the corridor)
 
 Band 3 starts at:  Band 2 end y value
 Band 3 ends at:    y = L minus 0.75 (external wall margin)
@@ -455,7 +455,7 @@ Check every room against these minimums:
   pooja: minimum 16 sqft — FAIL if area less than 16
   store: minimum 20 sqft — FAIL if area less than 20
   utility: minimum 20 sqft — FAIL if area less than 20
-  passage: minimum 15 sqft (3.5 ft wide minimum) — FAIL if less
+  corridor: minimum 15 sqft (3.5 ft wide minimum) — FAIL if less
 
 === VASTU SHASTRA CHECKS ===
 
