@@ -24,6 +24,7 @@ export default function Workspace() {
     const { state } = useLayout()
     const actions = useLayoutActions()
     const [rightCollapsed, setRightCollapsed] = useState(false)
+    const [lastStrategy, setLastStrategy] = useState(null)
 
     // Health check
     useEffect(() => {
@@ -75,12 +76,13 @@ export default function Workspace() {
                 plot_width: requirements?.plot_width || null,
                 plot_length: requirements?.plot_length || null,
                 rooms,
-                bedrooms: requirements?.bedrooms || rooms.filter(r => ['bedroom', 'master_bedroom'].includes(r.room_type)).reduce((s, r) => s + (r.quantity || 1), 0) || 2,
-                bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
+                bedrooms: rooms.filter(r => ['bedroom', 'master_bedroom'].includes(r.room_type)).reduce((s, r) => s + (r.quantity || 1), 0) || 2,
+                bathrooms: rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
                 kitchens: rooms.filter(r => r.room_type === 'kitchen').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
                 floors: requirements?.floors || 1,
                 extras: allExtras,
                 boundary_polygon: state.boundary || null,
+                previous_strategy: lastStrategy,
             }
 
             const json = await api.generateDesign(payload)
@@ -88,6 +90,7 @@ export default function Workspace() {
             if (json.layout) {
                 actions.setLayout(json.layout, json.design_score, json.architect_narrative)
                 if (json.project_id) actions.setProject(json.project_id)
+                if (json.zoning_strategy) setLastStrategy(json.zoning_strategy)
             } else if (json.error) {
                 actions.setError(json.error)
             }

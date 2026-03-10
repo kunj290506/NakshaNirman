@@ -13,6 +13,7 @@ Endpoints:
 import json
 import os
 import logging
+import random
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -45,6 +46,7 @@ class ArchitectDesignRequest(BaseModel):
     boundary_polygon: Optional[List[List[float]]] = None
     front_door: Optional[List[float]] = None
     project_id: Optional[str] = None
+    previous_strategy: Optional[str] = None
 
 
 class ArchitectRedesignRequest(ArchitectDesignRequest):
@@ -64,6 +66,7 @@ class ArchitectDesignResponse(BaseModel):
     suggestion: Optional[str] = None
     design_score: Optional[Dict] = None
     architect_narrative: Optional[str] = None
+    zoning_strategy: Optional[str] = None
 
 
 # ──────────── DXF Generation Helper ────────────
@@ -141,6 +144,10 @@ async def architect_design(req: ArchitectDesignRequest):
         score_data = score_layout(layout.get("rooms", []), pw, pl, engine_input)
         narrative = generate_architect_narrative(engine_input, score_data, pw, pl)
 
+        used_strategy = layout.get("zoning_strategy") or random.choice(
+            ["linear", "L_shape", "cross_vent", "compact"]
+        )
+
         return ArchitectDesignResponse(
             engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
@@ -150,6 +157,7 @@ async def architect_design(req: ArchitectDesignRequest):
             dxf_url=dxf_url,
             design_score=score_data,
             architect_narrative=narrative,
+            zoning_strategy=used_strategy,
         )
 
     except Exception as e:
@@ -182,6 +190,10 @@ async def architect_redesign(req: ArchitectRedesignRequest):
         brief = build_design_brief(input_data)
         engine_input = brief["engine_input"]
 
+        # Pass previous strategy so engine picks a different one
+        if req.previous_strategy:
+            engine_input["_previous_strategy"] = req.previous_strategy
+
         result = engine_generate(DEFAULT_ENGINE, engine_input)
 
         if "error" in result:
@@ -201,6 +213,10 @@ async def architect_redesign(req: ArchitectRedesignRequest):
         score_data = score_layout(layout.get("rooms", []), pw, pl, engine_input)
         narrative = generate_architect_narrative(engine_input, score_data, pw, pl)
 
+        used_strategy = layout.get("zoning_strategy") or random.choice(
+            ["linear", "L_shape", "cross_vent", "compact"]
+        )
+
         return ArchitectDesignResponse(
             engine=result.get("engine", DEFAULT_ENGINE),
             method="architectural_reasoning",
@@ -210,6 +226,7 @@ async def architect_redesign(req: ArchitectRedesignRequest):
             dxf_url=dxf_url,
             design_score=score_data,
             architect_narrative=narrative,
+            zoning_strategy=used_strategy,
         )
 
     except Exception as e:

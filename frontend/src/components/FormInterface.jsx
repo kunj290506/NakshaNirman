@@ -33,28 +33,38 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
     })
     const fileInputRef = useRef(null)
     const [requirements, setRequirements] = useState(null)
+    const [roomsManuallyEdited, setRoomsManuallyEdited] = useState(false)
 
     // Sync RequirementsForm values → room card selections whenever requirements change
     const handleRequirementsChange = (req) => {
         setRequirements(req)
         if (!req) return
 
+        // Only sync RequirementsForm → room cards if user hasn't manually edited rooms
+        if (roomsManuallyEdited) return
+
         setSelectedRooms(prev => {
             const next = { ...prev }
 
-            // Sync bedrooms: ALL are master_bedroom (each auto-gets attached bathroom)
+            // Sync bedrooms: 1 master + rest as regular bedrooms
             const totalBed = parseInt(req.bedrooms) || 0
             if (totalBed >= 1) {
-                next.master_bedroom = { selected: true, qty: totalBed }
-                next.bedroom = { selected: false, qty: 1 }
+                next.master_bedroom = { selected: true, qty: 1 }
+                if (totalBed > 1) {
+                    next.bedroom = { selected: true, qty: totalBed - 1 }
+                } else {
+                    next.bedroom = { selected: false, qty: 1 }
+                }
             } else {
                 next.master_bedroom = { selected: false, qty: 1 }
                 next.bedroom = { selected: false, qty: 1 }
             }
 
-            // Sync bathrooms — EXTRA common bathrooms only (attached baths auto-created)
+            // Sync bathrooms — only update if user explicitly set bathrooms > 0
             const totalBath = parseInt(req.bathrooms) || 0
-            next.bathroom = { selected: totalBath > 0, qty: Math.max(totalBath, 0) }
+            if (totalBath > 0) {
+                next.bathroom = { selected: true, qty: totalBath }
+            }
 
             // Sync kitchen
             const totalKitchen = parseInt(req.kitchen) || 0
@@ -79,6 +89,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
     }
 
     const toggleRoom = (key) => {
+        setRoomsManuallyEdited(true)
         setSelectedRooms(prev => ({
             ...prev,
             [key]: {
@@ -90,6 +101,7 @@ export default function FormInterface({ onGenerate, onBoundaryUpload, boundary, 
     }
 
     const setQty = (key, qty) => {
+        setRoomsManuallyEdited(true)
         setSelectedRooms(prev => ({
             ...prev,
             [key]: { ...prev[key], qty: Math.max(1, parseInt(qty) || 1) },

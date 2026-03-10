@@ -633,6 +633,10 @@ export default function PlanPreview({ plan, selectedRoomId, showDimensions = tru
                 strokeWidth={isSelected ? thinLine * 4 : 0}
                 strokeDasharray={isSelected ? `${thinLine * 3} ${thinLine * 2}` : 'none'}
               />
+              <rect x={r.x} y={r.y} width={r.w} height={r.h}
+                fill="none" stroke={WET.has(r.room_type) ? '#2C5F7A' : '#1A1A1A'}
+                strokeWidth={thinLine * 4}
+              />
             </g>
           )
         })}

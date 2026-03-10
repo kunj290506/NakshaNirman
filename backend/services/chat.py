@@ -500,151 +500,227 @@ async def chat_with_groq(message: str, history: list) -> dict:
 
 # ---- Fallback Rule-Based Chatbot (NakshaNirman) ----
 
-_FALLBACK_STATES = {
-    "greeting": {
-        "keywords": [],
-        "response": "Welcome to NakshaNirman! I will help you design your dream home. First, what is your plot size? For example, 30 by 40 feet, or tell me the total area in square feet.",
-        "next": "area",
-    },
-    "area": {
-        "keywords": ["sq ft", "square feet", "sqft", "area"],
-        "response": "Great! How many bedrooms are you planning — would you like a 2BHK or 3BHK?",
-        "next": "bedrooms",
-    },
-    "bedrooms": {
-        "keywords": ["bedroom", "bed", "room"],
-        "response": "How many bathrooms?",
-        "next": "bathrooms",
-    },
-    "bathrooms": {
-        "keywords": ["bathroom", "bath", "toilet"],
-        "response": "Do you need any special rooms? (study, pooja room, store room, garage)",
-        "next": "special",
-    },
-    "special": {
-        "keywords": ["study", "pooja", "store", "garage", "no", "none"],
-        "response": "Wonderful! Would you like any special rooms — for example, a separate dining room, a study room, or a pooja room?",
-        "next": "generate",
-    },
-    "generate": {
-        "keywords": ["generate", "create", "build", "yes", "make", "haan", "ha", "sure", "proceed"],
-        "response": "Generating your Vastu-compliant floor plan now!",
-        "next": "done",
-    },
-}
+_GREETINGS = {"hi", "hello", "hey", "namaste", "namaskar", "hii", "hiii",
+              "good morning", "good afternoon", "good evening", "sup", "yo"}
+
+_GENERATE_TRIGGERS = {"generate", "create", "build", "make", "yes", "sure",
+                      "ok", "proceed", "haan", "ha", "go ahead", "design",
+                      "start", "banao", "shuru"}
 
 
-def _extract_number(text: str) -> Optional[int]:
-    """Extract the first number from text."""
-    match = re.search(r'\d+', text)
-    return int(match.group()) if match else None
+def _extract_all_numbers(text: str) -> list:
+    """Extract all integers from text."""
+    return [int(x) for x in re.findall(r'\d+', text)]
+
+
+def _parse_message(msg: str) -> dict:
+    """Parse EVERYTHING from one message — plot size, BHK, extras."""
+    low = msg.lower()
+    data = {}
+
+    # Plot dimensions: "30x40", "30 x 40", "30 by 40", "30*40"
+    dim_match = re.search(r'(\d+)\s*[x×*]\s*(\d+)', low)
+    by_match = re.search(r'(\d+)\s*by\s*(\d+)', low)
+    if dim_match:
+        data["plot_width"] = int(dim_match.group(1))
+        data["plot_length"] = int(dim_match.group(2))
+        data["total_area"] = data["plot_width"] * data["plot_length"]
+    elif by_match:
+        data["plot_width"] = int(by_match.group(1))
+        data["plot_length"] = int(by_match.group(2))
+        data["total_area"] = data["plot_width"] * data["plot_length"]
+
+    # Total area: "1200 sqft", "1200 sq ft", "1200 square feet"
+    area_match = re.search(r'(\d+)\s*(?:sq\.?\s*ft|sqft|square\s*feet|sft)', low)
+    if area_match and "total_area" not in data:
+        data["total_area"] = int(area_match.group(1))
+
+    # BHK: "3bhk", "3 bhk", "3 BHK"
+    bhk_match = re.search(r'(\d)\s*bhk', low)
+    if bhk_match:
+        beds = int(bhk_match.group(1))
+        data["bedrooms"] = beds
+        data["bathrooms"] = max(1, beds - 1) if beds <= 2 else beds - 1
+
+    # Bedrooms: "3 bedrooms", "3 bed"
+    bed_match = re.search(r'(\d+)\s*(?:bed(?:room)?s?)\b', low)
+    if bed_match and "bedrooms" not in data:
+        data["bedrooms"] = int(bed_match.group(1))
+
+    # Bathrooms: "2 bathrooms", "2 bath"
+    bath_match = re.search(r'(\d+)\s*(?:bath(?:room)?s?|toilet)', low)
+    if bath_match:
+        data["bathrooms"] = int(bath_match.group(1))
+
+    # Floors: "2 floors", "2 floor", "ground + 1"
+    floor_match = re.search(r'(\d+)\s*(?:floor|storey|story)', low)
+    gp1_match = re.search(r'ground\s*\+\s*(\d+)', low)
+    if floor_match:
+        data["floors"] = int(floor_match.group(1))
+    elif gp1_match:
+        data["floors"] = 1 + int(gp1_match.group(1))
+
+    # Extras
+    extras = []
+    if re.search(r'\bdining\b', low):
+        extras.append("dining")
+    if re.search(r'\bstudy|library|office\b', low):
+        extras.append("study")
+    if re.search(r'\bpooja|puja|mandir\b', low):
+        extras.append("pooja")
+    if re.search(r'\bstore|storage\b', low):
+        extras.append("store")
+    if re.search(r'\bbalcony|terrace\b', low):
+        extras.append("balcony")
+    if re.search(r'\bgarage|parking|car\b', low):
+        extras.append("garage")
+    if re.search(r'\bstaircase|stairs\b', low):
+        extras.append("staircase")
+    if extras:
+        data["extras"] = extras
+
+    return data
+
+
+def _accumulate_from_history(history: list) -> dict:
+    """Scan all previous assistant turns' extracted_data to build accumulated state."""
+    acc = {}
+    for h in history:
+        if h.get("role") == "user":
+            parsed = _parse_message(h.get("content", ""))
+            for k, v in parsed.items():
+                if k == "extras":
+                    existing = acc.get("extras", [])
+                    acc["extras"] = list(set(existing + v))
+                else:
+                    acc[k] = v
+    return acc
 
 
 def _fallback_chat(message: str, history: list) -> dict:
-    """NakshaNirman rule-based fallback chatbot with Indian housing knowledge."""
-    msg_lower = message.lower()
-    extracted = None
-    should_generate = False
+    """
+    Smart NakshaNirman rule-based chatbot.
 
-    # Determine current state from history length
-    turn = len([h for h in history if h.get("role") == "user"])
+    - Parses EVERYTHING from one message (plot size, BHK, extras)
+    - Accumulates data across history turns
+    - Responds to greetings (hi, hello, namaste)
+    - Triggers generation immediately when it has plot + bedrooms
+    - Works WITHOUT Groq API key
+    """
+    msg_lower = message.lower().strip()
 
-    # Off-topic detection — only allow architecture/housing related messages
-    architecture_keywords = [
-        "plot", "sqft", "sq ft", "square", "feet", "foot", "meter",
-        "bhk", "bedroom", "bathroom", "kitchen", "living", "dining",
-        "room", "house", "home", "floor", "plan", "design", "build",
-        "vastu", "pooja", "puja", "balcony", "terrace", "garage",
-        "parking", "store", "storage", "study", "office", "library",
-        "staircase", "stairs", "passage", "corridor", "entrance",
-        "door", "window", "wall", "area", "size", "width", "length",
-        "generate", "create", "make", "yes", "ok", "sure", "proceed",
-        "haan", "ha", "go ahead", "no", "nahi",
-        "east", "west", "north", "south",
-        "architect", "construction", "setback", "boundary",
-        "utility", "servant", "sitout", "sit-out", "foyer",
-        "naksha", "nirman", "ghar", "kamra", "rasoi",
-        "hi", "hello", "hey", "help", "start", "thanks", "thank",
-    ]
-    if turn > 0 and not any(kw in msg_lower for kw in architecture_keywords):
+    # 1) Greetings
+    if any(msg_lower.startswith(g) or msg_lower == g for g in _GREETINGS):
         return {
-            "reply": "I can only help with floor plan design and architecture. Please tell me about your plot size and room requirements.",
-            "extracted_data": None,
+            "reply": (
+                "Namaste! Welcome to NakshaNirman — I'm your AI architect for Indian homes. "
+                "Tell me your plot size and how many bedrooms you need, and I'll design "
+                "your Vastu-compliant floor plan instantly!\n\n"
+                "For example: \"30x40 plot, 3BHK with pooja room\""
+            ),
+            "extracted_data": {"mode": "collecting"},
             "should_generate": False,
         }
 
-    if turn == 0:
-        reply = _FALLBACK_STATES["greeting"]["response"]
-    elif turn == 1:
-        num = _extract_number(message)
-        area = num if num else 1200
-        reply = f"Great, {area} square feet gives a comfortable home! {_FALLBACK_STATES['area']['response']}"
-        extracted = {"total_area": area, "rooms": [], "ready_to_generate": False}
-    elif turn == 2:
-        num = _extract_number(message)
-        bedrooms = num if num else 2
-        # Indian standard: attached bathroom per bedroom
-        bathrooms = max(1, bedrooms - 1) if bedrooms <= 2 else bedrooms - 1
-        bhk_label = f"{bedrooms}BHK"
-        reply = (
-            f"Excellent choice — a {bhk_label}! For Indian homes, I recommend {bathrooms} attached "
-            f"bathrooms as the standard. How many bathrooms would you like?"
-        )
-        extracted = {"rooms": [{"room_type": "bedroom", "quantity": bedrooms}], "ready_to_generate": False}
-    elif turn == 3:
-        num = _extract_number(message)
-        bathrooms = num if num else 2
-        reply = f"Perfect, {bathrooms} attached bathroom(s). {_FALLBACK_STATES['bathrooms']['response']}"
-        extracted = {"rooms": [{"room_type": "bathroom", "quantity": bathrooms}], "ready_to_generate": False}
-    elif turn == 4:
-        rooms = []
-        extras_list = []
-        if "dining" in msg_lower:
-            rooms.append({"room_type": "dining", "quantity": 1})
-            extras_list.append("Dining Room")
-        if "study" in msg_lower or "library" in msg_lower or "office" in msg_lower:
-            rooms.append({"room_type": "study", "quantity": 1})
-            extras_list.append("Study Room")
-        if "pooja" in msg_lower or "puja" in msg_lower:
-            rooms.append({"room_type": "pooja", "quantity": 1})
-            extras_list.append("Pooja Room (NE corner as per Vastu)")
-        if "store" in msg_lower or "storage" in msg_lower:
-            rooms.append({"room_type": "store", "quantity": 1})
-            extras_list.append("Store Room")
-        if "balcony" in msg_lower or "terrace" in msg_lower:
-            rooms.append({"room_type": "balcony", "quantity": 1})
-            extras_list.append("Balcony")
-        if "garage" in msg_lower or "parking" in msg_lower:
-            rooms.append({"room_type": "garage", "quantity": 1})
-            extras_list.append("Parking")
+    # 2) Parse current message
+    current = _parse_message(message)
 
-        if extras_list:
-            reply = (
-                f"Noted: {', '.join(extras_list)}. "
-                f"Shall I generate your Vastu-compliant floor plan now? "
-                f"Type 'generate' or 'yes' to proceed."
-            )
+    # 3) Accumulate from history
+    accumulated = _accumulate_from_history(history)
+
+    # Merge current on top of accumulated
+    for k, v in current.items():
+        if k == "extras":
+            existing = accumulated.get("extras", [])
+            accumulated["extras"] = list(set(existing + v))
         else:
-            reply = (
-                "No problem! Shall I generate your floor plan now? "
-                "Type 'generate' or 'yes' to proceed."
-            )
-        if rooms:
-            extracted = {"rooms": rooms, "ready_to_generate": False}
+            accumulated[k] = v
+
+    has_area = "total_area" in accumulated
+    has_beds = "bedrooms" in accumulated
+
+    # 4) Check for explicit generate trigger
+    explicit_generate = any(kw in msg_lower for kw in _GENERATE_TRIGGERS)
+
+    # 5) If we have enough data (plot + bedrooms), generate immediately
+    if has_area and has_beds:
+        beds = accumulated["bedrooms"]
+        baths = accumulated.get("bathrooms", max(1, beds - 1) if beds <= 2 else beds - 1)
+        accumulated["bathrooms"] = baths
+        extras = accumulated.get("extras", [])
+
+        # Build rooms array
+        rooms = []
+        rooms.append({"room_type": "master_bedroom", "quantity": 1})
+        if beds > 1:
+            rooms.append({"room_type": "bedroom", "quantity": beds - 1})
+        rooms.append({"room_type": "bathroom", "quantity": baths})
+        rooms.append({"room_type": "kitchen", "quantity": 1})
+        rooms.append({"room_type": "living", "quantity": 1})
+        if beds >= 2:
+            rooms.append({"room_type": "dining", "quantity": 1})
+        for ex in extras:
+            rooms.append({"room_type": ex, "quantity": 1})
+
+        area = accumulated["total_area"]
+        pw = accumulated.get("plot_width")
+        pl = accumulated.get("plot_length")
+        dim_str = f"{pw}×{pl} ft ({area} sq ft)" if pw and pl else f"{area} sq ft"
+        bhk = f"{beds}BHK"
+        extras_str = f" with {', '.join(extras)}" if extras else ""
+
+        reply = (
+            f"Excellent! Generating your {bhk} Vastu-compliant floor plan on a "
+            f"{dim_str} plot{extras_str}. This will include {baths} bathroom(s), "
+            f"a living room, kitchen, and dining area."
+        )
+
+        return {
+            "reply": reply,
+            "extracted_data": {
+                "mode": "designing",
+                "collected_so_far": accumulated,
+                "rooms": rooms,
+                "ready_to_generate": True,
+            },
+            "should_generate": True,
+        }
+
+    # 6) We don't have enough — ask for what's missing
+    missing = []
+    if not has_area:
+        missing.append("plot size")
+    if not has_beds:
+        missing.append("number of bedrooms (e.g. 2BHK or 3BHK)")
+
+    # If user gave some data, acknowledge it
+    ack_parts = []
+    if has_area:
+        pw = accumulated.get("plot_width")
+        pl = accumulated.get("plot_length")
+        if pw and pl:
+            ack_parts.append(f"plot size {pw}×{pl} ft")
+        else:
+            ack_parts.append(f"{accumulated['total_area']} sq ft plot")
+    if has_beds:
+        ack_parts.append(f"{accumulated['bedrooms']} bedrooms")
+
+    if ack_parts:
+        ack = "Got it — " + ", ".join(ack_parts) + ". "
     else:
-        if any(kw in msg_lower for kw in ["generate", "create", "build", "make", "yes",
-                                           "sure", "ok", "proceed", "haan", "ha", "go ahead"]):
-            reply = "Generating your Vastu-compliant NakshaNirman floor plan now!"
-            should_generate = True
-            extracted = {"ready_to_generate": True}
-        else:
-            reply = (
-                "Would you like me to generate the floor plan? "
-                "Say 'yes', 'generate', or 'haan' when ready."
-            )
+        # No data extracted at all — generic prompt
+        ack = ""
+
+    question = f"I still need your {' and '.join(missing)}. " if missing else ""
+    hint = "For example: \"30x40 plot, 3BHK with pooja room\"" if not ack_parts else ""
+
+    reply = f"{ack}{question}{hint}".strip()
 
     return {
         "reply": reply,
-        "extracted_data": extracted,
-        "should_generate": should_generate,
+        "extracted_data": {
+            "mode": "collecting",
+            "collected_so_far": accumulated,
+        },
+        "should_generate": False,
     }

@@ -605,9 +605,10 @@ def redesign_generate(requirements: Dict, previous_strategy: str = None) -> Dict
     if not available:
         available = ZONING_STRATEGIES
 
-    # Use a time-based seed for variety
-    seed = int(time.time() * 1000) % len(available)
-    new_strategy = available[seed]
+    # Use a high-resolution seed for guaranteed variety on every call
+    import random as _rand
+    _rand.seed(int(time.time() * 1000000) % 999983)
+    new_strategy = _rand.choice(available)
 
     # Add a redesign salt to force different placement
     requirements = dict(requirements)
@@ -1016,6 +1017,33 @@ def _normalize_form_data(data: Dict) -> Dict:
         "extras": list(data.get("extras", [])),
     }
 
+    # If rooms[] array is present, let it override integer counts
+    _CORE_ROOM_TYPES = {"master_bedroom", "bedroom", "bathroom", "kitchen", "living", "dining"}
+    rooms_list = data.get("rooms")
+    if rooms_list and isinstance(rooms_list, list) and len(rooms_list) > 0:
+        bed_count = sum(
+            int(r.get("quantity", 1))
+            for r in rooms_list
+            if r.get("room_type") in ("master_bedroom", "bedroom")
+        )
+        bath_count = sum(
+            int(r.get("quantity", 1))
+            for r in rooms_list
+            if r.get("room_type") == "bathroom"
+        )
+        extra_types = [
+            r.get("room_type")
+            for r in rooms_list
+            if r.get("room_type") and r.get("room_type") not in _CORE_ROOM_TYPES
+        ]
+        if bed_count > 0:
+            result["bedrooms"] = bed_count
+        if bath_count > 0:
+            result["bathrooms"] = bath_count
+        for et in extra_types:
+            if et not in result["extras"]:
+                result["extras"].append(et)
+
     pw = data.get("plot_width")
     pl = data.get("plot_length")
     ta = data.get("total_area") or data.get("max_area")
@@ -1057,6 +1085,10 @@ def _normalize_form_data(data: Dict) -> Dict:
                 extras.append(normalized)
 
     result["extras"] = list(set(extras))
+
+    # Ensure at least 1 bathroom per bedroom (Indian standard: attached bath)
+    if result["bathrooms"] < result["bedrooms"]:
+        result["bathrooms"] = result["bedrooms"]
 
     return result
 
@@ -1253,11 +1285,7 @@ def _allocate_areas(
     # Dining (always included)
     _add("Dining Room", "dining", *ALLOC_BANDS["dining"], "semi_private")
 
-    # Entrance lobby (Step 2 — public zone entrance point)
-    _add("Entrance", "entrance", *ALLOC_BANDS["entrance"], "public")
-
-    # Passage / corridor
-    _add("Passage", "passage", *ALLOC_BANDS["passage"], "circulation")
+    # Entrance = front door only. No passage room on ground floor.
 
     # Bedrooms
     for i in range(bedrooms):
@@ -1375,24 +1403,36 @@ def _place_rooms_by_strategy(
 
 
 def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """Classify rooms into public, private, and service groups."""
+    """Classify rooms into public, semi-private, private, and service groups.
+
+    Public  = front band (living, entrance, porch, balcony)
+    Semi-private (kitchen, dining) are merged into private/rear band
+    so kitchen is NOT at front of house.
+    """
     public = []
+    semi_private = []
     private = []
     service = []
 
     for r in room_specs:
         zone = ZONE_CLASSIFICATION.get(r["room_type"], "private")
-        if zone in ("public", "semi_private"):
+        if zone == "public":
             public.append(r)
+        elif zone == "semi_private":
+            semi_private.append(r)
         elif zone == "private":
             private.append(r)
         else:  # service, circulation
             service.append(r)
 
     # Sort within groups for consistent placement:
-    # Public: entrance first, then living, then kitchen, then dining, then others
-    pub_order = {"entrance": 0, "living": 1, "porch": 2, "dining": 3, "kitchen": 4, "balcony": 5}
+    # Public: living first (entrance removed in FIX 1), then porch, then balcony
+    pub_order = {"living": 0, "porch": 1, "balcony": 2, "foyer": 3}
     public.sort(key=lambda r: pub_order.get(r["room_type"], 99))
+
+    # Semi-private: dining first (adjacent to living), then kitchen
+    semi_order = {"dining": 0, "kitchen": 1}
+    semi_private.sort(key=lambda r: semi_order.get(r["room_type"], 99))
 
     # Private: master bedroom first, then other bedrooms
     priv_order = {"master_bedroom": 0, "bedroom": 1, "study": 2, "pooja": 3}
@@ -1401,6 +1441,9 @@ def _classify_rooms(room_specs: List[Dict]) -> Tuple[List[Dict], List[Dict], Lis
     # Service: bathrooms first
     serv_order = {"bathroom": 0, "toilet": 1, "utility": 2, "store": 3}
     service.sort(key=lambda r: serv_order.get(r["room_type"], 99))
+
+    # Merge semi_private into private so kitchen/dining go in rear band
+    private = semi_private + private
 
     return public, private, service
 

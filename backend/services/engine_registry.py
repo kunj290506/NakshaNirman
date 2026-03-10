@@ -69,10 +69,11 @@ def generate(engine: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _run_bsp(input_data: Dict) -> Dict:
     """BSP engine — production layout generator."""
-    from services.arch_engine import design_generate
+    from services.arch_engine import redesign_generate
 
     requirements = _normalize_input(input_data)
-    result = design_generate(requirements)
+    previous_strategy = input_data.get("_previous_strategy")
+    result = redesign_generate(requirements, previous_strategy=previous_strategy)
 
     if "error" in result:
         return {
