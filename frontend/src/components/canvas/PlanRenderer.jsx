@@ -1,302 +1,310 @@
 import { useMemo } from 'react'
 
-const COLORS = {
-  living: '#E8F4FD',
-  master_bedroom: '#FFF3E0',
-  bedroom: '#FFF3E0',
-  kitchen: '#E8F5E9',
-  dining: '#F3E5F5',
-  bathroom: '#E0F2F1',
-  corridor: '#F5F5F5',
-  pooja: '#FFF9C4',
-  study: '#FFF9C4',
-  store: '#FFF9C4',
-  balcony: '#FFF9C4',
-  garage: '#FFF9C4',
+const ROOM_COLORS = {
+  living: '#EFF6FF',
+  dining: '#F5F3FF',
+  kitchen: '#F0FDF4',
+  master_bedroom: '#FFFBEB',
+  bedroom: '#FFF7ED',
+  bathroom: '#F0FDFA',
+  toilet: '#F0FDFA',
+  open_area: '#F8FAFC',
+  garage: '#F1F5F9',
+  pooja: '#FEFCE8',
+  study: '#FDF4FF',
 }
 
 function normalizeRooms(plan) {
-  return (plan?.rooms || []).map((r, idx) => {
-    let x = Number(r.x ?? r.position?.x ?? 0)
-    let y = Number(r.y ?? r.position?.y ?? 0)
-    let width = Number(r.width ?? r.w ?? 0)
-    let height = Number(r.height ?? r.h ?? r.length ?? 0)
-
-    if ((!width || !height) && r.dimensions) {
-      if (Array.isArray(r.dimensions)) {
-        width = Number(r.dimensions[0] || 0)
-        height = Number(r.dimensions[1] || 0)
-      }
-    }
-
-    if ((!width || !height) && Array.isArray(r.polygon) && r.polygon.length >= 3) {
-      const xs = r.polygon.map((p) => Number(p[0]))
-      const ys = r.polygon.map((p) => Number(p[1]))
-      x = Math.min(...xs)
-      y = Math.min(...ys)
-      width = Math.max(...xs) - x
-      height = Math.max(...ys) - y
-    }
-
-    return {
-      id: r.id || r.room_id || `room_${idx + 1}`,
-      type: r.type || r.room_type || 'room',
-      label: r.label || r.name || r.type || 'Room',
-      x,
-      y,
-      width,
-      height,
-      area: Number(r.area || (width || 0) * (height || 0)),
-    }
-  }).filter((r) => r.width > 0 && r.height > 0)
+  return (plan?.rooms || [])
+    .map((r, idx) => ({
+      id: r.id || `room_${idx + 1}`,
+      type: r.type || 'room',
+      label: r.label || 'Room',
+      x: Number(r.x || 0),
+      y: Number(r.y || 0),
+      width: Number(r.width || 0),
+      height: Number(r.height || 0),
+      area: Number(r.area || Number(r.width || 0) * Number(r.height || 0)),
+      furniture: Array.isArray(r.furniture) ? r.furniture : [],
+    }))
+    .filter((r) => r.width > 0.1 && r.height > 0.1)
 }
 
-function doorGeometry(room, door) {
-  const pos = Number(door.position || 0)
+function toSvgY(usableLength, y, h = 0) {
+  return usableLength - y - h
+}
+
+function renderFurniture(room, usableLength) {
+  return room.furniture.map((f, idx) => {
+    const x = room.x + Number(f.x || 0)
+    const y = toSvgY(usableLength, room.y + Number(f.y || 0), Number(f.height || 0))
+    const w = Number(f.width || 0.5)
+    const h = Number(f.height || 0.5)
+    const key = `${room.id}-f-${idx}`
+
+    if (f.type === 'pillow') {
+      return (
+        <ellipse
+          key={key}
+          cx={x + w / 2}
+          cy={y + h / 2}
+          rx={w / 2}
+          ry={h / 2}
+          fill='#E2E8F0'
+          stroke='#94A3B8'
+          vectorEffect='non-scaling-stroke'
+        />
+      )
+    }
+
+    if (f.type === 'shower') {
+      return (
+        <g key={key}>
+          <rect x={x} y={y} width={w} height={h} fill='#E2E8F0' stroke='#94A3B8' vectorEffect='non-scaling-stroke' />
+          <line x1={x} y1={y} x2={x + w} y2={y + h} stroke='#94A3B8' vectorEffect='non-scaling-stroke' />
+          <line x1={x + w} y1={y} x2={x} y2={y + h} stroke='#94A3B8' vectorEffect='non-scaling-stroke' />
+        </g>
+      )
+    }
+
+    return (
+      <rect
+        key={key}
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx={f.type === 'wheel' ? 0.2 : 0}
+        fill='#E2E8F0'
+        stroke='#94A3B8'
+        vectorEffect='non-scaling-stroke'
+      />
+    )
+  })
+}
+
+function doorPath(door, usableLength) {
+  const x = Number(door.x || 0)
+  const y = toSvgY(usableLength, Number(door.y || 0))
   const w = Number(door.width || 3)
 
   if (door.wall === 'south') {
     return {
-      x1: room.x + pos - w / 2,
-      y1: room.y,
-      x2: room.x + pos + w / 2,
-      y2: room.y,
-      arc: `M ${room.x + pos - w / 2} ${room.y} A ${w} ${w} 0 0 1 ${room.x + pos} ${room.y + w}`,
+      gap: [x - w / 2, y, x + w / 2, y],
+      arc: `M ${x - w / 2} ${y} A ${w} ${w} 0 0 0 ${x} ${y - w}`,
     }
   }
   if (door.wall === 'north') {
     return {
-      x1: room.x + pos - w / 2,
-      y1: room.y + room.height,
-      x2: room.x + pos + w / 2,
-      y2: room.y + room.height,
-      arc: `M ${room.x + pos + w / 2} ${room.y + room.height} A ${w} ${w} 0 0 1 ${room.x + pos} ${room.y + room.height - w}`,
+      gap: [x - w / 2, y, x + w / 2, y],
+      arc: `M ${x + w / 2} ${y} A ${w} ${w} 0 0 0 ${x} ${y + w}`,
     }
   }
   if (door.wall === 'east') {
     return {
-      x1: room.x + room.width,
-      y1: room.y + pos - w / 2,
-      x2: room.x + room.width,
-      y2: room.y + pos + w / 2,
-      arc: `M ${room.x + room.width} ${room.y + pos - w / 2} A ${w} ${w} 0 0 1 ${room.x + room.width - w} ${room.y + pos}`,
+      gap: [x, y - w / 2, x, y + w / 2],
+      arc: `M ${x} ${y - w / 2} A ${w} ${w} 0 0 1 ${x - w} ${y}`,
     }
   }
   return {
-    x1: room.x,
-    y1: room.y + pos - w / 2,
-    x2: room.x,
-    y2: room.y + pos + w / 2,
-    arc: `M ${room.x} ${room.y + pos + w / 2} A ${w} ${w} 0 0 1 ${room.x + w} ${room.y + pos}`,
+    gap: [x, y - w / 2, x, y + w / 2],
+    arc: `M ${x} ${y + w / 2} A ${w} ${w} 0 0 1 ${x + w} ${y}`,
   }
 }
 
-function windowGeometry(room, win) {
-  const pos = Number(win.position || 0)
-  const w = Number(win.width || 3)
-  const off = 0.18
+function windowLines(win, usableLength) {
+  const x = Number(win.x || 0)
+  const y = toSvgY(usableLength, Number(win.y || 0))
+  const w = Number(win.width || 3.5)
+  const off = 0.12
 
   if (win.wall === 'south' || win.wall === 'north') {
-    const y = win.wall === 'south' ? room.y : room.y + room.height
-    return {
-      x1: room.x + pos - w / 2,
-      y1: y - off,
-      x2: room.x + pos + w / 2,
-      y2: y - off,
-      x3: room.x + pos - w / 2,
-      y3: y + off,
-      x4: room.x + pos + w / 2,
-      y4: y + off,
-    }
+    return [
+      [x - w / 2, y - off, x + w / 2, y - off],
+      [x - w / 2, y + off, x + w / 2, y + off],
+      [x - w / 2, y - 0.25, x - w / 2, y + 0.25],
+      [x + w / 2, y - 0.25, x + w / 2, y + 0.25],
+    ]
   }
 
-  const x = win.wall === 'west' ? room.x : room.x + room.width
-  return {
-    x1: x - off,
-    y1: room.y + pos - w / 2,
-    x2: x - off,
-    y2: room.y + pos + w / 2,
-    x3: x + off,
-    y3: room.y + pos - w / 2,
-    x4: x + off,
-    y4: room.y + pos + w / 2,
-  }
+  return [
+    [x - off, y - w / 2, x - off, y + w / 2],
+    [x + off, y - w / 2, x + off, y + w / 2],
+    [x - 0.25, y - w / 2, x + 0.25, y - w / 2],
+    [x - 0.25, y + w / 2, x + 0.25, y + w / 2],
+  ]
 }
 
-export default function PlanRenderer({
-  plan,
-  selectedRoomId,
-  showDimensions = true,
-  showLabels = true,
-}) {
+export default function PlanRenderer({ plan, selectedRoomId, showDimensions = true, showLabels = true, showFurniture = true }) {
   const rooms = useMemo(() => normalizeRooms(plan), [plan])
 
   if (!plan || rooms.length === 0) {
-    return (
-      <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: '#666' }}>
-        No floor plan data
-      </div>
-    )
+    return <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: '#64748B' }}>No floor plan data</div>
   }
 
   const plot = plan.plot || {}
-  const usableWidth = Number(plot.width || Math.max(...rooms.map((r) => r.x + r.width)))
-  const usableLength = Number(plot.length || Math.max(...rooms.map((r) => r.y + r.height)))
-  const originalWidth = Number(plot.original_width || usableWidth)
-  const originalLength = Number(plot.original_length || usableLength)
+  const plotW = Number(plot.width || 0)
+  const plotL = Number(plot.length || 0)
+  const uw = Number(plot.usable_width || Math.max(...rooms.map((r) => r.x + r.width)))
+  const ul = Number(plot.usable_length || Math.max(...rooms.map((r) => r.y + r.height)))
   const setbacks = plot.setbacks || { left: 0, right: 0, front: 0, rear: 0 }
-
-  const vbPad = Math.max(8, Math.max(originalWidth, originalLength) * 0.25)
-  const viewBox = [
-    -setbacks.left - 2,
-    -setbacks.front - 2,
-    originalWidth + 4,
-    originalLength + 4,
-  ]
+  const margin = 6
+  const vbX = -setbacks.left - margin
+  const vbY = -setbacks.rear - margin
+  const vbW = plotW + margin * 2
+  const vbH = plotL + margin * 2
 
   const doors = plan.doors || []
   const windows = plan.windows || []
 
   return (
     <div style={{ width: '100%', height: '100%', background: '#fff' }}>
-      <svg viewBox={`${viewBox[0]} ${viewBox[1]} ${viewBox[2]} ${viewBox[3]}`} width='100%' height='100%'>
+      <svg viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`} width='100%' height='100%'>
+        <defs>
+          <pattern id='openHatch' width='0.8' height='0.8' patternUnits='userSpaceOnUse' patternTransform='rotate(35)'>
+            <line x1='0' y1='0' x2='0' y2='0.8' stroke='#CBD5E1' strokeWidth='0.08' />
+          </pattern>
+          <marker id='arrowHead' viewBox='0 0 10 10' refX='5' refY='5' markerWidth='4' markerHeight='4' orient='auto-start-reverse'>
+            <path d='M 0 0 L 10 5 L 0 10 z' fill='#64748B' />
+          </marker>
+        </defs>
+
+        <rect x={vbX} y={vbY} width={vbW} height={vbH} fill='#fff' />
+
         <rect
-          x={0 - setbacks.left}
-          y={0 - setbacks.front}
-          width={originalWidth}
-          height={originalLength}
-          fill='none'
-          stroke='#111'
-          strokeWidth={0.35}
+          x={-setbacks.left}
+          y={-setbacks.rear}
+          width={plotW}
+          height={plotL}
+          fill='#F8FAFC'
+          stroke='#111827'
+          strokeWidth='3'
+          vectorEffect='non-scaling-stroke'
         />
 
         <rect
           x={0}
           y={0}
-          width={usableWidth}
-          height={usableLength}
+          width={uw}
+          height={ul}
           fill='none'
-          stroke='#bdbdbd'
-          strokeWidth={0.2}
-          strokeDasharray='0.9 0.55'
+          stroke='#94A3B8'
+          strokeDasharray='1.2 0.8'
+          strokeWidth='1'
+          vectorEffect='non-scaling-stroke'
         />
 
         {rooms.map((room) => {
-          const selected = room.id === selectedRoomId
-          const fill = COLORS[room.type] || '#F8FAFC'
-          const fs = Math.max(0.6, Math.min(room.width, room.height) * 0.13)
-
+          const y = toSvgY(ul, room.y, room.height)
+          const fill = room.type === 'open_area' ? 'url(#openHatch)' : (room.color || ROOM_COLORS[room.type] || '#F8FAFC')
           return (
             <g key={room.id} data-room-id={room.id}>
               <rect
                 x={room.x}
-                y={room.y}
+                y={y}
                 width={room.width}
                 height={room.height}
                 fill={fill}
-                stroke={selected ? '#111' : '#666'}
-                strokeWidth={selected ? 0.28 : 0.12}
+                stroke={room.id === selectedRoomId ? '#0F172A' : '#334155'}
+                strokeWidth='1.5'
+                vectorEffect='non-scaling-stroke'
               />
-
-              {showLabels && room.width > 2.5 && room.height > 2.2 && (
+              {showFurniture && renderFurniture(room, ul)}
+              {showLabels && (
                 <>
                   <text
                     x={room.x + room.width / 2}
-                    y={room.y + room.height / 2 - fs * 0.2}
-                    fontSize={fs}
-                    fontFamily='Georgia, serif'
+                    y={y + room.height / 2 - 0.5}
                     textAnchor='middle'
-                    fill='#202020'
+                    fill='#0F172A'
+                    fontSize='1.3'
+                    fontWeight='700'
+                    style={{ pointerEvents: 'none' }}
                   >
                     {room.label}
                   </text>
                   <text
                     x={room.x + room.width / 2}
-                    y={room.y + room.height / 2 + fs * 0.9}
-                    fontSize={fs * 0.8}
-                    fontFamily='Georgia, serif'
+                    y={y + room.height / 2 + 0.8}
                     textAnchor='middle'
-                    fill='#4a4a4a'
+                    fill='#334155'
+                    fontSize='1.1'
+                    style={{ pointerEvents: 'none' }}
                   >
-                    ({Math.round(room.area)} sq ft)
-                  </text>
-                </>
-              )}
-
-              {showDimensions && (
-                <>
-                  <line x1={room.x} y1={room.y - 0.35} x2={room.x + room.width} y2={room.y - 0.35} stroke='#555' strokeWidth={0.05} />
-                  <line x1={room.x} y1={room.y - 0.5} x2={room.x} y2={room.y - 0.2} stroke='#555' strokeWidth={0.05} />
-                  <line x1={room.x + room.width} y1={room.y - 0.5} x2={room.x + room.width} y2={room.y - 0.2} stroke='#555' strokeWidth={0.05} />
-                  <text x={room.x + room.width / 2} y={room.y - 0.55} fontSize={0.5} textAnchor='middle' fill='#555'>
-                    {room.width.toFixed(1)} ft
-                  </text>
-
-                  <line x1={room.x - 0.35} y1={room.y} x2={room.x - 0.35} y2={room.y + room.height} stroke='#555' strokeWidth={0.05} />
-                  <line x1={room.x - 0.5} y1={room.y} x2={room.x - 0.2} y2={room.y} stroke='#555' strokeWidth={0.05} />
-                  <line x1={room.x - 0.5} y1={room.y + room.height} x2={room.x - 0.2} y2={room.y + room.height} stroke='#555' strokeWidth={0.05} />
-                  <text
-                    x={room.x - 0.6}
-                    y={room.y + room.height / 2}
-                    fontSize={0.5}
-                    textAnchor='middle'
-                    fill='#555'
-                    transform={`rotate(-90, ${room.x - 0.6}, ${room.y + room.height / 2})`}
-                  >
-                    {room.height.toFixed(1)} ft
+                    {Math.round(room.area)} sq ft
                   </text>
                 </>
               )}
             </g>
           )
         })}
+
+        {windows.map((win) => (
+          <g key={win.id}>
+            {windowLines(win, ul).map((ln, i) => (
+              <line
+                key={`${win.id}-${i}`}
+                x1={ln[0]}
+                y1={ln[1]}
+                x2={ln[2]}
+                y2={ln[3]}
+                stroke='#3B82F6'
+                strokeWidth='1.2'
+                vectorEffect='non-scaling-stroke'
+              />
+            ))}
+          </g>
+        ))}
 
         {doors.map((door) => {
-          const room = rooms.find((r) => r.id === door.room_id)
-          if (!room) return null
-          const g = doorGeometry(room, door)
+          const g = doorPath(door, ul)
+          const stroke = door.type === 'main' ? '#DC2626' : '#475569'
           return (
             <g key={door.id}>
-              <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke='#fff' strokeWidth={0.24} />
-              <path d={g.arc} fill='none' stroke='#3d3d3d' strokeWidth={0.1} />
+              <line x1={g.gap[0]} y1={g.gap[1]} x2={g.gap[2]} y2={g.gap[3]} stroke='#fff' strokeWidth='2.2' vectorEffect='non-scaling-stroke' />
+              <path
+                d={g.arc}
+                fill='none'
+                stroke={stroke}
+                strokeWidth='1.2'
+                strokeDasharray={door.type === 'internal' ? '1.6 1.1' : 'none'}
+                vectorEffect='non-scaling-stroke'
+              />
+              {door.type === 'main' && (
+                <text x={Number(door.x || 0)} y={toSvgY(ul, Number(door.y || 0)) - 1.0} textAnchor='middle' fontSize='1.0' fill='#DC2626'>
+                  MAIN DOOR
+                </text>
+              )}
             </g>
           )
         })}
 
-        {windows.map((win) => {
-          const room = rooms.find((r) => r.id === win.room_id)
-          if (!room) return null
-          const g = windowGeometry(room, win)
-          return (
-            <g key={win.id}>
-              <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke='#3d3d3d' strokeWidth={0.07} />
-              <line x1={g.x3} y1={g.y3} x2={g.x4} y2={g.y4} stroke='#3d3d3d' strokeWidth={0.07} />
-            </g>
-          )
-        })}
+        {showDimensions && (
+          <g stroke='#64748B' fill='#64748B' vectorEffect='non-scaling-stroke'>
+            <line x1={0} y1={-2} x2={uw} y2={-2} markerStart='url(#arrowHead)' markerEnd='url(#arrowHead)' strokeWidth='1.1' />
+            <text x={uw / 2} y={-2.6} textAnchor='middle' fontSize='1.1' fontWeight='700'>{uw.toFixed(1)} ft</text>
 
-        <g transform={`translate(${originalWidth - 3.5}, ${0.8})`}>
-          <polygon points='0,0 0.7,1.8 0,1.25 -0.7,1.8' fill='#111' />
-          <text x='0' y='2.65' textAnchor='middle' fontSize='0.75' fill='#111'>N</text>
+            <line x1={uw + 2} y1={0} x2={uw + 2} y2={ul} markerStart='url(#arrowHead)' markerEnd='url(#arrowHead)' strokeWidth='1.1' />
+            <text x={uw + 2.8} y={ul / 2} textAnchor='middle' fontSize='1.1' fontWeight='700' transform={`rotate(90 ${uw + 2.8} ${ul / 2})`}>
+              {ul.toFixed(1)} ft
+            </text>
+          </g>
+        )}
+
+        <g transform={`translate(${uw - 2.5}, 1.2)`}>
+          <polygon points='0,-0.8 0.7,0.8 0,0.3 -0.7,0.8' fill='#0F172A' />
+          <text x='0' y='1.8' textAnchor='middle' fontSize='1.1' fontWeight='700' fill='#0F172A'>N</text>
         </g>
 
-        <g transform={`translate(${(originalWidth - 6) / 2}, ${originalLength + 1.4})`}>
-          <line x1='0' y1='0' x2='6' y2='0' stroke='#111' strokeWidth={0.1} />
-          <line x1='0' y1='-0.3' x2='0' y2='0.3' stroke='#111' strokeWidth={0.1} />
-          <line x1='3' y1='-0.3' x2='3' y2='0.3' stroke='#111' strokeWidth={0.1} />
-          <line x1='6' y1='-0.3' x2='6' y2='0.3' stroke='#111' strokeWidth={0.1} />
-          <text x='3' y='0.8' textAnchor='middle' fontSize='0.5' fill='#222'>Scale bar: 6 ft</text>
+        <g transform={`translate(1.2, ${ul + 2.4})`}>
+          <line x1='0' y1='0' x2='10' y2='0' stroke='#0F172A' strokeWidth='1.2' vectorEffect='non-scaling-stroke' />
+          <line x1='0' y1='-0.4' x2='0' y2='0.4' stroke='#0F172A' strokeWidth='1.2' vectorEffect='non-scaling-stroke' />
+          <line x1='5' y1='-0.4' x2='5' y2='0.4' stroke='#0F172A' strokeWidth='1.2' vectorEffect='non-scaling-stroke' />
+          <line x1='10' y1='-0.4' x2='10' y2='0.4' stroke='#0F172A' strokeWidth='1.2' vectorEffect='non-scaling-stroke' />
+          <text x='5' y='1.2' textAnchor='middle' fill='#334155' fontSize='1.0'>Scale: 10 ft</text>
         </g>
 
-        <rect
-          x={viewBox[0] - vbPad * 0.02}
-          y={viewBox[1] - vbPad * 0.02}
-          width={viewBox[2] + vbPad * 0.04}
-          height={viewBox[3] + vbPad * 0.04}
-          fill='none'
-          stroke='#111'
-          strokeWidth={0.08}
-        />
+        <text x={uw / 2} y={ul + 4.4} textAnchor='middle' fontSize='1.1' fill='#334155' fontWeight='700'>ROAD / FRONT SIDE</text>
       </svg>
     </div>
   )
