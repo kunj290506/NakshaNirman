@@ -71,7 +71,6 @@ export default function FormInterface({ onGenerate, loading }) {
       total_area: Math.round(dimensions.width * dimensions.length * 10) / 10,
       bedrooms: Number(bedrooms),
       bathrooms: Number(bathrooms || bedrooms),
-      floors: 1,
       facing,
       vastu,
       extras,
@@ -88,11 +87,11 @@ export default function FormInterface({ onGenerate, loading }) {
 
         <div className="form-group">
           <label className="form-label">Plot Input</label>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className={`btn btn-secondary ${mode === 'dimensions' ? 'active' : ''}`} onClick={() => setMode('dimensions')}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+            <button className={`btn btn-secondary ${mode === 'dimensions' ? 'active' : ''}`} type='button' onClick={() => setMode('dimensions')}>
               Width x Length
             </button>
-            <button className={`btn btn-secondary ${mode === 'sqft' ? 'active' : ''}`} onClick={() => setMode('sqft')}>
+            <button className={`btn btn-secondary ${mode === 'sqft' ? 'active' : ''}`} type='button' onClick={() => setMode('sqft')}>
               Total Sqft
             </button>
           </div>
@@ -118,29 +117,51 @@ export default function FormInterface({ onGenerate, loading }) {
 
         <div className="form-group">
           <label className="form-label">BHK Type</label>
-          <select className="form-input" value={bedrooms} onChange={(e) => {
-            const val = Number(e.target.value)
-            setBedrooms(val)
-            setBathrooms((prev) => (prev < val ? val : prev))
-          }}>
-            <option value={1}>1BHK</option>
-            <option value={2}>2BHK</option>
-            <option value={3}>3BHK</option>
-            <option value={4}>4BHK</option>
-          </select>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.45rem' }}>
+            {[1, 2, 3, 4].map((n) => (
+              <button
+                key={n}
+                type='button'
+                className={`btn btn-secondary ${bedrooms === n ? 'active' : ''}`}
+                onClick={() => {
+                  setBedrooms(n)
+                  setBathrooms((prev) => (prev < n ? n : prev))
+                }}
+              >
+                {n}BHK
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="form-group">
           <label className="form-label">Bathrooms</label>
-          <input className="form-input" type="number" min={1} max={6} value={bathrooms} onChange={(e) => setBathrooms(Number(e.target.value || bedrooms))} />
+          <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 40px', gap: '0.45rem', alignItems: 'center' }}>
+            <button
+              type='button'
+              className='btn btn-secondary'
+              onClick={() => setBathrooms((v) => Math.max(1, v - 1))}
+            >
+              -
+            </button>
+            <input className="form-input" type="number" min={1} max={6} value={bathrooms} onChange={(e) => setBathrooms(Number(e.target.value || bedrooms))} />
+            <button
+              type='button'
+              className='btn btn-secondary'
+              onClick={() => setBathrooms((v) => Math.min(6, v + 1))}
+            >
+              +
+            </button>
+          </div>
+          <div style={{ fontSize: '0.78rem', color: '#64748B' }}>(1 per bedroom recommended)</div>
         </div>
 
         <div style={{ fontSize: '0.8rem', color: '#666' }}>
           Approx area: <strong>{Math.round(area)}</strong> sqft
         </div>
 
-        <button className="btn btn-primary" disabled={!canProceed} onClick={() => setStep(2)}>
-          Next
+        <button type='button' className="btn btn-primary" disabled={!canProceed} onClick={() => setStep(2)}>
+          Next →
         </button>
       </div>
 
@@ -148,39 +169,60 @@ export default function FormInterface({ onGenerate, loading }) {
         <div className="form-section">
           <h3>Step 2: Preferences</h3>
 
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '0.65rem 0.75rem', background: '#f8fafc' }}>
+            <div style={{ fontSize: '0.82rem', color: '#475569' }}>Summary</div>
+            <div style={{ fontWeight: 700, color: '#0f172a' }}>
+              {dimensions.width} ft x {dimensions.length} ft • {bedrooms}BHK • {bathrooms} Bath
+            </div>
+          </div>
+
           <div className="form-group">
             <label className="form-label">Facing</label>
-            <select className="form-input" value={facing} onChange={(e) => setFacing(e.target.value)}>
-              <option value="east">East</option>
-              <option value="north">North</option>
-              <option value="south">South</option>
-              <option value="west">West</option>
-            </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
+              {['east', 'north', 'west', 'south'].map((dir) => (
+                <button
+                  key={dir}
+                  type='button'
+                  className={`btn btn-secondary ${facing === dir ? 'active' : ''}`}
+                  onClick={() => setFacing(dir)}
+                >
+                  {dir === 'east' ? 'East ★' : dir.charAt(0).toUpperCase() + dir.slice(1)}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#64748B' }}>East ★ most auspicious</div>
           </div>
 
           <div className="form-group">
             <label className="form-label">Vastu Compliance</label>
-            <select className="form-input" value={vastu ? 'yes' : 'no'} onChange={(e) => setVastu(e.target.value === 'yes')}>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
+              <button type='button' className={`btn btn-secondary ${vastu ? 'active' : ''}`} onClick={() => setVastu(true)}>✓ Yes</button>
+              <button type='button' className={`btn btn-secondary ${!vastu ? 'active' : ''}`} onClick={() => setVastu(false)}>✗ No</button>
+            </div>
           </div>
 
           <div className="form-group">
             <label className="form-label">Extra Rooms</label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
               {EXTRA_OPTIONS.map((opt) => (
-                <label key={opt.key} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                  <input type="checkbox" checked={extras.includes(opt.key)} onChange={() => toggleExtra(opt.key)} />
-                  <span>{opt.label}</span>
-                </label>
+                <button
+                  key={opt.key}
+                  type='button'
+                  className={`btn btn-secondary ${extras.includes(opt.key) ? 'active' : ''}`}
+                  onClick={() => toggleExtra(opt.key)}
+                >
+                  {opt.label}
+                </button>
               ))}
             </div>
           </div>
 
-          <button className="btn btn-primary" disabled={!canProceed || loading} onClick={submit}>
-            {loading ? 'Generating...' : 'Generate Floor Plan'}
-          </button>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.55rem' }}>
+            <button type='button' className='btn btn-secondary' onClick={() => setStep(1)}>← Back</button>
+            <button type='button' className="btn btn-primary" disabled={!canProceed || loading} onClick={submit}>
+              {loading ? 'Generating...' : '⚡ Generate Floor Plan'}
+            </button>
+          </div>
         </div>
       )}
     </div>

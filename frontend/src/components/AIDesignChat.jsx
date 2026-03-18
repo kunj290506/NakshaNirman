@@ -2,7 +2,12 @@ import { useMemo, useState } from 'react'
 
 function parseGenerateToken(reply) {
   if (!reply || !reply.includes('GENERATE_PLAN:')) return null
-  const token = reply.split('GENERATE_PLAN:')[1]?.trim()
+  const tokenRaw = reply.split('GENERATE_PLAN:')[1]?.trim()
+  if (!tokenRaw) return null
+  const start = tokenRaw.indexOf('{')
+  const end = tokenRaw.lastIndexOf('}')
+  if (start === -1 || end === -1 || end <= start) return null
+  const token = tokenRaw.slice(start, end + 1)
   if (!token) return null
   try {
     return JSON.parse(token)
@@ -75,6 +80,10 @@ export default function AIDesignChat({ onGenerate, loading }) {
         const rooms = payloadToRooms(payload)
         const totalArea = Number(payload.total_area || (payload.plot_width * payload.plot_length))
         onGenerate(rooms, totalArea, payload)
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: 'Floor plan generated!', ts: Date.now() },
+        ])
       }
     } catch {
       setMessages((prev) => [

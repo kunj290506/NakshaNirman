@@ -16,34 +16,39 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 SYSTEM_PROMPT = """
-You are Naksha, a Senior Indian Residential Architect with 20 years of
-experience designing homes across India. You help clients design their
-ground floor house plan. You are warm, confident, and professional.
+You are Naksha, a Senior Indian Residential Architect with 20 years experience.
+You help clients design ground floor house plans.
 
-YOUR GOAL: Collect these 5 things from the user:
-  1. Plot size (width × length in feet, or total sqft)
-  2. BHK type (1BHK / 2BHK / 3BHK / 4BHK)
-  3. Extra rooms wanted (pooja, study, store, balcony, garage)
-  4. Facing direction (which side faces the road)
-  5. Vastu preference (yes/no)
+YOUR ONLY JOB: Collect 5 things, then generate.
+
+WHAT YOU NEED:
+    1. Plot size: width × length in feet (for example "30 by 40 feet") OR total sqft
+    2. BHK type: how many bedrooms (1BHK to 4BHK)
+    3. Extra rooms: pooja room, study, garage, store room, balcony
+    4. Facing direction: which side faces the road (default: East)
+    5. Vastu preference: yes or no (default: Yes)
 
 RULES:
-- Ask maximum 2 questions per response
-- Use Indian terminology: BHK, sqft, Vastu, ground floor, drawing room
-- If the user says "3BHK 30×40" — that gives you items 1 and 2. Only ask 2 and 3.
-- Always acknowledge what the user told you before asking next question
-- For missing items, assume Indian defaults and mention the assumption:
-    facing -> "I will assume East-facing (most auspicious)"
-    vastu  -> "I will apply Vastu guidelines by default"
-    extras -> "No extra rooms — just the standard rooms"
-- Once you have plot size and BHK, you have enough to generate
-- Show summary before generating: "Here is your plan: 30×40 plot, 2BHK,
-  East-facing, Vastu-compliant. Shall I generate the floor plan?"
-- On user confirmation: output ONLY this exact JSON block format:
-  GENERATE_PLAN: {"plot_width":30,"plot_length":40,"bedrooms":2,"bathrooms":2,
-  "floors":1,"facing":"east","vastu":true,"extras":["pooja"]}
+    - Ask MAX 2 questions per response
+    - After getting plot size + BHK, you have enough to generate
+    - Always acknowledge what user said before asking
+    - Use Indian terms: BHK, sqft, Vastu, ground floor, drawing room
+    - For missing items, assume defaults: East-facing, Vastu yes, no extras
+    - Never discuss anything outside house design and architecture
 
-NEVER discuss anything outside house design and architecture.
+SUMMARY BEFORE GENERATING:
+When you have enough info, show:
+"Here is your floor plan summary:
+    Plot: [size]
+    [N]BHK | [N] Bathrooms
+    Facing: [direction]
+    Vastu: [Yes/No]
+    Extra rooms: [list or None]
+Shall I generate your floor plan?"
+
+ON USER CONFIRMATION:
+Output EXACTLY this — no other text — just this JSON line:
+GENERATE_PLAN: {"plot_width":30,"plot_length":40,"bedrooms":2,"bathrooms":2,"facing":"east","vastu":true,"extras":[]}
 """.strip()
 
 
@@ -110,10 +115,8 @@ def _build_generate_payload(collected: Dict[str, Any]) -> Dict[str, Any]:
     payload = {
         "plot_width": round(float(collected["plot_width"]), 1),
         "plot_length": round(float(collected["plot_length"]), 1),
-        "total_area": round(float(collected["plot_width"]) * float(collected["plot_length"]), 1),
         "bedrooms": bedrooms,
         "bathrooms": bathrooms,
-        "floors": 1,
         "facing": str(collected.get("facing") or "east").lower(),
         "vastu": bool(collected.get("vastu", True)),
         "extras": list(collected.get("extras", [])),
@@ -204,10 +207,13 @@ async def chat_reply(user_message: str, history: List[Dict[str, str]]) -> str:
     if has_plot and has_bhk:
         payload = _build_generate_payload(collected)
         summary = (
-            f"Great. Here is your plan: {payload['plot_width']}x{payload['plot_length']} plot, "
-            f"{payload['bedrooms']}BHK, {payload['facing'].capitalize()}-facing, "
-            f"{'Vastu-compliant' if payload['vastu'] else 'non-Vastu'}. "
-            "Shall I generate the floor plan?"
+            "Here is your floor plan summary:\n"
+            f"  Plot: {payload['plot_width']} x {payload['plot_length']} ft\n"
+            f"  {payload['bedrooms']}BHK | {payload['bathrooms']} Bathrooms\n"
+            f"  Facing: {payload['facing'].capitalize()}\n"
+            f"  Vastu: {'Yes' if payload['vastu'] else 'No'}\n"
+            f"  Extra rooms: {', '.join(payload['extras']) if payload['extras'] else 'None'}\n"
+            "Shall I generate your floor plan?"
         )
         return summary
 
@@ -228,10 +234,11 @@ async def chat_reply(user_message: str, history: List[Dict[str, str]]) -> str:
 
     if llm:
         cleaned = llm.strip()
-        if cleaned.startswith("GENERATE_PLAN:"):
+        if "GENERATE_PLAN:" in cleaned:
+            token = cleaned.split("GENERATE_PLAN:", 1)[1].strip().splitlines()[0].strip()
             # Guardrail: emit token only when we truly have enough data.
             if has_plot and has_bhk:
-                return cleaned
+                return f"GENERATE_PLAN: {token}"
             return fallback
         return cleaned
 
