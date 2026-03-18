@@ -30,6 +30,11 @@ EXPORT_DIR.mkdir(exist_ok=True)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+
+if APP_ENV == "production":
+	if SECRET_KEY == "dev-secret-key-change-in-production" or len(SECRET_KEY) < 16:
+		raise RuntimeError("Invalid SECRET_KEY for production. Set a strong SECRET_KEY (>=16 chars).")
 
 # CORS
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
