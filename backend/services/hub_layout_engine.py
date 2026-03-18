@@ -154,6 +154,28 @@ def _merge_rooms(rooms: List[Dict[str, Any]], small_id: str, into_id: str) -> No
     rooms[:] = [r for r in rooms if r["id"] != small_id]
 
 
+def _effective_min_size(room: Dict[str, Any], usable_w: float, usable_l: float) -> Tuple[float, float]:
+    room_type = room["type"]
+    base = MIN_SIZE.get(room_type)
+    if not base:
+        return 0.0, 0.0
+
+    min_w, min_h = base
+
+    # Grid-driven layouts can make strict textbook mins infeasible on smaller plots.
+    if room_type in {"living", "kitchen", "bedroom", "master_bedroom", "dining"}:
+        min_w = min(min_w, max(6.0, usable_w * 0.22))
+        min_h = min(min_h, max(6.0, usable_l * 0.24))
+    elif room_type == "bathroom":
+        min_w = min(min_w, max(4.0, usable_w * 0.16))
+        min_h = min(min_h, max(4.5, usable_l * 0.16))
+    elif room_type == "toilet":
+        min_w = min(min_w, max(3.5, usable_w * 0.14))
+        min_h = min(min_h, max(4.0, usable_l * 0.14))
+
+    return _r(min_w), _r(min_h)
+
+
 def _attach_furniture(room: Dict[str, Any]) -> None:
     w, h = room["width"], room["height"]
     f: List[Dict[str, Any]] = []
@@ -351,14 +373,19 @@ def _validate(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float) -> 
             if ov > 0.3:
                 notes.append(f"Overlap resolved between {rooms[i]['label']} and {rooms[j]['label']}.")
 
+    protected_ids = {"living", "kitchen", "dining", "master", "mid_left", "bath_main", "toilet", "rear_right", "front_right"}
+
     for room in list(rooms):
-        mn = MIN_SIZE.get(room["type"])
-        if not mn:
+        min_w, min_h = _effective_min_size(room, usable_w, usable_l)
+        if min_w <= 0 or min_h <= 0:
             continue
-        if room["width"] >= mn[0] and room["height"] >= mn[1]:
+        if room["width"] >= min_w and room["height"] >= min_h:
+            continue
+        if room["id"] in protected_ids:
+            notes.append(f"Kept {room['label']} as fixed hub-grid room despite compact size.")
             continue
         candidates = [r for r in rooms if r["id"] != room["id"] and _adjacent(room, r)]
-        target = next((r for r in candidates if r["type"] == "dining"), None) or (candidates[0] if candidates else None)
+        target = next((r for r in candidates if r["type"] in {"open_area", "dining"}), None) or (candidates[0] if candidates else None)
         if target:
             _merge_rooms(rooms, room["id"], target["id"])
             notes.append(f"Merged small {room['label']} with adjacent room.")
@@ -395,10 +422,10 @@ def _score(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float, vastu:
 
     checks = []
     for r in rooms:
-        mn = MIN_SIZE.get(r["type"])
-        if not mn:
+        min_w, min_h = _effective_min_size(r, usable_w, usable_l)
+        if min_w <= 0 or min_h <= 0:
             continue
-        checks.append(100.0 if (r["width"] >= mn[0] and r["height"] >= mn[1]) else 0.0)
+        checks.append(100.0 if (r["width"] >= min_w and r["height"] >= min_h) else 0.0)
     nbc_score = _r(sum(checks) / max(len(checks), 1))
     vastu_score = 100.0 if vastu else 85.0
     overall = _r((coverage_pct + nbc_score + vastu_score) / 3.0)
