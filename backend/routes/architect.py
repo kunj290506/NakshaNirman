@@ -1,4 +1,4 @@
-"""Architect routes backed by the deterministic layout_engine_v2."""
+"""Architect routes backed by deterministic hub open-plan engine."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from config import EXPORT_DIR
 from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
-from services.layout_engine_v2 import generate_ground_floor_plan, redesign_ground_floor_plan
+from services.hub_layout_engine import generate_ground_floor_plan, redesign_ground_floor_plan
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/architect", tags=["architect"])
@@ -35,6 +35,9 @@ class ArchitectDesignRequest(BaseModel):
 class ArchitectDesignResponse(BaseModel):
     layout: Optional[Dict[str, Any]] = None
     dxf_url: Optional[str] = None
+    design_score: Optional[Dict[str, Any]] = None
+    architect_notes: List[str] = Field(default_factory=list)
+    layout_type: Optional[str] = None
     error: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
 
@@ -84,6 +87,9 @@ async def architect_design(req: ArchitectDesignRequest):
         return ArchitectDesignResponse(
             layout=result,
             dxf_url=dxf_url,
+            design_score=result.get("design_score"),
+            architect_notes=result.get("architect_notes", []),
+            layout_type=result.get("layout_type"),
             warnings=result.get("warnings", []),
         )
     except HTTPException:
@@ -117,6 +123,9 @@ async def architect_redesign(req: ArchitectDesignRequest):
         return ArchitectDesignResponse(
             layout=result,
             dxf_url=dxf_url,
+            design_score=result.get("design_score"),
+            architect_notes=result.get("architect_notes", []),
+            layout_type=result.get("layout_type"),
             warnings=result.get("warnings", []),
         )
     except HTTPException:
