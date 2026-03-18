@@ -18,11 +18,6 @@ from routes.floorplan import router as floorplan_router
 from routes.model3d import router as model3d_router
 from routes.chat import router as chat_router
 from routes.requirements import router as requirements_router
-from routes.ai_design import router as ai_design_router
-from routes.engine import router as engine_router
-from routes.gnn_design import router as gnn_router
-from routes.perfect_design import router as perfect_router
-from routes.ml_design import router as ml_router
 from routes.architect import router as architect_router
 
 
@@ -59,11 +54,6 @@ app.include_router(floorplan_router)
 app.include_router(model3d_router)
 app.include_router(chat_router)
 app.include_router(requirements_router)
-app.include_router(ai_design_router)
-app.include_router(engine_router)
-app.include_router(gnn_router)
-app.include_router(perfect_router)
-app.include_router(ml_router)
 app.include_router(architect_router)
 
 

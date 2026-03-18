@@ -137,6 +137,8 @@ export default function Workspace() {
                 bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
                 kitchens: rooms.filter(r => r.room_type === 'kitchen').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
                 floors: requirements?.floors || 1,
+                facing: requirements?.facing || 'east',
+                vastu: requirements?.vastu ?? true,
                 extras: allExtras,
                 boundary_polygon: boundary || null,
             }
