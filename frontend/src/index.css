@@ -7,52 +7,52 @@
 
 :root {
     --bg-primary: #ffffff;
-    --bg-secondary: #fafafa;
-    --bg-tertiary: #f2f2f2;
-    --bg-dark: #f5f5f5;
-    --bg-dark-card: #ebebeb;
+    --bg-secondary: #f8fafc;
+    --bg-tertiary: #f1f5f9;
+    --bg-dark: #f8fafc;
+    --bg-dark-card: #e2e8f0;
     --bg-card: #ffffff;
-    --bg-input: #fafafa;
+    --bg-input: #ffffff;
     --bg-input-focus: #ffffff;
 
-    --accent: #111111;
-    --accent-hover: #333333;
-    --accent-light: #f5f5f5;
-    --accent-soft: #d5d5d5;
-    --accent-gradient: linear-gradient(135deg, #111 0%, #333 100%);
+    --accent: #18181b;
+    --accent-hover: #27272a;
+    --accent-light: #f4f4f5;
+    --accent-soft: #e4e4e7;
+    --accent-gradient: linear-gradient(135deg, #18181b 0%, #3f3f46 100%);
 
-    --secondary: #555555;
-    --secondary-light: #f5f5f5;
-    --secondary-hover: #444444;
+    --secondary: #52525b;
+    --secondary-light: #f4f4f5;
+    --secondary-hover: #3f3f46;
 
-    --success: #222222;
-    --success-bg: #f5f5f5;
-    --warning: #666666;
-    --warning-bg: #f5f5f5;
-    --error: #333333;
-    --error-bg: #f5f5f5;
+    --success: #18181b;
+    --success-bg: #f8fafc;
+    --warning: #52525b;
+    --warning-bg: #f8fafc;
+    --error: #27272a;
+    --error-bg: #f8fafc;
 
-    --text-primary: #111111;
-    --text-secondary: #666666;
-    --text-muted: #999999;
+    --text-primary: #18181b;
+    --text-secondary: #52525b;
+    --text-muted: #a1a1aa;
     --text-inverse: #ffffff;
 
-    --border: #e5e5e5;
-    --border-hover: #d0d0d0;
+    --border: #f1f5f9;
+    --border-hover: #e2e8f0;
 
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 10px;
-    --radius-xl: 14px;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
     --radius-full: 9999px;
 
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.03);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
-    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
-    --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
-    --shadow-xl: 0 8px 30px rgba(0, 0, 0, 0.1);
-    --shadow-glow: 0 0 0 2px rgba(0, 0, 0, 0.06);
-    --shadow-glow-teal: 0 0 0 2px rgba(0, 0, 0, 0.06);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.02);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.03);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.04);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 12px 32px rgba(0, 0, 0, 0.06);
+    --shadow-glow: 0 0 0 2px rgba(0, 0, 0, 0.03);
+    --shadow-glow-teal: 0 0 0 2px rgba(0, 0, 0, 0.03);
 
     --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --transition-fast: 120ms ease;
@@ -109,12 +109,13 @@ a {
     align-items: center;
     justify-content: center;
     gap: 0.4rem;
-    padding: 0.6rem 1.25rem;
+    padding: 0.75rem 1.5rem;
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     font-family: var(--font);
-    font-size: 0.84rem;
+    font-size: 0.86rem;
     font-weight: 500;
+    letter-spacing: 0.02em;
     cursor: pointer;
     transition: all var(--transition-fast);
     text-decoration: none;
@@ -124,6 +125,7 @@ a {
 .btn-primary {
     background: var(--accent);
     color: var(--text-inverse);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
 
 .btn-primary:hover {
@@ -942,6 +944,18 @@ a {
     background: var(--ws-surface-alt);
     color: var(--ws-text);
 }
+.btn-secondary:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+
+.btn-secondary.active {
+    background: var(--accent);
+    color: var(--text-inverse);
+    border-color: var(--accent);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.15);
+}
 
 /* ---- Sidebar ---- */
 .sidebar {
@@ -1322,17 +1336,29 @@ a {
     font-size: 0.82rem;
     line-height: 1.5;
 }
-
+/* ══════════════════════════════════════════════════════
+   Global Scrollbar Hiding
+   ══════════════════════════════════════════════════════ */
+::-webkit-scrollbar {
+    display: none;
+}
+* {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
 /* ══════════════════════════════════════════════════════
    3-Panel Workspace Layout
    ══════════════════════════════════════════════════════ */
 
 .workspace-3panel {
     display: grid;
-    grid-template-columns: 340px 1fr 280px;
-    grid-template-rows: 48px 1fr;
+    grid-template-columns: 340px 1fr 300px;
+    grid-template-rows: 60px 1fr;
     height: 100vh;
-    overflow: hidden;
+    background: var(--bg-secondary);
+    gap: 1rem;
+    padding: 1rem;
+    box-sizing: border-box;
 }
 
 .workspace-3panel.right-collapsed {
@@ -1344,10 +1370,12 @@ a {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 0.75rem 0 1rem;
-    height: 48px;
-    border-bottom: 1px solid var(--ws-border);
-    background: var(--ws-surface);
+    padding: 0 1.25rem;
+    height: 100%;
+    border-radius: 16px;
+    border: none;
+    background: var(--bg-card);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.03);
     z-index: 50;
     gap: 0.5rem;
 }
@@ -1421,15 +1449,29 @@ a {
 .canvas-panel {
     overflow: hidden;
     position: relative;
-    background: var(--ws-bg);
+    background: var(--bg-secondary);
+    border-radius: 16px;
 }
 
 /* ── Right Panel ── */
 .right-panel {
-    background: var(--ws-surface);
-    border-left: 1px solid var(--ws-border);
+    background: var(--bg-card);
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.03);
     overflow-y: auto;
     position: relative;
+}
+
+/* ── Sidebar (left) ── */
+.sidebar {
+    background: var(--bg-card);
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.03);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .right-panel.collapsed {
@@ -1467,7 +1509,7 @@ a {
     height: 100%;
     position: relative;
     overflow: hidden;
-    background: #fafbfc;
+    background: transparent;
 }
 
 .cad-grid {

@@ -164,12 +164,12 @@ function layoutReducer(state, action) {
             const rooms = state.rooms.map(r => {
                 if (r.id !== roomId) return r
                 const newX = state.snapToGrid
-                    ? Math.round((r.position.x + dx) / state.gridSize) * state.gridSize
-                    : r.position.x + dx
+                    ? Math.round((r.x + dx) / state.gridSize) * state.gridSize
+                    : r.x + dx
                 const newY = state.snapToGrid
-                    ? Math.round((r.position.y + dy) / state.gridSize) * state.gridSize
-                    : r.position.y + dy
-                return { ...r, position: { x: newX, y: newY } }
+                    ? Math.round((r.y + dy) / state.gridSize) * state.gridSize
+                    : r.y + dy
+                return { ...r, x: newX, y: newY }
             })
             return { ...state, rooms, isDirty: true }
         }

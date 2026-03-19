@@ -164,9 +164,7 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
           <pattern id='openHatch' width='0.8' height='0.8' patternUnits='userSpaceOnUse' patternTransform='rotate(35)'>
             <line x1='0' y1='0' x2='0' y2='0.8' stroke='#CBD5E1' strokeWidth='0.08' />
           </pattern>
-          <marker id='arrowHead' viewBox='0 0 10 10' refX='5' refY='5' markerWidth='4' markerHeight='4' orient='auto-start-reverse'>
-            <path d='M 0 0 L 10 5 L 0 10 z' fill='#64748B' />
-          </marker>
+
         </defs>
 
         <rect x={vbX} y={vbY} width={vbW} height={vbH} fill='#fff' />
@@ -210,40 +208,48 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
                 vectorEffect='non-scaling-stroke'
               />
               {showFurniture && renderFurniture(room, ul)}
-              {showLabels && (
-                <>
-                  <text
-                    x={room.x + room.width / 2}
-                    y={y + room.height / 2 - 0.5}
-                    textAnchor='middle'
-                    fill='#0F172A'
-                    fontSize='1.3'
-                    fontWeight='700'
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {room.label}
-                  </text>
-                  <text
-                    x={room.x + room.width / 2}
-                    y={y + room.height / 2 + 0.8}
-                    textAnchor='middle'
-                    fill='#334155'
-                    fontSize='1.1'
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {Math.round(room.area)} sq ft
-                  </text>
-                </>
-              )}
+              {showLabels && (() => {
+                const minDim = Math.min(room.width, room.height)
+                const baseSize = Math.max(0.6, Math.min(1.4, minDim * 0.15))
+                const yOffset = baseSize * 0.45
+                
+                return (
+                  <>
+                    <text
+                      x={room.x + room.width / 2}
+                      y={y + room.height / 2 - yOffset}
+                      textAnchor='middle'
+                      fill='#0F172A'
+                      fontSize={baseSize}
+                      fontWeight='700'
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {room.label}
+                    </text>
+                    <text
+                      x={room.x + room.width / 2}
+                      y={y + room.height / 2 + yOffset * 1.5}
+                      textAnchor='middle'
+                      fill='#334155'
+                      fontSize={baseSize * 0.8}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {Math.round(room.area)} sq ft
+                    </text>
+                  </>
+                )
+              })()}
             </g>
           )
         })}
 
-        {windows.map((win) => (
-          <g key={win.id}>
+        {windows.map((win, idx) => {
+          const key = win.id || `win-${idx}`
+          return (
+          <g key={key}>
             {windowLines(win, ul).map((ln, i) => (
               <line
-                key={`${win.id}-${i}`}
+                key={`${key}-${i}`}
                 x1={ln[0]}
                 y1={ln[1]}
                 x2={ln[2]}
@@ -254,13 +260,15 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
               />
             ))}
           </g>
-        ))}
+          )
+        })}
 
-        {doors.map((door) => {
+        {doors.map((door, idx) => {
+          const key = door.id || `door-${idx}`
           const g = doorPath(door, ul)
           const stroke = door.type === 'main' ? '#DC2626' : '#475569'
           return (
-            <g key={door.id}>
+            <g key={key}>
               <line x1={g.gap[0]} y1={g.gap[1]} x2={g.gap[2]} y2={g.gap[3]} stroke='#fff' strokeWidth='2.2' vectorEffect='non-scaling-stroke' />
               <path
                 d={g.arc}
@@ -279,17 +287,7 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
           )
         })}
 
-        {showDimensions && (
-          <g stroke='#64748B' fill='#64748B' vectorEffect='non-scaling-stroke'>
-            <line x1={0} y1={-2} x2={uw} y2={-2} markerStart='url(#arrowHead)' markerEnd='url(#arrowHead)' strokeWidth='1.1' />
-            <text x={uw / 2} y={-2.6} textAnchor='middle' fontSize='1.1' fontWeight='700'>{uw.toFixed(1)} ft</text>
 
-            <line x1={uw + 2} y1={0} x2={uw + 2} y2={ul} markerStart='url(#arrowHead)' markerEnd='url(#arrowHead)' strokeWidth='1.1' />
-            <text x={uw + 2.8} y={ul / 2} textAnchor='middle' fontSize='1.1' fontWeight='700' transform={`rotate(90 ${uw + 2.8} ${ul / 2})`}>
-              {ul.toFixed(1)} ft
-            </text>
-          </g>
-        )}
 
         <g transform={`translate(${uw - 2.5}, 1.2)`}>
           <polygon points='0,-0.8 0.7,0.8 0,0.3 -0.7,0.8' fill='#0F172A' />

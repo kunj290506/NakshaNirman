@@ -117,21 +117,19 @@ export default function FormInterface({ onGenerate, loading }) {
 
         <div className="form-group">
           <label className="form-label">BHK Type</label>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.45rem' }}>
+          <select 
+            className="form-input" 
+            value={bedrooms} 
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setBedrooms(n);
+              setBathrooms((prev) => (prev < n ? n : prev));
+            }}
+          >
             {[1, 2, 3, 4].map((n) => (
-              <button
-                key={n}
-                type='button'
-                className={`btn btn-secondary ${bedrooms === n ? 'active' : ''}`}
-                onClick={() => {
-                  setBedrooms(n)
-                  setBathrooms((prev) => (prev < n ? n : prev))
-                }}
-              >
-                {n}BHK
-              </button>
+              <option key={n} value={n}>{n}BHK</option>
             ))}
-          </div>
+          </select>
         </div>
 
         <div className="form-group">
@@ -178,49 +176,48 @@ export default function FormInterface({ onGenerate, loading }) {
 
           <div className="form-group">
             <label className="form-label">Facing</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
+            <select className="form-input" value={facing} onChange={(e) => setFacing(e.target.value)}>
               {['east', 'north', 'west', 'south'].map((dir) => (
-                <button
-                  key={dir}
-                  type='button'
-                  className={`btn btn-secondary ${facing === dir ? 'active' : ''}`}
-                  onClick={() => setFacing(dir)}
-                >
-                  {dir === 'east' ? 'East ★' : dir.charAt(0).toUpperCase() + dir.slice(1)}
-                </button>
+                <option key={dir} value={dir}>
+                  {dir === 'east' ? 'East (Recommended)' : dir.charAt(0).toUpperCase() + dir.slice(1)}
+                </option>
               ))}
-            </div>
-            <div style={{ fontSize: '0.78rem', color: '#64748B' }}>East ★ most auspicious</div>
+            </select>
           </div>
 
           <div className="form-group">
             <label className="form-label">Vastu Compliance</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
-              <button type='button' className={`btn btn-secondary ${vastu ? 'active' : ''}`} onClick={() => setVastu(true)}>✓ Yes</button>
-              <button type='button' className={`btn btn-secondary ${!vastu ? 'active' : ''}`} onClick={() => setVastu(false)}>✗ No</button>
-            </div>
+            <select className="form-input" value={vastu.toString()} onChange={(e) => setVastu(e.target.value === 'true')}>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Extra Rooms</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+            <label className="form-label">Extra Rooms (Multi-select)</label>
+            <select 
+              className="form-input" 
+              multiple 
+              value={extras}
+              onChange={(e) => {
+                const values = Array.from(e.target.selectedOptions, option => option.value);
+                setExtras(values);
+              }}
+              style={{ height: '100px', padding: '0.5rem' }}
+            >
               {EXTRA_OPTIONS.map((opt) => (
-                <button
-                  key={opt.key}
-                  type='button'
-                  className={`btn btn-secondary ${extras.includes(opt.key) ? 'active' : ''}`}
-                  onClick={() => toggleExtra(opt.key)}
-                >
+                <option key={opt.key} value={opt.key}>
                   {opt.label}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
+            <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '4px' }}>Hold Ctrl/Cmd to select multiple</div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.55rem' }}>
             <button type='button' className='btn btn-secondary' onClick={() => setStep(1)}>← Back</button>
             <button type='button' className="btn btn-primary" disabled={!canProceed || loading} onClick={submit}>
-              {loading ? 'Generating...' : '⚡ Generate Floor Plan'}
+              {loading ? 'Generating...' : 'Generate Floor Plan'}
             </button>
           </div>
         </div>
