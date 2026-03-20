@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from config import CORS_ORIGINS, EXPORT_DIR, UPLOAD_DIR
+from app_config import CORS_ORIGINS, EXPORT_DIR, UPLOAD_DIR
 from database import init_db
 
 # Import route modules
@@ -65,5 +65,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    from config import HOST, PORT
+    from app_config import HOST, PORT
     uvicorn.run("main:app", host=HOST, port=PORT, reload=True)

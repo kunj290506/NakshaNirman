@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,6 +66,36 @@ def _normalize_extras(value: Any) -> List[str]:
     return out
 
 
+def _infer_counts_from_rooms(rooms_payload: Any) -> Tuple[Optional[int], Optional[int]]:
+    if not isinstance(rooms_payload, list):
+        return None, None
+
+    bedrooms = 0
+    bathrooms = 0
+
+    for item in rooms_payload:
+        if not isinstance(item, dict):
+            continue
+        room_type = str(item.get("room_type") or item.get("type") or "").strip().lower()
+        qty_raw = item.get("quantity", 1)
+        try:
+            qty = max(0, int(float(qty_raw)))
+        except Exception:
+            qty = 1
+
+        if qty == 0:
+            continue
+
+        if room_type == "master_bedroom":
+            bedrooms += qty
+        elif room_type == "bedroom":
+            bedrooms += qty
+        elif room_type in {"bathroom", "toilet"}:
+            bathrooms += qty
+
+    return (bedrooms if bedrooms > 0 else None), (bathrooms if bathrooms > 0 else None)
+
+
 def _derive_plot(width: Optional[float], length: Optional[float], total_area: Optional[float]) -> Tuple[float, float, float]:
     if width and length:
         w = float(width)
@@ -112,6 +143,281 @@ def _room(
         "vastu_note": vastu_note,
         "furniture": [],
     }
+
+
+def _set_room_type(room: Dict[str, Any], room_type: str, note: str = "") -> None:
+    meta = ROOM_META[room_type]
+    room["type"] = room_type
+    room["label"] = meta["label"]
+    room["zone"] = meta["zone"]
+    room["color"] = meta["color"]
+    room["stroke"] = meta["stroke"]
+    if note:
+        room["vastu_note"] = note
+
+
+def _find_room(rooms: List[Dict[str, Any]], room_id: str) -> Optional[Dict[str, Any]]:
+    return next((r for r in rooms if r["id"] == room_id), None)
+
+
+def _is_adjacent_to_type(room: Dict[str, Any], rooms: List[Dict[str, Any]], target_types: set[str]) -> bool:
+    return any(r["type"] in target_types and _adjacent(room, r) for r in rooms if r["id"] != room["id"])
+
+
+def _find_adjacent_candidate(
+    anchor: Dict[str, Any],
+    rooms: List[Dict[str, Any]],
+    allowed_types: set[str],
+    exclude_ids: set[str],
+) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            r
+            for r in rooms
+            if r["id"] not in exclude_ids
+            and r["type"] in allowed_types
+            and _adjacent(r, anchor)
+        ),
+        None,
+    )
+
+
+def _has_living_access(
+    living: Optional[Dict[str, Any]],
+    target: Optional[Dict[str, Any]],
+    dining: Optional[Dict[str, Any]],
+    rooms: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    if not living or not target:
+        return False
+    if _adjacent(living, target):
+        return True
+    if dining and _adjacent(living, dining) and _adjacent(dining, target):
+        return True
+    if rooms:
+        by_id = {r["id"]: r for r in rooms}
+        seen = set([living["id"]])
+        q = [living["id"]]
+        while q:
+            cur = q.pop(0)
+            if cur == target["id"]:
+                return True
+            cur_room = by_id[cur]
+            for rid, r in by_id.items():
+                if rid in seen:
+                    continue
+                if _adjacent(cur_room, r):
+                    seen.add(rid)
+                    q.append(rid)
+    return False
+
+
+def _apply_functional_rules(rooms: List[Dict[str, Any]], bedrooms: int, notes: List[str]) -> None:
+    """
+    Enforce practical planning rules so generated plans follow expected usage patterns.
+    """
+    living = _find_room(rooms, "living")
+    kitchen = _find_room(rooms, "kitchen")
+    dining = _find_room(rooms, "dining")
+    master = _find_room(rooms, "master")
+
+    # Rule 1: kitchen must connect to living zone.
+    if kitchen and living and not _adjacent(kitchen, living):
+        candidate = next(
+            (
+                r
+                for r in rooms
+                if r["id"] != kitchen["id"]
+                and r["type"] in {"open_area", "study", "bedroom"}
+                and _adjacent(r, living)
+            ),
+            None,
+        )
+        if candidate:
+            old_type = candidate["type"]
+            _set_room_type(candidate, "kitchen", "Moved near living/dining for functional adjacency")
+            _set_room_type(kitchen, old_type, "Reassigned to preserve planning flow")
+            notes.append("Adjusted kitchen to be adjacent to living room.")
+            kitchen = candidate
+        elif dining and _adjacent(dining, living):
+            # Fallback: swap kitchen/dining roles when dining is the only room adjacent to living.
+            _set_room_type(dining, "kitchen", "Kitchen moved to living edge")
+            _set_room_type(kitchen, "dining", "Dining swapped with kitchen")
+            notes.append("Swapped kitchen and dining to guarantee living-kitchen access.")
+            kitchen = dining
+            dining = next((r for r in rooms if r["id"] == kitchen["id"]), dining)
+
+    # Rule 2: kitchen must connect to dining area.
+    dining = next((r for r in rooms if r["type"] == "dining"), dining)
+    if kitchen and dining and not _adjacent(kitchen, dining):
+        candidate = _find_adjacent_candidate(
+            dining,
+            rooms,
+            {"open_area", "study", "bedroom"},
+            {kitchen["id"], dining["id"], "living", "master"},
+        )
+        if candidate:
+            old_type = candidate["type"]
+            _set_room_type(candidate, "kitchen", "Moved near dining for direct access")
+            _set_room_type(kitchen, old_type, "Reassigned after kitchen-dining correction")
+            notes.append("Adjusted kitchen to be directly adjacent to dining area.")
+            kitchen = candidate
+
+    # Rule 3: master bedroom must be connected to living room.
+    if master and living and not _adjacent(master, living):
+        candidate = next(
+            (
+                r
+                for r in rooms
+                if r["id"] not in {master["id"], living["id"], "dining", "kitchen"}
+                and r["type"] in {"bedroom", "open_area", "study"}
+                and _adjacent(r, living)
+            ),
+            None,
+        )
+        if candidate:
+            old_type = candidate["type"]
+            _set_room_type(candidate, "master_bedroom", "Moved near living for direct connectivity")
+            _set_room_type(master, old_type, "Swapped to satisfy living-master connectivity")
+            notes.append("Adjusted layout to keep master bedroom connected to living room.")
+            master = candidate
+
+    # Rule 4: at least one non-master bedroom should connect to living room (if present).
+    bedroom_list = [r for r in rooms if r["type"] == "bedroom"]
+    if living and bedroom_list and not any(_adjacent(living, b) for b in bedroom_list):
+        candidate = _find_adjacent_candidate(
+            living,
+            rooms,
+            {"open_area", "study", "bathroom", "toilet"},
+            {"living", "master", "kitchen", "dining"},
+        )
+        if candidate:
+            _set_room_type(candidate, "bedroom", "Placed near living for direct access")
+            notes.append("Created bedroom adjacency with living room.")
+
+    # Rule 5: master must have attached bathroom/toilet.
+    wet_rooms = [r for r in rooms if r["type"] in {"bathroom", "toilet"}]
+    if master and not any(_adjacent(master, w) for w in wet_rooms):
+        candidate = _find_adjacent_candidate(
+            master,
+            rooms,
+            {"open_area", "study", "bedroom"},
+            {"living", "master", "kitchen", "dining"},
+        )
+        if candidate and candidate["width"] >= 4.0 and candidate["height"] >= 4.5:
+            _set_room_type(candidate, "bathroom", "Attached bathroom to master bedroom")
+            notes.append("Attached bathroom added next to master bedroom.")
+
+    # Rule 6: at least one bedroom should have nearby washroom access.
+    bedroom_rooms = [r for r in rooms if r["type"] in {"master_bedroom", "bedroom"}]
+    wet_rooms = [r for r in rooms if r["type"] in {"bathroom", "toilet"}]
+    has_bedroom_wet_adjacency = any(_adjacent(b, w) for b in bedroom_rooms for w in wet_rooms)
+    if not has_bedroom_wet_adjacency and bedroom_rooms:
+        target_bed = bedroom_rooms[0]
+        candidate = next(
+            (
+                r
+                for r in rooms
+                if r["type"] in {"open_area", "study"}
+                and _adjacent(r, target_bed)
+                and r["width"] >= 4.0
+                and r["height"] >= 5.0
+            ),
+            None,
+        )
+        if candidate:
+            _set_room_type(candidate, "bathroom", "Placed for bedroom convenience")
+            notes.append("Added/relocated a bathroom near bedroom zone.")
+
+    # Rule 7: compact 1BHK keeps only one additional bedroom-type room.
+    if bedrooms == 1:
+        extra_bedrooms = [r for r in rooms if r["type"] == "bedroom"]
+        for r in extra_bedrooms:
+            _set_room_type(r, "open_area", "Converted to open multifunctional space for 1BHK")
+        if extra_bedrooms:
+            notes.append("Converted extra bedroom cells to open space for true 1BHK planning.")
+
+    # Final hard constraints pass (must be true after all swaps).
+    living = next((r for r in rooms if r["type"] == "living"), None)
+    kitchen = next((r for r in rooms if r["type"] == "kitchen"), None)
+    dining = next((r for r in rooms if r["type"] == "dining"), None)
+
+    # HC1: living <-> kitchen adjacency must hold.
+    if living and kitchen and not _adjacent(living, kitchen):
+        candidate = _find_adjacent_candidate(
+            living,
+            rooms,
+            {"dining", "bedroom", "open_area", "study", "bathroom", "toilet"},
+            {living["id"], kitchen["id"], "master"},
+        )
+        if candidate:
+            old_type = candidate["type"]
+            _set_room_type(candidate, "kitchen", "Forced living-kitchen adjacency")
+            _set_room_type(kitchen, old_type, "Reassigned after hard-constraint pass")
+            kitchen = candidate
+            notes.append("Hard-constraint: enforced living-kitchen adjacency.")
+
+    # HC2: kitchen <-> dining adjacency must hold.
+    if kitchen and dining and not _adjacent(kitchen, dining):
+        candidate = _find_adjacent_candidate(
+            kitchen,
+            rooms,
+            {"open_area", "study", "bedroom", "bathroom", "toilet"},
+            {kitchen["id"], dining["id"], living["id"] if living else ""},
+        )
+        if candidate:
+            old_type = candidate["type"]
+            _set_room_type(candidate, "dining", "Forced kitchen-dining adjacency")
+            _set_room_type(dining, old_type, "Reassigned after hard-constraint pass")
+            notes.append("Hard-constraint: enforced kitchen-dining adjacency.")
+
+    # HC3: for 2BHK+, at least one bedroom must touch living.
+    if bedrooms >= 2 and living:
+        bedroom_list = [r for r in rooms if r["type"] == "bedroom"]
+        if bedroom_list and not any(_has_living_access(living, b, dining, rooms) for b in bedroom_list):
+            candidate = _find_adjacent_candidate(
+                living,
+                rooms,
+                {"open_area", "study", "bathroom", "toilet"},
+                {living["id"], "master", "kitchen", "dining"},
+            )
+            if candidate:
+                _set_room_type(candidate, "bedroom", "Forced living-bedroom adjacency")
+                notes.append("Hard-constraint: enforced living-bedroom adjacency.")
+            elif dining and _adjacent(living, dining):
+                via_dining_candidate = _find_adjacent_candidate(
+                    dining,
+                    rooms,
+                    {"open_area", "study", "bathroom", "toilet"},
+                    {"living", "master", "kitchen", "dining"},
+                )
+                if via_dining_candidate:
+                    _set_room_type(via_dining_candidate, "bedroom", "Bedroom placed on dining-access path")
+                    notes.append("Hard-constraint: enforced living-bedroom access via dining.")
+
+    # HC4: preserve requested bedroom count so layouts stay visibly different by BHK.
+    target_secondary_bedrooms = max(0, bedrooms - 1)
+    current_secondary_bedrooms = [r for r in rooms if r["type"] == "bedroom"]
+
+    if len(current_secondary_bedrooms) < target_secondary_bedrooms:
+        need = target_secondary_bedrooms - len(current_secondary_bedrooms)
+        candidates = [
+            r
+            for r in rooms
+            if r["type"] in {"open_area", "study"}
+            and r["id"] not in {"living", "kitchen", "dining", "master"}
+            and r["width"] >= 7.0
+            and r["height"] >= 7.0
+        ]
+        for c in candidates[:need]:
+            _set_room_type(c, "bedroom", "Converted to satisfy requested BHK bedroom count")
+            notes.append("Hard-constraint: restored missing bedroom to match requested BHK.")
+
+    elif len(current_secondary_bedrooms) > target_secondary_bedrooms:
+        extra = len(current_secondary_bedrooms) - target_secondary_bedrooms
+        for c in current_secondary_bedrooms[-extra:]:
+            _set_room_type(c, "open_area", "Converted extra bedroom to open area for requested BHK")
+            notes.append("Hard-constraint: reduced extra bedroom to match requested BHK.")
 
 
 def _adjacent(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
@@ -374,6 +680,7 @@ def _validate(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float) -> 
                 notes.append(f"Overlap resolved between {rooms[i]['label']} and {rooms[j]['label']}.")
 
     protected_ids = {"living", "kitchen", "dining", "master", "mid_left", "bath_main", "toilet", "rear_right", "front_right"}
+    protected_types = {"living", "kitchen", "dining", "master_bedroom", "bedroom"}
 
     for room in list(rooms):
         min_w, min_h = _effective_min_size(room, usable_w, usable_l)
@@ -381,7 +688,7 @@ def _validate(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float) -> 
             continue
         if room["width"] >= min_w and room["height"] >= min_h:
             continue
-        if room["id"] in protected_ids:
+        if room["id"] in protected_ids or room["type"] in protected_types:
             notes.append(f"Kept {room['label']} as fixed hub-grid room despite compact size.")
             continue
         candidates = [r for r in rooms if r["id"] != room["id"] and _adjacent(room, r)]
@@ -438,6 +745,52 @@ def _score(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float, vastu:
     }
 
 
+def _layout_signature(rooms: List[Dict[str, Any]], bedrooms: int) -> str:
+    tokens = sorted(
+        f"{r['type']}@{_r(r['x'])},{_r(r['y'])}:{_r(r['width'])}x{_r(r['height'])}"
+        for r in rooms
+    )
+    digest = hashlib.md5(";".join(tokens).encode("utf-8")).hexdigest()[:10]
+    return f"{bedrooms}bhk-{digest}"
+
+
+def _path_exists(rooms: List[Dict[str, Any]], src: Optional[Dict[str, Any]], dst: Optional[Dict[str, Any]]) -> bool:
+    if not src or not dst:
+        return False
+    by_id = {r["id"]: r for r in rooms}
+    seen = {src["id"]}
+    queue = [src["id"]]
+    while queue:
+        cur = queue.pop(0)
+        if cur == dst["id"]:
+            return True
+        cur_room = by_id[cur]
+        for rid, room in by_id.items():
+            if rid in seen:
+                continue
+            if _adjacent(cur_room, room):
+                seen.add(rid)
+                queue.append(rid)
+    return False
+
+
+def _connectivity_checks(rooms: List[Dict[str, Any]]) -> Dict[str, bool]:
+    living = next((r for r in rooms if r["type"] == "living"), None)
+    kitchen = next((r for r in rooms if r["type"] == "kitchen"), None)
+    dining = next((r for r in rooms if r["type"] == "dining"), None)
+    master = next((r for r in rooms if r["type"] == "master_bedroom"), None)
+    bedrooms = [r for r in rooms if r["type"] == "bedroom"]
+    wet_rooms = [r for r in rooms if r["type"] in {"bathroom", "toilet"}]
+
+    return {
+        "living_to_kitchen": _path_exists(rooms, living, kitchen),
+        "kitchen_adjacent_dining": bool(kitchen and dining and _adjacent(kitchen, dining)),
+        "living_to_master": _path_exists(rooms, living, master),
+        "master_attached_wet_room": bool(master and any(_adjacent(master, w) for w in wet_rooms)),
+        "living_to_any_bedroom": True if not bedrooms else any(_path_exists(rooms, living, b) for b in bedrooms),
+    }
+
+
 def _mirror_x(rooms: List[Dict[str, Any]], doors: List[Dict[str, Any]], windows: List[Dict[str, Any]], usable_w: float) -> None:
     for r in rooms:
         r["x"] = _r(usable_w - (r["x"] + r["width"]))
@@ -464,90 +817,193 @@ def _build_rooms(
     vastu: bool,
     extras: List[str],
 ) -> List[Dict[str, Any]]:
-    col_l = _r(usable_w * 0.38)
-    col_r = _r(usable_w * 0.27)
-    col_c = _r(usable_w - col_l - col_r)
+    rooms: List[Dict[str, Any]] = []
+    template_name = ""
 
-    row_b = _r(usable_l * 0.27)
-    row_t = _r(usable_l * 0.33)
-    row_m = _r(usable_l - row_b - row_t)
+    if bedrooms <= 1:
+        template_name = "compact_1bhk"
+        # Compact 1BHK: open social front, one private bedroom wing.
+        col_l = _r(usable_w * 0.58)
+        col_r = _r(usable_w - col_l)
+        row_f = _r(usable_l * 0.44)
+        row_r = _r(usable_l - row_f)
 
-    y_b, y_m, y_t = 0.0, row_b, _r(row_b + row_m)
+        rooms = [
+            _room("living", "living", 0.0, 0.0, col_l, row_f, "Open social zone"),
+            _room("dining", "dining", col_l, 0.0, col_r, row_f, "Directly linked to living"),
+            _room("master", "master_bedroom", 0.0, row_f, col_l, row_r, "Primary private room"),
+            _room("kitchen", "kitchen", col_l, row_f, col_r, _r(row_r * 0.58), "Near dining"),
+            _room("bath_main", "bathroom", col_l, _r(row_f + row_r * 0.58), col_r, _r(row_r * 0.42), "Common bathroom"),
+            _room("toilet", "toilet", _r(col_l - 3.8), _r(row_f + row_r - 4.8), 3.8, 4.8, "Attached/near master"),
+        ]
 
-    # Front row: living + kitchen + garage/open.
-    bot_left = _room("living", "living", 0.0, y_b, col_l, row_b, "North-East zone preferred")
-    pooja_room = None
-    if "pooja" in extras and bot_left["width"] >= 7.2:
-        pw, ph = 3.5, min(4.0, row_b)
-        pooja_room = _room("pooja", "pooja", 0.0, y_b, pw, ph, "North-East alcove")
-        bot_left["x"] = _r(bot_left["x"] + pw)
-        bot_left["width"] = _r(bot_left["width"] - pw)
-        bot_left["area"] = _r(bot_left["width"] * bot_left["height"])
-    bot_ctr_type = "kitchen"
-    bot_right_type = "garage" if "garage" in extras else "open_area"
-    bot_ctr = _room("kitchen", bot_ctr_type, col_l, y_b, col_c, row_b, "South-East guidance applied" if vastu else "")
-    bot_right = _room("front_right", bot_right_type, _r(col_l + col_c), y_b, col_r, row_b, "")
+    elif bedrooms == 2:
+        template_name = "balanced_2bhk"
+        # Balanced 2BHK: one extra bedroom, central dining spine.
+        col_l = _r(usable_w * 0.38)
+        col_r = _r(usable_w * 0.27)
+        col_c = _r(usable_w - col_l - col_r)
 
-    # Middle row: left stack + central dining hub.
-    mid_left_top_h = _r(max(4.5, row_m * 0.42))
-    mid_left_bot_h = _r(row_m - mid_left_top_h)
-    mid_left_top = _room("bath_main", "bathroom", 0.0, _r(y_m + mid_left_bot_h), col_l, mid_left_top_h, "Away from North-East")
+        row_b = _r(usable_l * 0.27)
+        row_t = _r(usable_l * 0.33)
+        row_m = _r(usable_l - row_b - row_t)
 
-    if bedrooms >= 2:
-        mid_left_bot_type = "bedroom"
-        mid_left_bot_label_note = ""
+        y_b, y_m, y_t = 0.0, row_b, _r(row_b + row_m)
+
+        rooms = [
+            _room("living", "living", 0.0, y_b, col_l, row_b, "Public front"),
+            _room("kitchen", "kitchen", col_l, y_b, col_c, row_b, "Near dining/living"),
+            _room("front_right", "open_area", _r(col_l + col_c), y_b, col_r, row_b, "Ventilation/buffer"),
+            _room("bath_main", "bathroom", 0.0, _r(y_m + row_m * 0.58), col_l, _r(row_m * 0.42), "Common bathroom"),
+            _room("mid_left", "bedroom", 0.0, y_m, col_l, _r(row_m * 0.58), "Bedroom-2"),
+            _room("dining", "dining", col_l, y_m, _r(col_c + col_r), row_m, "Central circulation hub"),
+            _room("master", "master_bedroom", 0.0, y_t, col_l, row_t, "Private master zone"),
+            _room("toilet", "toilet", col_l, y_t, _r((col_c + col_r) * 0.27), row_t, "Service core"),
+            _room("rear_right", "open_area", _r(col_l + (col_c + col_r) * 0.27), y_t, _r((col_c + col_r) * 0.73), row_t, "Rear utility/open"),
+        ]
+
+    elif bedrooms == 3:
+        template_name = "clustered_3bhk"
+        # 3BHK: left private stack, center social spine, right services.
+        c1 = _r(usable_w * 0.34)
+        c2 = _r(usable_w * 0.33)
+        c3 = _r(usable_w - c1 - c2)
+        r1 = _r(usable_l * 0.34)
+        r2 = _r(usable_l * 0.30)
+        r3 = _r(usable_l - r1 - r2)
+
+        y1, y2, y3 = 0.0, r1, _r(r1 + r2)
+
+        rooms = [
+            _room("living", "living", 0.0, y1, _r(c1 + c2), r1, "Large public lounge"),
+            _room("kitchen", "kitchen", _r(c1 + c2), y1, c3, r1, "Near dining"),
+            _room("master", "master_bedroom", 0.0, y2, c1, r2, "Master suite connected to living"),
+            _room("dining", "dining", c1, y2, c2, r2, "Center dining spine"),
+            _room("bath_main", "bathroom", _r(c1 + c2), y2, c3, r2, "Common bathroom"),
+            _room("mid_left", "bedroom", 0.0, y3, c1, r3, "Bedroom-2"),
+            _room("rear_mid", "bedroom", c1, y3, c2, r3, "Bedroom-3"),
+            _room("rear_right", "open_area", _r(c1 + c2), y3, c3, r3, "Rear open/utility"),
+            _room("toilet", "toilet", _r(c1 - 3.8), y2, 3.8, 4.8, "Toilet near bedroom belt"),
+        ]
+
     else:
-        mid_left_bot_type = "bathroom"
-        mid_left_bot_label_note = "Compact service core"
-    mid_left_bot = _room("mid_left", mid_left_bot_type, 0.0, y_m, col_l, mid_left_bot_h, mid_left_bot_label_note)
+        template_name = "winged_4bhk"
+        # 4BHK: two front social/service bays and two rear bedroom wings.
+        left = _r(usable_w * 0.31)
+        center = _r(usable_w * 0.38)
+        right = _r(usable_w - left - center)
 
-    dining = _room("dining", "dining", col_l, y_m, _r(col_c + col_r), row_m, "Central hub circulation")
+        front = _r(usable_l * 0.30)
+        mid = _r(usable_l * 0.34)
+        rear = _r(usable_l - front - mid)
 
-    # Rear row: master + toilet + right cell.
-    top_left = _room("master", "master_bedroom", 0.0, y_t, col_l, row_t, "South-West master zone")
-    toilet_w = _r(_clamp((col_c + col_r) * 0.27, 3.5, 5.0))
-    top_ctr = _room("toilet", "toilet", col_l, y_t, toilet_w, row_t, "")
+        y_front, y_mid, y_rear = 0.0, front, _r(front + mid)
 
-    top_right_type = "open_area"
-    if bedrooms >= 3:
-        top_right_type = "bedroom"
-    elif bedrooms == 2 and "study" in extras:
-        top_right_type = "study"
-    top_right = _room("rear_right", top_right_type, _r(col_l + toilet_w), y_t, _r(col_c + col_r - toilet_w), row_t, "")
+        rooms = [
+            _room("living", "living", 0.0, y_front, left, _r(front + mid), "Living spine at entry"),
+            _room("dining", "dining", left, y_front, center, front, "Dining at center front"),
+            _room("kitchen", "kitchen", _r(left + center), y_front, right, front, "Kitchen adjacent to dining"),
+            _room("master", "master_bedroom", left, y_mid, center, mid, "Master suite in central private band"),
+            _room("bed_west", "bedroom", 0.0, y_rear, left, rear, "Bedroom-2"),
+            _room("bed_mid", "bedroom", left, y_rear, center, rear, "Bedroom-3"),
+            _room("bed_east", "bedroom", _r(left + center), y_rear, right, rear, "Bedroom-4"),
+            _room("bath_main", "bathroom", _r(left + center), y_mid, right, _r(mid * 0.55), "Common bathroom"),
+            _room("toilet", "toilet", _r(left + center), _r(y_mid + mid * 0.55), right, _r(mid * 0.45), "Toilet near rear bedrooms"),
+            _room("front_buffer", "open_area", 0.0, 0.0, _r(left * 0.45), front, "Entry buffer"),
+        ]
 
-    rooms: List[Dict[str, Any]] = [
-        bot_left,
-        bot_ctr,
-        bot_right,
-        mid_left_top,
-        mid_left_bot,
-        dining,
-        top_left,
-        top_ctr,
-        top_right,
-    ]
-    if pooja_room:
-        rooms.append(pooja_room)
+    # Optional extras mapped onto available flexible cells.
+    if "study" in extras:
+        study_cell = next((r for r in rooms if r["type"] == "open_area"), None)
+        if study_cell:
+            _set_room_type(study_cell, "study", "Study requested")
 
-    # 4BHK adds a split in the largest bedroom/open cell.
-    if bedrooms >= 4:
-        split_target = next((r for r in rooms if r["id"] == "rear_right"), None)
-        if split_target and split_target["width"] >= 9.0:
-            h1 = _r(split_target["height"] * 0.52)
-            h2 = _r(split_target["height"] - h1)
-            split_target["type"] = "bedroom"
-            split_target["label"] = ROOM_META["bedroom"]["label"]
-            split_target["height"] = h1
-            split_target["area"] = _r(split_target["width"] * split_target["height"])
-            rooms.append(_room("bed4", "bedroom", split_target["x"], _r(split_target["y"] + h1), split_target["width"], h2, ""))
+    if "garage" in extras:
+        garage_cell = next((r for r in rooms if r["type"] == "open_area" and r["width"] >= 8.5 and r["height"] >= 10.0), None)
+        if garage_cell:
+            _set_room_type(garage_cell, "garage", "Garage requested")
+
+    if "pooja" in extras:
+        living = _find_room(rooms, "living")
+        if living and living["width"] >= 7.0 and living["height"] >= 7.0:
+            pw, ph = 3.5, 4.0
+            pooja = _room("pooja", "pooja", living["x"], living["y"], pw, ph, "Pooja corner")
+            living["x"] = _r(living["x"] + pw)
+            living["width"] = _r(living["width"] - pw)
+            living["area"] = _r(living["width"] * living["height"])
+            rooms.append(pooja)
+
+    _add_additional_bathrooms(rooms, bathrooms)
+
+    for r in rooms:
+        r["template"] = template_name
 
     return rooms
 
 
+def _add_additional_bathrooms(rooms: List[Dict[str, Any]], requested_bathrooms: int) -> None:
+    """
+    Add extra bathroom cells when requested bathrooms exceed the base layout.
+
+    Base layouts typically contain two wet rooms (bathroom + toilet). This helper
+    carves compact bathrooms from open or larger flexible cells.
+    """
+    target = max(1, int(requested_bathrooms))
+    existing = sum(1 for r in rooms if r["type"] in {"bathroom", "toilet"})
+    if existing >= target:
+        return
+
+    next_idx = 1
+    while existing < target:
+        candidate = next((
+            r for r in rooms
+            if r["type"] in {"open_area", "dining", "bedroom"}
+            and r["width"] >= 7.0
+            and r["height"] >= 7.0
+        ), None)
+        if not candidate:
+            break
+
+        bath_w, bath_h = 4.5, 6.0
+        if candidate["width"] >= candidate["height"]:
+            new_room = _room(
+                f"bath_extra_{next_idx}",
+                "bathroom",
+                candidate["x"],
+                candidate["y"],
+                bath_w,
+                min(bath_h, candidate["height"]),
+                "Additional bath from requirement",
+            )
+            candidate["x"] = _r(candidate["x"] + bath_w)
+            candidate["width"] = _r(candidate["width"] - bath_w)
+        else:
+            new_room = _room(
+                f"bath_extra_{next_idx}",
+                "bathroom",
+                candidate["x"],
+                candidate["y"],
+                min(bath_w, candidate["width"]),
+                bath_h,
+                "Additional bath from requirement",
+            )
+            candidate["y"] = _r(candidate["y"] + bath_h)
+            candidate["height"] = _r(candidate["height"] - bath_h)
+
+        candidate["area"] = _r(candidate["width"] * candidate["height"])
+        rooms.append(new_room)
+        next_idx += 1
+        existing += 1
+
+
 def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
     plot_w, plot_l, total_area = _derive_plot(input_data.get("plot_width"), input_data.get("plot_length"), input_data.get("total_area"))
-    bedrooms = int(_clamp(float(input_data.get("bedrooms") or 2), 1, 4))
-    bathrooms = int(_clamp(float(input_data.get("bathrooms") or bedrooms), 1, 6))
+    inferred_bedrooms, inferred_bathrooms = _infer_counts_from_rooms(input_data.get("rooms"))
+    requested_bedrooms = inferred_bedrooms if inferred_bedrooms is not None else input_data.get("bedrooms")
+    requested_bathrooms = inferred_bathrooms if inferred_bathrooms is not None else input_data.get("bathrooms")
+
+    bedrooms = int(_clamp(float(requested_bedrooms or 2), 1, 4))
+    bathrooms = int(_clamp(float(requested_bathrooms or bedrooms), 1, 6))
     facing = _normalize_facing(input_data.get("facing"))
     vastu = bool(input_data.get("vastu", True))
     extras = _normalize_extras(input_data.get("extras", []))
@@ -560,14 +1016,19 @@ def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": "Plot too small after setbacks for a valid ground-floor hub plan."}
 
     rooms = _build_rooms(usable_w, usable_l, bedrooms, bathrooms, facing, vastu, extras)
-    notes = _validate(rooms, usable_w, usable_l)
+    notes: List[str] = []
+    _apply_functional_rules(rooms, bedrooms, notes)
+    notes.extend(_validate(rooms, usable_w, usable_l))
 
-    # Ensure only one toilet style room near rear for this hub style.
+    # Keep at least one full bathroom type; convert only surplus attached bathrooms to toilet.
     master = next((r for r in rooms if r["type"] == "master_bedroom"), None)
-    for r in rooms:
-        if r["type"] == "bathroom" and master and r["y"] >= master["y"] - 0.1 and r["id"] != "toilet":
-            r["type"] = "toilet"
-            r["label"] = ROOM_META["toilet"]["label"]
+    bathrooms_near_master = [
+        r
+        for r in rooms
+        if r["type"] == "bathroom" and master and _adjacent(master, r) and r["id"] != "bath_main"
+    ]
+    for r in bathrooms_near_master[1:]:
+        _set_room_type(r, "toilet", "Converted surplus attached bathroom to toilet")
 
     # Furniture for each room.
     for room in rooms:
@@ -587,11 +1048,19 @@ def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
     for r in rooms:
         r["area"] = _r(r["width"] * r["height"])
 
+    connectivity_checks = _connectivity_checks(rooms)
+    layout_signature = _layout_signature(rooms, bedrooms)
+
     design_score = _score(rooms, usable_w, usable_l, vastu)
+    design_score["connectivity_checks"] = connectivity_checks
+    design_score["layout_signature"] = layout_signature
+
+    template_name = next((r.get("template") for r in rooms if r.get("template")), "hub")
     architect_notes = [
         "Hub open-plan generated with Dining Area as the central circulation core.",
         "No corridor/passage room used; movement is through direct room connections.",
         "All available buildable area is assigned to rooms and open areas.",
+        f"Template: {template_name} | Signature: {layout_signature}",
     ]
     architect_notes.extend(notes[:4])
 
@@ -608,6 +1077,9 @@ def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "doors": doors,
         "windows": windows,
         "design_score": design_score,
+        "connectivity_checks": connectivity_checks,
+        "layout_signature": layout_signature,
+        "bhk": bedrooms,
         "architect_notes": architect_notes,
         "total_area": _r(total_area),
         "usable_area": _r(usable_w * usable_l),

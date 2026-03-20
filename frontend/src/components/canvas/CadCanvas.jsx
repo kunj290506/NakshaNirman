@@ -170,6 +170,27 @@ export default function CadCanvas() {
                     </svg>
                 </div>
             )}
+
+            {layout && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 12,
+                        left: 12,
+                        background: 'rgba(255,255,255,0.92)',
+                        border: '1px solid #d1d5db',
+                        borderRadius: 10,
+                        padding: '6px 10px',
+                        fontSize: '12px',
+                        color: '#111827',
+                        zIndex: 8,
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                    }}
+                >
+                    <div style={{ fontWeight: 700 }}>{(layout.bhk || '?')} BHK</div>
+                    <div style={{ fontSize: 11, color: '#475569' }}>{layout.layout_signature || 'no-signature'}</div>
+                </div>
+            )}
         </div>
     )
 }

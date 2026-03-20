@@ -20,7 +20,7 @@ from services.boundary import (
     compute_buildable_footprint,
     generate_boundary_preview,
 )
-from config import UPLOAD_DIR, EXPORT_DIR
+from app_config import UPLOAD_DIR, EXPORT_DIR
 import json
 
 router = APIRouter(prefix="/api", tags=["boundary"])

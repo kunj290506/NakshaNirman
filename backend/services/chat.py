@@ -10,7 +10,7 @@ import re
 import asyncio
 import logging
 from typing import Optional
-from config import GROQ_API_KEY, GROQ_MODEL
+from app_config import GROQ_API_KEY, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 

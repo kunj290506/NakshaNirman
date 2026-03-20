@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from config import EXPORT_DIR
+from app_config import EXPORT_DIR
 from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
 from services.hub_layout_engine import generate_ground_floor_plan, redesign_ground_floor_plan
@@ -29,6 +29,7 @@ class ArchitectDesignRequest(BaseModel):
     facing: str = Field("east")
     vastu: bool = Field(True)
     extras: List[str] = Field(default_factory=list)
+    rooms: List[Dict[str, Any]] = Field(default_factory=list)
     project_id: Optional[str] = None
 
 

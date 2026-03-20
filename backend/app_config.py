@@ -15,7 +15,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'floo
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")
 
-# Grok (xAI) API — Primary AI provider
+# Grok (xAI) API - Primary AI provider
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini")
 GROK_BASE_URL = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
@@ -33,8 +33,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 
 if APP_ENV == "production":
-	if SECRET_KEY == "dev-secret-key-change-in-production" or len(SECRET_KEY) < 16:
-		raise RuntimeError("Invalid SECRET_KEY for production. Set a strong SECRET_KEY (>=16 chars).")
+    if SECRET_KEY == "dev-secret-key-change-in-production" or len(SECRET_KEY) < 16:
+        raise RuntimeError("Invalid SECRET_KEY for production. Set a strong SECRET_KEY (>=16 chars).")
 
 # CORS
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")

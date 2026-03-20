@@ -12,7 +12,7 @@ every design decision step by step.
 import json
 import re
 from typing import Optional, Dict, List
-from config import GROK_API_KEY, GROK_MODEL, GROK_BASE_URL
+from app_config import GROK_API_KEY, GROK_MODEL, GROK_BASE_URL
 
 # Lazy-initialized OpenAI client (for xAI Grok)
 _grok_client = None

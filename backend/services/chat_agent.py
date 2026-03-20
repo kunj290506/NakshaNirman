@@ -9,7 +9,7 @@ import re
 import importlib
 from typing import Any, Dict, List, Optional
 
-from config import GROQ_API_KEY
+from app_config import GROQ_API_KEY
 
 logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

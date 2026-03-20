@@ -11,7 +11,7 @@ from models import Project, Room, ProjectStatus, RoomType
 from schemas import GenerateRequest, GenerateResponse
 from services.floorplan import generate_floor_plan
 from services.cad_export import generate_dxf
-from config import EXPORT_DIR
+from app_config import EXPORT_DIR
 import json
 
 router = APIRouter(prefix="/api", tags=["floorplan"])

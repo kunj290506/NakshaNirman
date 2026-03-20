@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Canvas } from '@react-three/fiber'
+import HouseScrollScene from '../components/canvas/HouseScrollScene'
 
 const FEATURES = [
     {
@@ -58,29 +60,15 @@ const FEATURES = [
     },
 ]
 
-const BENEFITS = [
-    { title: 'Save hours of manual drafting', desc: 'Generate production-ready plans in seconds instead of spending hours in CAD software.' },
-    { title: 'No architectural expertise needed', desc: 'Our AI handles placement, proportions, and spatial relationships automatically.' },
-    { title: 'Industry-standard DXF output', desc: 'Export files that work directly in AutoCAD, Revit, and other professional tools.' },
-    { title: 'Interactive 3D walkthroughs', desc: 'Give clients an immersive preview of the space before any construction begins.' },
+const CHAPTERS = [
+    { id: 'site', label: 'Site + Grid', from: 0.0, to: 0.22 },
+    { id: 'zoning', label: 'Zoning', from: 0.22, to: 0.44 },
+    { id: 'adjacency', label: 'Adjacency', from: 0.44, to: 0.64 },
+    { id: 'stacking', label: 'Room Stacking', from: 0.64, to: 0.84 },
+    { id: 'final', label: 'Final Plan', from: 0.84, to: 1.01 },
 ]
 
-const TESTIMONIALS = [
-    { name: 'Arjun Patel', role: 'Architect', text: 'This tool has cut my initial drafting time by 80%. I use it to quickly explore layout options before refining in AutoCAD.' },
-    { name: 'Sarah Chen', role: 'Interior Designer', text: 'The 3D visualization feature is incredible. My clients can see exactly what their space will look like before we start any work.' },
-    { name: 'Rahul Sharma', role: 'Civil Engineer', text: 'The boundary upload feature is a game changer. I photograph the plot, upload it, and get a fitted floor plan instantly.' },
-    { name: 'Emily Brooks', role: 'Real Estate Developer', text: 'We use NakshaNirman to generate quick layouts for client presentations. The professional DXF exports save us countless hours.' },
-    { name: 'Vikram Mehta', role: 'Homeowner', text: 'I had no idea how to design my house plan. This tool made it so simple - I just described what I wanted and got a perfect layout.' },
-    { name: 'Lisa Wang', role: 'Studio Lead', text: 'The AI chat understands exactly what you want. I described a modern open-plan layout and it delivered something better than expected.' },
-]
 
-const FAQS = [
-    { q: 'What is NakshaNirman?', a: 'NakshaNirman is an intelligent floor plan generator that uses AI to convert natural language descriptions into professional 2D floor plans and 3D models. It supports custom plot boundaries, room configuration, and exports to industry-standard DXF format.' },
-    { q: 'Do I need architectural experience?', a: 'Not at all. NakshaNirman is designed for everyone from homeowners to professional architects. Simply describe your requirements or use the form interface to configure rooms, and the AI handles all placement, proportions, and spatial relationships.' },
-    { q: 'What file formats can I export?', a: 'You can export your floor plans as DXF files (compatible with AutoCAD, LibreCAD, and other CAD software) and 3D models as GLB files (compatible with most 3D viewers and game engines).' },
-    { q: 'Can I upload my own plot boundary?', a: 'Yes. You can upload an image (PNG, JPEG) of your plot sketch or a DXF file. Our computer vision engine extracts the boundary polygon automatically and generates a floor plan that fits perfectly within it.' },
-    { q: 'Is it free to use?', a: 'NakshaNirman is currently free to use during the beta period. Generate unlimited floor plans, 3D models, and DXF exports at no cost.' },
-]
 
 const ArrowIcon = () => (
     <span className="btn-icon">
@@ -92,10 +80,25 @@ const ArrowIcon = () => (
 
 export default function LandingPage() {
     const navigate = useNavigate()
-    const [openFaq, setOpenFaq] = useState(null)
+    const [scrollProgress, setScrollProgress] = useState(0)
+
+    const activeChapter = CHAPTERS.find((chapter) => scrollProgress >= chapter.from && scrollProgress < chapter.to) || CHAPTERS[CHAPTERS.length - 1]
+
+    useEffect(() => {
+        const handleScroll = () => {
+            const totalScrollable = document.documentElement.scrollHeight - window.innerHeight
+            const progress = totalScrollable > 0 ? window.scrollY / totalScrollable : 0
+            setScrollProgress(Math.max(0, Math.min(1, progress)))
+        }
+
+        window.addEventListener('scroll', handleScroll, { passive: true })
+        handleScroll()
+
+        return () => window.removeEventListener('scroll', handleScroll)
+    }, [])
 
     return (
-        <div className="landing">
+        <div className="landing landing-fresh">
             {/* NAV */}
             <nav className="landing-nav">
                 <a href="/" className="logo">
@@ -107,10 +110,9 @@ export default function LandingPage() {
                     NakshaNirman
                 </a>
                 <div className="nav-links">
+                    <a href="#cinema">3D Tour</a>
                     <a href="#features">Features</a>
-                    <a href="#benefits">Benefits</a>
-                    <a href="#testimonials">Testimonials</a>
-                    <a href="#faq">FAQ</a>
+                    <a href="#project">Project</a>
                     <button className="btn btn-primary btn-sm" onClick={() => navigate('/workspace')}>
                         Get Started <ArrowIcon />
                     </button>
@@ -118,7 +120,8 @@ export default function LandingPage() {
             </nav>
 
             {/* HERO */}
-            <section className="hero">
+            <section className="hero" id="project">
+                <div className="glass-read hero-glass">
                 <div className="hero-badge fade-in fade-in-1">
                     <span className="badge-dot"></span>
                     GNN-Powered Architecture Engine
@@ -132,48 +135,59 @@ export default function LandingPage() {
                     GNN-inspired layout engine. Upload your plot boundary, configure rooms, and
                     get Vastu-compliant designs instantly.
                 </p>
+                <p className="hero-scroll-note fade-in fade-in-4">Scroll to direct the 3D camera and reveal each CAD planning stage.</p>
                 <div className="hero-buttons fade-in fade-in-4">
                     <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
                         Start Designing <ArrowIcon />
                     </button>
                 </div>
-
-                {/* Trust Bar */}
-                <div className="trust-bar fade-in fade-in-4">
-                    <span className="trust-label">Compatible with</span>
-                    <div className="trust-logos">
-                        <span className="trust-logo">AutoCAD</span>
-                        <span className="trust-logo">Revit</span>
-                        <span className="trust-logo">SketchUp</span>
-                        <span className="trust-logo">LibreCAD</span>
-                    </div>
+                <div className="hero-meta-row fade-in fade-in-4">
+                    <span className="hero-meta-pill">Plot-aware layouts</span>
+                    <span className="hero-meta-pill">CAD-first exports</span>
+                    <span className="hero-meta-pill">Interactive 3D story</span>
+                </div>
                 </div>
 
-                {/* Dashboard Mockup */}
-                <div className="hero-dashboard fade-in">
-                    <div className="dashboard-inner">
-                        <div className="dashboard-toolbar">
-                            <span className="toolbar-dot red"></span>
-                            <span className="toolbar-dot yellow"></span>
-                            <span className="toolbar-dot green"></span>
-                            <span className="toolbar-title">NakshaNirman - Workspace</span>
+                {/* 3D Background Canvas */}
+                <div className="canvas-bg fade-in">
+                    <Canvas shadows camera={{ position: [0, 8, 8], fov: 45 }} dpr={[1, 1.6]}>
+                        <HouseScrollScene progress={scrollProgress} />
+                    </Canvas>
+                </div>
+            </section>
+
+            <section className="cad-cinema" id="cinema">
+                <div className="section">
+                    <div className="section-header glass-read section-glass">
+                        <span className="section-badge">CAD Film</span>
+                        <h2 className="section-title">Scroll-Controlled 3D House Plan Tour</h2>
+                        <p className="section-subtitle">
+                            Built using scroll-storyboarding patterns from modern WebGL landing pages:
+                            guided camera spline, phase-based reveal, and scanline pass to mimic a CAD design film.
+                        </p>
+                    </div>
+                    <div className="cad-video-shell">
+                        <div className="cad-video-topbar">
+                            <span className="rec-dot"></span>
+                            <span>REC</span>
+                            <span className="cad-scene-label">SCENE: {activeChapter.label}</span>
+                            <span className="cad-time">{`${String(Math.floor(scrollProgress * 2)).padStart(2, '0')}:${String(Math.floor((scrollProgress * 60) % 60)).padStart(2, '0')}`}</span>
                         </div>
-                        <div className="dashboard-body">
-                            <div className="dashboard-sidebar">
-                                <div className="dash-nav-item active">Design Form</div>
-                                <div className="dash-nav-item">AI Chat</div>
-                                <div className="dash-nav-item">Upload Boundary</div>
-                                <div className="dash-nav-item">GNN Engine</div>
-                                <div className="dash-nav-item">Export</div>
-                            </div>
-                            <div className="dashboard-canvas">
-                                <div className="room-block room-living">Living Room</div>
-                                <div className="room-block room-kitchen">Kitchen</div>
-                                <div className="room-block room-master">Master Bedroom</div>
-                                <div className="room-block room-bed">Bedroom</div>
-                                <div className="room-block room-bath">Bath</div>
-                                <div className="room-block room-dining">Dining Room</div>
-                            </div>
+                        <div className="cad-video-canvas">
+                            <Canvas camera={{ position: [0, 7, 7], fov: 42 }} dpr={[1, 1.5]}>
+                                <HouseScrollScene progress={scrollProgress} cinematic />
+                            </Canvas>
+                            <div className="scanline-overlay" />
+                        </div>
+                        <div className="cad-video-progress">
+                            <div className="cad-video-progress-bar" style={{ width: `${scrollProgress * 100}%` }} />
+                        </div>
+                        <div className="cad-chapters">
+                            {CHAPTERS.map((chapter) => (
+                                <span key={chapter.id} className={`cad-chapter-chip ${activeChapter.id === chapter.id ? 'active' : ''}`}>
+                                    {chapter.label}
+                                </span>
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -182,7 +196,7 @@ export default function LandingPage() {
             {/* FEATURES */}
             <section className="features-section" id="features">
                 <div className="section">
-                    <div className="section-header">
+                    <div className="section-header glass-read section-glass">
                         <span className="section-badge">Features</span>
                         <h2 className="section-title">Everything You Need to Create Floor Plans</h2>
                         <p className="section-subtitle">
@@ -202,104 +216,14 @@ export default function LandingPage() {
                 </div>
             </section>
 
-            {/* BENEFITS */}
-            <section id="benefits">
-                <div className="section">
-                    <div className="section-header">
-                        <span className="section-badge">Benefits</span>
-                        <h2 className="section-title">Why Teams Love Using NakshaNirman</h2>
-                        <p className="section-subtitle">
-                            Whether you are a solo architect or a large firm, our platform
-                            streamlines your entire floor plan workflow.
-                        </p>
-                    </div>
-                    <div className="benefits-grid">
-                        {BENEFITS.map((b, i) => (
-                            <div className="benefit-item" key={i}>
-                                <div className="benefit-check">
-                                    <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <h4>{b.title}</h4>
-                                    <p>{b.desc}</p>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </section>
-
-            {/* TESTIMONIALS */}
-            <section className="testimonials-section" id="testimonials">
-                <div className="section">
-                    <div className="section-header">
-                        <span className="section-badge">Testimonials</span>
-                        <h2 className="section-title">What Our Users Are Saying</h2>
-                        <p className="section-subtitle">
-                            Architects, designers, and homeowners trust NakshaNirman to streamline their design process.
-                        </p>
-                    </div>
-                </div>
-                <div className="testimonials-track">
-                    {[...TESTIMONIALS, ...TESTIMONIALS].map((t, i) => (
-                        <div className="testimonial-card" key={i}>
-                            <p className="testimonial-text">"{t.text}"</p>
-                            <div className="testimonial-author">
-                                <div className="testimonial-avatar">
-                                    {t.name.split(' ').map(n => n[0]).join('')}
-                                </div>
-                                <div>
-                                    <div className="testimonial-name">{t.name}</div>
-                                    <div className="testimonial-role">{t.role}</div>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* FAQ */}
-            <section id="faq">
-                <div className="section">
-                    <div className="section-header">
-                        <span className="section-badge">FAQ</span>
-                        <h2 className="section-title">Frequently Asked Questions</h2>
-                        <p className="section-subtitle">
-                            Everything you need to know about NakshaNirman and how it can help
-                            streamline your architectural workflow.
-                        </p>
-                    </div>
-                    <div className="faq-list">
-                        {FAQS.map((faq, i) => (
-                            <div className={`faq-item ${openFaq === i ? 'open' : ''}`} key={i}>
-                                <button className="faq-question" onClick={() => setOpenFaq(openFaq === i ? null : i)}>
-                                    <span>{faq.q}</span>
-                                    <span className="faq-toggle">
-                                        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" />
-                                        </svg>
-                                    </span>
-                                </button>
-                                <div className="faq-answer">
-                                    <div className="faq-answer-inner">{faq.a}</div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </section>
-
             {/* CTA */}
             <section className="cta-section">
                 <div className="section">
-                    <div className="cta-box">
-                        <span className="section-badge">Get Started</span>
-                        <h2 className="section-title">Ready to Design Your Floor Plan?</h2>
+                    <div className="cta-box glass-read section-glass">
+                        <span className="section-badge">Project Workspace</span>
+                        <h2 className="section-title">Open the CAD Project Workspace</h2>
                         <p className="section-subtitle">
-                            Start generating professional floor plans, 3D models, and CAD exports today.
-                            No sign-up required during beta.
+                            Start a new project, set requirements, upload boundary, and generate CAD-ready floor plans.
                         </p>
                         <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
                             Start Designing Now <ArrowIcon />
@@ -326,13 +250,13 @@ export default function LandingPage() {
                         </p>
                     </div>
                     <div className="footer-col">
-                        <h4>Product</h4>
+                        <h4>Project</h4>
                         <a href="#features">Features</a>
-                        <a href="#benefits">Benefits</a>
-                        <a href="#faq">FAQ</a>
+                        <a href="#cinema">3D Tour</a>
+                        <a href="#project">Overview</a>
                     </div>
                     <div className="footer-col">
-                        <h4>Export Formats</h4>
+                        <h4>Deliverables</h4>
                         <a href="#features">DXF (AutoCAD)</a>
                         <a href="#features">GLB (3D Model)</a>
                         <a href="#features">SVG Preview</a>

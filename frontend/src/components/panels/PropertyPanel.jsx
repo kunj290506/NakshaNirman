@@ -53,6 +53,30 @@ export default function PropertyPanel() {
                 {state.isDirty && <span className="dirty-badge">Modified</span>}
             </div>
 
+            {/* Generation Proof */}
+            {(layout.layout_signature || layout.connectivity_checks) && (
+                <div className="property-section">
+                    <div className="property-section-title">Generation Proof</div>
+                    {layout.layout_signature && (
+                        <div style={{ fontSize: '0.78rem', color: '#334155', marginBottom: '0.45rem' }}>
+                            Signature: <strong>{layout.layout_signature}</strong>
+                        </div>
+                    )}
+                    {layout.connectivity_checks && (
+                        <div style={{ display: 'grid', gap: '0.3rem' }}>
+                            {Object.entries(layout.connectivity_checks).map(([name, passed]) => (
+                                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
+                                    <span style={{ color: '#475569' }}>{name.replace(/_/g, ' ')}</span>
+                                    <span style={{ color: passed ? '#16a34a' : '#dc2626', fontWeight: 700 }}>
+                                        {passed ? 'PASS' : 'FAIL'}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Selected Room Details */}
             {selectedRoom ? (
                 <div className="property-section">

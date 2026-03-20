@@ -8,7 +8,7 @@ from sqlalchemy import select
 from database import get_db
 from models import Project
 from services.model3d import generate_3d_model
-from config import EXPORT_DIR
+from app_config import EXPORT_DIR
 import json
 
 router = APIRouter(prefix="/api", tags=["3d"])
