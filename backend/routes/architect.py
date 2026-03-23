@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app_config import EXPORT_DIR
 from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
+from services.graph_refiner import refine_layout_with_graph
 from services.hub_layout_engine import generate_ground_floor_plan, redesign_ground_floor_plan
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,15 @@ class ArchitectDesignRequest(BaseModel):
     facing: str = Field("east")
     vastu: bool = Field(True)
     extras: List[str] = Field(default_factory=list)
+    engine_mode: str = Field("gnn_advanced")
     rooms: List[Dict[str, Any]] = Field(default_factory=list)
     project_id: Optional[str] = None
+
+
+def _use_graph_refiner(engine_mode: Optional[str]) -> bool:
+    mode = str(engine_mode or "").strip().lower()
+    # Supported modes: standard | gnn_advanced
+    return mode in {"gnn_advanced", "gnn", "advanced"}
 
 
 class ArchitectDesignResponse(BaseModel):
@@ -81,6 +89,9 @@ async def architect_design(req: ArchitectDesignRequest):
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
+        if _use_graph_refiner(req.engine_mode):
+            result = refine_layout_with_graph(result)
+
         dxf_url = None
         if req.project_id:
             dxf_url = await _generate_dxf(req.project_id, result)
@@ -116,6 +127,9 @@ async def architect_redesign(req: ArchitectDesignRequest):
         result = redesign_ground_floor_plan(input_data)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
+
+        if _use_graph_refiner(req.engine_mode):
+            result = refine_layout_with_graph(result)
 
         dxf_url = None
         if req.project_id:

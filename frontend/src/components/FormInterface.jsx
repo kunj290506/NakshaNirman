@@ -35,6 +35,7 @@ export default function FormInterface({ onGenerate, loading }) {
 
   const [bedrooms, setBedrooms] = useState(2)
   const [bathrooms, setBathrooms] = useState(2)
+  const [engineMode, setEngineMode] = useState('gnn_advanced')
   const [facing, setFacing] = useState('east')
   const [vastu, setVastu] = useState(true)
   const [extras, setExtras] = useState([])
@@ -71,6 +72,7 @@ export default function FormInterface({ onGenerate, loading }) {
       total_area: Math.round(dimensions.width * dimensions.length * 10) / 10,
       bedrooms: Number(bedrooms),
       bathrooms: Number(bathrooms || bedrooms),
+      engine_mode: engineMode,
       facing,
       vastu,
       extras,
@@ -172,6 +174,14 @@ export default function FormInterface({ onGenerate, loading }) {
             <div style={{ fontWeight: 700, color: '#0f172a' }}>
               {dimensions.width} ft x {dimensions.length} ft • {bedrooms}BHK • {bathrooms} Bath
             </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Layout Engine</label>
+            <select className="form-input" value={engineMode} onChange={(e) => setEngineMode(e.target.value)}>
+              <option value="gnn_advanced">GNN Advanced (Recommended)</option>
+              <option value="standard">Standard Stable</option>
+            </select>
           </div>
 
           <div className="form-group">

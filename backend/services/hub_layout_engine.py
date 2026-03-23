@@ -713,6 +713,188 @@ def _validate(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float) -> 
     return notes
 
 
+def _cleanup_structural_overlaps(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float, notes: List[str]) -> None:
+    """Resolve known overlap patterns from template fillers/service cells."""
+
+    def _max_pair_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+        return _overlap(a, b)
+
+    # 1) Remove synthetic open fillers that overlap hard rooms.
+    hard_types = {"living", "kitchen", "dining", "master_bedroom", "bedroom", "bathroom", "toilet", "garage", "study", "pooja"}
+    drop_ids = set()
+    for r in rooms:
+        if r["type"] != "open_area":
+            continue
+        for h in rooms:
+            if h["id"] == r["id"] or h["type"] not in hard_types:
+                continue
+            if _max_pair_overlap(r, h) > 0.5:
+                if r["id"].startswith("open_") or r["id"] in {"front_buffer", "rear_right", "front_right"}:
+                    drop_ids.add(r["id"])
+                    notes.append(f"Removed overlapping filler room: {r['id']}.")
+                break
+
+    if drop_ids:
+        rooms[:] = [r for r in rooms if r["id"] not in drop_ids]
+
+    # 2) Keep toilet from intruding into primary occupied rooms.
+    master = next((r for r in rooms if r["type"] == "master_bedroom"), None)
+    toilet = next((r for r in rooms if r["type"] == "toilet"), None)
+    if master and toilet:
+        occupied = [
+            r for r in rooms
+            if r["id"] != toilet["id"] and r["type"] in {"living", "kitchen", "dining", "master_bedroom", "bedroom", "bathroom", "toilet", "garage", "study", "pooja"}
+        ]
+
+        has_overlap = any(_max_pair_overlap(toilet, r) > 0.35 for r in occupied)
+    else:
+        has_overlap = False
+
+    if has_overlap:
+        candidates = [
+            (master["x"] + master["width"], master["y"]),
+            (master["x"] - toilet["width"], master["y"]),
+            (master["x"], master["y"] + master["height"]),
+            (master["x"], master["y"] - toilet["height"]),
+        ]
+        for tx, ty in candidates:
+            toilet["x"] = _r(_clamp(tx, 0.0, max(0.0, usable_w - toilet["width"])))
+            toilet["y"] = _r(_clamp(ty, 0.0, max(0.0, usable_l - toilet["height"])))
+            if all(_max_pair_overlap(toilet, r) <= 0.35 for r in occupied):
+                notes.append("Shifted toilet to avoid overlap with occupied rooms.")
+                break
+
+        # Fallback full sweep if candidate anchors still overlap.
+        if any(_max_pair_overlap(toilet, r) > 0.35 for r in occupied):
+            step = 0.5
+            found = False
+            y = 0.0
+            while y <= max(0.0, usable_l - toilet["height"]):
+                x = 0.0
+                while x <= max(0.0, usable_w - toilet["width"]):
+                    toilet["x"] = _r(x)
+                    toilet["y"] = _r(y)
+                    if all(_max_pair_overlap(toilet, r) <= 0.35 for r in occupied):
+                        found = True
+                        notes.append("Relocated toilet via sweep to remove overlap.")
+                        break
+                    x += step
+                if found:
+                    break
+                y += step
+
+
+def _force_no_overlap(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float, notes: List[str]) -> None:
+    """Hard final pass: relocate lower-priority rooms until no meaningful overlaps remain."""
+
+    priority = {
+        "living": 100,
+        "kitchen": 95,
+        "dining": 90,
+        "master_bedroom": 88,
+        "bedroom": 84,
+        "bathroom": 70,
+        "toilet": 65,
+        "study": 60,
+        "pooja": 58,
+        "garage": 55,
+        "open_area": 40,
+    }
+
+    def _room_priority(r: Dict[str, Any]) -> int:
+        return priority.get(r.get("type", "open_area"), 50)
+
+    def _overlap_with_any(room: Dict[str, Any], others: List[Dict[str, Any]], skip_id: str) -> float:
+        total = 0.0
+        for o in others:
+            if o["id"] == skip_id:
+                continue
+            total += _overlap(room, o)
+        return total
+
+    def _sweep_place(room: Dict[str, Any], others: List[Dict[str, Any]]) -> Tuple[bool, bool]:
+        """Return (ok, shrunk) after best-effort no-overlap placement."""
+
+        def _scan_positions(target: Dict[str, Any]) -> Tuple[bool, float, Optional[Tuple[float, float]]]:
+            step = 0.5
+            w = target["width"]
+            h = target["height"]
+            best_local = None
+            best_ov = float("inf")
+
+            y = 0.0
+            while y <= max(0.0, usable_l - h):
+                x = 0.0
+                while x <= max(0.0, usable_w - w):
+                    target["x"] = _r(x)
+                    target["y"] = _r(y)
+                    ov = _overlap_with_any(target, others, target["id"])
+                    if ov < best_ov:
+                        best_ov = ov
+                        best_local = (target["x"], target["y"])
+                    if ov <= 0.35:
+                        return True, ov, (target["x"], target["y"])
+                    x += step
+                y += step
+
+            return False, best_ov, best_local
+
+        ok, best_ov, best_pos = _scan_positions(room)
+        if ok:
+            return True, False
+
+        min_w, min_h = MIN_SIZE.get(room.get("type", "open_area"), (3.5, 4.0))
+        original_w, original_h = room["width"], room["height"]
+
+        # Hard fallback: shrink movable room within minimum limits, then sweep again.
+        for scale in (0.9, 0.8, 0.7, 0.6):
+            room["width"] = _r(max(min_w, original_w * scale))
+            room["height"] = _r(max(min_h, original_h * scale))
+            ok2, best_ov2, best_pos2 = _scan_positions(room)
+            if ok2:
+                room["area"] = _r(room["width"] * room["height"])
+                return True, True
+            if best_ov2 < best_ov:
+                best_ov = best_ov2
+                best_pos = best_pos2
+
+        if best_pos is not None:
+            room["x"], room["y"] = best_pos
+        room["area"] = _r(room["width"] * room["height"])
+        return best_ov <= 0.35, (room["width"] < original_w or room["height"] < original_h)
+
+    for _ in range(5):
+        changed = False
+        found_pair = False
+        for i in range(len(rooms)):
+            for j in range(i + 1, len(rooms)):
+                a, b = rooms[i], rooms[j]
+                ov = _overlap(a, b)
+                if ov <= 0.35:
+                    continue
+                found_pair = True
+
+                if _room_priority(a) == _room_priority(b):
+                    move = a if a.get("area", 0.0) <= b.get("area", 0.0) else b
+                else:
+                    move = a if _room_priority(a) <= _room_priority(b) else b
+
+                ok, shrunk = _sweep_place(move, rooms)
+                changed = True
+                if ok:
+                    if shrunk:
+                        notes.append(f"Resolved overlap by shrinking+relocating {move['id']}.")
+                    else:
+                        notes.append(f"Resolved overlap by relocating {move['id']}.")
+                else:
+                    notes.append(f"Reduced overlap for {move['id']} via best-fit placement.")
+
+        if not found_pair:
+            break
+        if not changed:
+            break
+
+
 def _grade(score: float) -> str:
     if score >= 95:
         return "A+"
@@ -743,6 +925,68 @@ def _score(rooms: List[Dict[str, Any]], usable_w: float, usable_l: float, vastu:
         "overall": overall,
         "grade": _grade(overall),
     }
+
+
+def _core_layout_ok(rooms: List[Dict[str, Any]], usable_area: float, bedrooms: int) -> bool:
+    """Guardrail for practical layouts: core rooms must not become unrealistically small."""
+    scale = _clamp(usable_area / 1000.0, 0.75, 1.15)
+
+    def _max_area(room_type: str) -> float:
+        vals = [float(r.get("area", 0.0)) for r in rooms if r.get("type") == room_type]
+        return max(vals) if vals else 0.0
+
+    living_min = 85.0 * scale
+    kitchen_min = 52.0 * scale
+    dining_min = 78.0 * scale
+    master_min = 82.0 * scale
+    bedroom_min = 72.0 * scale
+
+    living_ok = _max_area("living") >= living_min
+    kitchen_ok = _max_area("kitchen") >= kitchen_min
+    dining_ok = _max_area("dining") >= dining_min
+    master_ok = _max_area("master_bedroom") >= master_min
+
+    if bedrooms >= 2:
+        bedroom_ok = _max_area("bedroom") >= bedroom_min
+    else:
+        bedroom_ok = True
+
+    return living_ok and kitchen_ok and dining_ok and master_ok and bedroom_ok
+
+
+def _normalize_bedroom_roles(rooms: List[Dict[str, Any]], bedrooms: int, notes: List[str]) -> None:
+    """Keep the largest private room labeled as master for practical output readability."""
+    private = [r for r in rooms if r.get("type") in {"master_bedroom", "bedroom"}]
+    if not private:
+        return
+
+    private.sort(key=lambda r: float(r.get("area", 0.0)), reverse=True)
+    largest = private[0]
+
+    # Start from a clean state: all private rooms as secondary bedrooms.
+    for r in private:
+        _set_room_type(r, "bedroom", "Rebalanced private room roles")
+
+    # Promote largest private room to master.
+    _set_room_type(largest, "master_bedroom", "Largest private room assigned as master bedroom")
+    notes.append("Normalized bedroom roles: largest private room set as master.")
+
+    # Keep requested secondary bedroom count where possible.
+    target_secondary = max(0, int(bedrooms) - 1)
+    secondaries = [r for r in rooms if r.get("type") == "bedroom"]
+    if len(secondaries) > target_secondary:
+        for r in secondaries[target_secondary:]:
+            _set_room_type(r, "open_area", "Converted extra bedroom to open area")
+    elif len(secondaries) < target_secondary:
+        candidates = [
+            r for r in rooms
+            if r.get("type") in {"open_area", "study"}
+            and r.get("id") not in {largest.get("id")}
+            and float(r.get("width", 0.0)) >= 7.0
+            and float(r.get("height", 0.0)) >= 7.0
+        ]
+        for r in candidates[: target_secondary - len(secondaries)]:
+            _set_room_type(r, "bedroom", "Converted to satisfy bedroom count")
 
 
 def _layout_signature(rooms: List[Dict[str, Any]], bedrooms: int) -> str:
@@ -1015,10 +1259,31 @@ def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
     if usable_w < 12.0 or usable_l < 16.0:
         return {"error": "Plot too small after setbacks for a valid ground-floor hub plan."}
 
-    rooms = _build_rooms(usable_w, usable_l, bedrooms, bathrooms, facing, vastu, extras)
+    trim_order = ["garage", "balcony", "store", "study", "pooja"]
+    active_extras = list(extras)
+    removed_extras: List[str] = []
+
+    rooms: List[Dict[str, Any]] = []
     notes: List[str] = []
-    _apply_functional_rules(rooms, bedrooms, notes)
-    notes.extend(_validate(rooms, usable_w, usable_l))
+    while True:
+        rooms = _build_rooms(usable_w, usable_l, bedrooms, bathrooms, facing, vastu, active_extras)
+        notes = []
+        _apply_functional_rules(rooms, bedrooms, notes)
+        _normalize_bedroom_roles(rooms, bedrooms, notes)
+        notes.extend(_validate(rooms, usable_w, usable_l))
+
+        if _core_layout_ok(rooms, usable_w * usable_l, bedrooms):
+            break
+
+        to_remove = next((ex for ex in trim_order if ex in active_extras), None)
+        if not to_remove:
+            break
+        active_extras.remove(to_remove)
+        removed_extras.append(to_remove)
+
+    if removed_extras:
+        notes.append("Removed extras for room quality: " + ", ".join(removed_extras))
+    _cleanup_structural_overlaps(rooms, usable_w, usable_l, notes)
 
     # Keep at least one full bathroom type; convert only surplus attached bathrooms to toilet.
     master = next((r for r in rooms if r["type"] == "master_bedroom"), None)
@@ -1037,6 +1302,10 @@ def _generate(input_data: Dict[str, Any]) -> Dict[str, Any]:
     # Open cells are required to fill leftover at corners.
     if not any(r["type"] == "open_area" for r in rooms):
         rooms.append(_room("open_corner", "open_area", _r(usable_w - 5.0), _r(usable_l - 5.0), 5.0, 5.0, ""))
+
+    # Final cleanup after synthetic corner fill has been added.
+    _cleanup_structural_overlaps(rooms, usable_w, usable_l, notes)
+    _force_no_overlap(rooms, usable_w, usable_l, notes)
 
     doors = _build_doors(rooms, usable_w, usable_l)
     windows = _build_windows(rooms, usable_w, usable_l)

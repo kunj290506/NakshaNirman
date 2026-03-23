@@ -75,6 +75,7 @@ export default function Workspace() {
                 total_area: totalArea,
                 plot_width: requirements?.plot_width || null,
                 plot_length: requirements?.plot_length || null,
+                engine_mode: requirements?.engine_mode || 'gnn_advanced',
                 rooms,
                 bedrooms: Number(requirements?.bedrooms) || rooms.filter(r => ['bedroom', 'master_bedroom'].includes(r.room_type)).reduce((s, r) => s + (r.quantity || 1), 0) || 2,
                 bathrooms: Number(requirements?.bathrooms) || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
