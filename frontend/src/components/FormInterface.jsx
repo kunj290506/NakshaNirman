@@ -26,7 +26,6 @@ function toRooms(payload) {
 }
 
 export default function FormInterface({ onGenerate, loading }) {
-  const [step, setStep] = useState(1)
   const [mode, setMode] = useState('dimensions')
 
   const [plotWidth, setPlotWidth] = useState(30)
@@ -39,6 +38,9 @@ export default function FormInterface({ onGenerate, loading }) {
   const [facing, setFacing] = useState('east')
   const [vastu, setVastu] = useState(true)
   const [extras, setExtras] = useState([])
+  const [city, setCity] = useState('')
+  const [stateName, setStateName] = useState('')
+  const [familyType, setFamilyType] = useState('nuclear')
 
   const area = useMemo(() => {
     if (mode === 'dimensions') return Number(plotWidth || 0) * Number(plotLength || 0)
@@ -76,6 +78,9 @@ export default function FormInterface({ onGenerate, loading }) {
       facing,
       vastu,
       extras,
+      city: city.trim() || null,
+      state: stateName.trim() || null,
+      family_type: familyType,
     }
 
     const rooms = toRooms(payload)
@@ -83,13 +88,13 @@ export default function FormInterface({ onGenerate, loading }) {
   }
 
   return (
-    <div style={{ display: 'grid', gap: '0.9rem' }}>
-      <div className="form-section">
-        <h3>Step 1: Plot + BHK</h3>
+    <div className="form-compact-shell">
+      <div className="form-section form-section-dense">
+        <h3>All Inputs</h3>
 
         <div className="form-group">
           <label className="form-label">Plot Input</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+          <div className="form-compact-grid-2">
             <button className={`btn btn-secondary ${mode === 'dimensions' ? 'active' : ''}`} type='button' onClick={() => setMode('dimensions')}>
               Width x Length
             </button>
@@ -99,139 +104,121 @@ export default function FormInterface({ onGenerate, loading }) {
           </div>
         </div>
 
-        {mode === 'dimensions' ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
-            <div className="form-group">
-              <label className="form-label">Plot Width (ft)</label>
-              <input className="form-input" type="number" min={16} value={plotWidth} onChange={(e) => setPlotWidth(Number(e.target.value || 0))} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Plot Length (ft)</label>
-              <input className="form-input" type="number" min={16} value={plotLength} onChange={(e) => setPlotLength(Number(e.target.value || 0))} />
-            </div>
-          </div>
-        ) : (
+        <div className="form-compact-grid-4">
           <div className="form-group">
-            <label className="form-label">Total Area (sqft)</label>
-            <input className="form-input" type="number" min={300} value={totalSqft} onChange={(e) => setTotalSqft(Number(e.target.value || 0))} />
+            <label className="form-label">Width (ft)</label>
+            <input className="form-input" type="number" min={16} value={plotWidth} disabled={mode !== 'dimensions'} onChange={(e) => setPlotWidth(Number(e.target.value || 0))} />
           </div>
-        )}
-
-        <div className="form-group">
-          <label className="form-label">BHK Type</label>
-          <select 
-            className="form-input" 
-            value={bedrooms} 
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              setBedrooms(n);
-              setBathrooms((prev) => (prev < n ? n : prev));
-            }}
-          >
-            {[1, 2, 3, 4].map((n) => (
-              <option key={n} value={n}>{n}BHK</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Bathrooms</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 40px', gap: '0.45rem', alignItems: 'center' }}>
-            <button
-              type='button'
-              className='btn btn-secondary'
-              onClick={() => setBathrooms((v) => Math.max(1, v - 1))}
-            >
-              -
-            </button>
-            <input className="form-input" type="number" min={1} max={6} value={bathrooms} onChange={(e) => setBathrooms(Number(e.target.value || bedrooms))} />
-            <button
-              type='button'
-              className='btn btn-secondary'
-              onClick={() => setBathrooms((v) => Math.min(6, v + 1))}
-            >
-              +
-            </button>
-          </div>
-          <div style={{ fontSize: '0.78rem', color: '#64748B' }}>(1 per bedroom recommended)</div>
-        </div>
-
-        <div style={{ fontSize: '0.8rem', color: '#666' }}>
-          Approx area: <strong>{Math.round(area)}</strong> sqft
-        </div>
-
-        <button type='button' className="btn btn-primary" disabled={!canProceed} onClick={() => setStep(2)}>
-          Next →
-        </button>
-      </div>
-
-      {step >= 2 && (
-        <div className="form-section">
-          <h3>Step 2: Preferences</h3>
-
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '0.65rem 0.75rem', background: '#f8fafc' }}>
-            <div style={{ fontSize: '0.82rem', color: '#475569' }}>Summary</div>
-            <div style={{ fontWeight: 700, color: '#0f172a' }}>
-              {dimensions.width} ft x {dimensions.length} ft • {bedrooms}BHK • {bathrooms} Bath
-            </div>
-          </div>
-
           <div className="form-group">
-            <label className="form-label">Layout Engine</label>
+            <label className="form-label">Length (ft)</label>
+            <input className="form-input" type="number" min={16} value={plotLength} disabled={mode !== 'dimensions'} onChange={(e) => setPlotLength(Number(e.target.value || 0))} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Total Sqft</label>
+            <input className="form-input" type="number" min={300} value={totalSqft} disabled={mode !== 'sqft'} onChange={(e) => setTotalSqft(Number(e.target.value || 0))} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Engine</label>
             <select className="form-input" value={engineMode} onChange={(e) => setEngineMode(e.target.value)}>
-              <option value="gnn_advanced">GNN Advanced (Recommended)</option>
-              <option value="standard">Standard Stable</option>
+              <option value="gnn_advanced">GNN</option>
+              <option value="standard">Standard</option>
             </select>
           </div>
+        </div>
 
+        <div className="form-compact-grid-4">
+          <div className="form-group">
+            <label className="form-label">BHK</label>
+            <select
+              className="form-input"
+              value={bedrooms}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                setBedrooms(n)
+                setBathrooms((prev) => (prev < n ? n : prev))
+              }}
+            >
+              {[1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>{n}BHK</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Bath</label>
+            <input className="form-input" type="number" min={1} max={6} value={bathrooms} onChange={(e) => setBathrooms(Number(e.target.value || bedrooms))} />
+          </div>
           <div className="form-group">
             <label className="form-label">Facing</label>
             <select className="form-input" value={facing} onChange={(e) => setFacing(e.target.value)}>
               {['east', 'north', 'west', 'south'].map((dir) => (
-                <option key={dir} value={dir}>
-                  {dir === 'east' ? 'East (Recommended)' : dir.charAt(0).toUpperCase() + dir.slice(1)}
-                </option>
+                <option key={dir} value={dir}>{dir.charAt(0).toUpperCase() + dir.slice(1)}</option>
               ))}
             </select>
           </div>
-
           <div className="form-group">
-            <label className="form-label">Vastu Compliance</label>
+            <label className="form-label">Vastu</label>
             <select className="form-input" value={vastu.toString()} onChange={(e) => setVastu(e.target.value === 'true')}>
               <option value="true">Yes</option>
               <option value="false">No</option>
             </select>
           </div>
+        </div>
 
+        <div className="form-compact-grid-4">
           <div className="form-group">
-            <label className="form-label">Extra Rooms (Multi-select)</label>
-            <select 
-              className="form-input" 
-              multiple 
-              value={extras}
-              onChange={(e) => {
-                const values = Array.from(e.target.selectedOptions, option => option.value);
-                setExtras(values);
-              }}
-              style={{ height: '100px', padding: '0.5rem' }}
-            >
-              {EXTRA_OPTIONS.map((opt) => (
-                <option key={opt.key} value={opt.key}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '4px' }}>Hold Ctrl/Cmd to select multiple</div>
+            <label className="form-label">City</label>
+            <input className="form-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.55rem' }}>
-            <button type='button' className='btn btn-secondary' onClick={() => setStep(1)}>← Back</button>
-            <button type='button' className="btn btn-primary" disabled={!canProceed || loading} onClick={submit}>
-              {loading ? 'Generating...' : 'Generate Floor Plan'}
-            </button>
+          <div className="form-group">
+            <label className="form-label">State</label>
+            <input className="form-input" value={stateName} onChange={(e) => setStateName(e.target.value)} placeholder="State" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Family</label>
+            <select className="form-input" value={familyType} onChange={(e) => setFamilyType(e.target.value)}>
+              <option value="nuclear">Nuclear</option>
+              <option value="joint-family">Joint</option>
+              <option value="working-couple">Working Couple</option>
+              <option value="elderly">Elderly</option>
+              <option value="rental">Rental</option>
+            </select>
+          </div>
+          <div className="form-group form-summary-chip">
+            <label className="form-label">Summary</label>
+            <div>{dimensions.width}x{dimensions.length} • {Math.round(area)} sqft</div>
           </div>
         </div>
-      )}
+
+        <div className="form-group">
+          <label className="form-label">Extra Rooms</label>
+          <div className="amenity-grid amenity-grid-dense">
+            {EXTRA_OPTIONS.map((opt) => {
+              const selected = extras.includes(opt.key)
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className={`amenity-item ${selected ? 'selected' : ''}`}
+                  onClick={() => toggleExtra(opt.key)}
+                >
+                  <input type="checkbox" readOnly checked={selected} />
+                  <span>{opt.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <button
+          type='button'
+          className="btn btn-primary"
+          disabled={!canProceed || loading}
+          onClick={submit}
+          style={{ width: '100%' }}
+        >
+          {loading ? 'Generating...' : 'Generate Floor Plan'}
+        </button>
+      </div>
     </div>
   )
 }

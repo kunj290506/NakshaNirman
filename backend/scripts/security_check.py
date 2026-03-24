@@ -39,10 +39,18 @@ def _check_env_files(tracked: list[str]) -> list[str]:
 
 def _check_default_secret_reference() -> list[str]:
     failures: list[str] = []
-    cfg = ROOT / "backend" / "config.py"
+    candidates = [
+        ROOT / "backend" / "app_config.py",
+        ROOT / "backend" / "config.py",  # backward compatibility
+    ]
+    cfg = next((p for p in candidates if p.exists()), None)
+    if cfg is None:
+        failures.append("Missing backend app config file; cannot verify SECRET_KEY guard.")
+        return failures
+
     text = cfg.read_text(encoding="utf-8", errors="ignore")
     if "APP_ENV" not in text or "Invalid SECRET_KEY for production" not in text:
-        failures.append("backend/config.py missing production SECRET_KEY guard.")
+        failures.append(f"{cfg.relative_to(ROOT)} missing production SECRET_KEY guard.")
     return failures
 
 

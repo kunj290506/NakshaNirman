@@ -1,0 +1,27 @@
+{
+  "count": 5000,
+  "seed": 11,
+  "direct": {
+    "success": 5000,
+    "errors": 0,
+    "accepted": 3629,
+    "error_types": {},
+    "sample_issue": {
+      "Bathroom/toilet in north-east": 1443,
+      "No window for habitable room Dining": 1048,
+      "Living below 120 sqft NBC minimum": 810,
+      "Master bedroom below 120 sqft NBC minimum": 392,
+      "Bedroom below 100 sqft NBC recommendation": 13
+    }
+  },
+  "api": {
+    "2xx": 0,
+    "4xx": 5000,
+    "5xx": 0
+  },
+  "gates": {
+    "direct_error_rate_le_0_01": true,
+    "api_5xx_rate_le_0_01": true
+  },
+  "all_gates_pass": true
+}

@@ -293,6 +293,56 @@ curl -X POST http://localhost:8000/api/architect/design \
 
 ---
 
+## Quality and Benchmarks
+
+The project now includes four quality layers:
+
+1. Unit and scenario tests for multi-agent orchestration.
+2. API endpoint tests for health and architect design routes.
+3. IIT-style benchmark gates for robustness and generalization.
+4. CI workflow that runs backend tests, benchmark gates, and frontend build.
+
+### Local Quality Commands
+
+```powershell
+# Backend tests (unit + API + benchmark tests)
+cd backend
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+```
+
+```powershell
+# Standalone benchmark report (with strict gate enforcement)
+cd backend
+.venv\Scripts\python.exe scripts\run_benchmark_report.py --strict --out reports\benchmark.json
+```
+
+```powershell
+# Arbitrary AI-input fuzz robustness test
+cd backend
+.venv\Scripts\python.exe scripts\fuzz_any_ai_inputs.py --count 5000 --seed 11 --strict --out reports\fuzz_report.json
+```
+
+```powershell
+# Frontend production build check
+cd frontend
+npm run build
+```
+
+### CI
+
+CI workflow file:
+
+- `.github/workflows/quality-ci.yml`
+
+It runs:
+
+1. Backend dependency install + test discovery.
+2. Benchmark report generation and strict gate check.
+3. Fuzz robustness gate for arbitrary AI-style payloads.
+4. Frontend dependency install + production build.
+
+---
+
 ## Contributing
 
 1. Fork the repository

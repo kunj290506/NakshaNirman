@@ -14,7 +14,7 @@ from app_config import EXPORT_DIR
 from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
 from services.graph_refiner import refine_layout_with_graph
-from services.hub_layout_engine import generate_ground_floor_plan, redesign_ground_floor_plan
+from services.multi_agent_orchestrator import generate_dynamic_layout
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/architect", tags=["architect"])
@@ -33,6 +33,10 @@ class ArchitectDesignRequest(BaseModel):
     engine_mode: str = Field("gnn_advanced")
     rooms: List[Dict[str, Any]] = Field(default_factory=list)
     project_id: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    family_type: Optional[str] = "nuclear"
+    previous_strategy: Optional[str] = None
 
 
 def _use_graph_refiner(engine_mode: Optional[str]) -> bool:
@@ -46,7 +50,10 @@ class ArchitectDesignResponse(BaseModel):
     dxf_url: Optional[str] = None
     design_score: Optional[Dict[str, Any]] = None
     architect_notes: List[str] = Field(default_factory=list)
+    architect_narrative: Optional[str] = None
     layout_type: Optional[str] = None
+    zoning_strategy: Optional[str] = None
+    project_id: Optional[str] = None
     error: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
 
@@ -85,12 +92,16 @@ async def architect_design(req: ArchitectDesignRequest):
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
 
     try:
-        result = generate_ground_floor_plan(input_data)
+        result = generate_dynamic_layout(input_data)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
         if _use_graph_refiner(req.engine_mode):
-            result = refine_layout_with_graph(result)
+            # Graph refinement is optional and non-blocking for the new multi-agent layout.
+            try:
+                result = refine_layout_with_graph(result)
+            except Exception:
+                logger.warning("Graph refinement skipped due to compatibility issue", exc_info=True)
 
         dxf_url = None
         if req.project_id:
@@ -99,9 +110,12 @@ async def architect_design(req: ArchitectDesignRequest):
         return ArchitectDesignResponse(
             layout=result,
             dxf_url=dxf_url,
-            design_score=result.get("design_score"),
+            design_score=result.get("design_score") or result.get("scores"),
             architect_notes=result.get("architect_notes", []),
-            layout_type=result.get("layout_type"),
+            architect_narrative=result.get("architect_narrative"),
+            layout_type=result.get("layout_type") or result.get("layout_strategy"),
+            zoning_strategy=result.get("zoning_strategy") or result.get("layout_strategy"),
+            project_id=req.project_id,
             warnings=result.get("warnings", []),
         )
     except HTTPException:
@@ -122,14 +136,18 @@ async def architect_redesign(req: ArchitectDesignRequest):
 
     input_data = req.dict() if hasattr(req, "dict") else req.model_dump()
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
+    input_data["previous_strategy"] = req.previous_strategy
 
     try:
-        result = redesign_ground_floor_plan(input_data)
+        result = generate_dynamic_layout(input_data)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
         if _use_graph_refiner(req.engine_mode):
-            result = refine_layout_with_graph(result)
+            try:
+                result = refine_layout_with_graph(result)
+            except Exception:
+                logger.warning("Graph refinement skipped due to compatibility issue", exc_info=True)
 
         dxf_url = None
         if req.project_id:
@@ -138,9 +156,12 @@ async def architect_redesign(req: ArchitectDesignRequest):
         return ArchitectDesignResponse(
             layout=result,
             dxf_url=dxf_url,
-            design_score=result.get("design_score"),
+            design_score=result.get("design_score") or result.get("scores"),
             architect_notes=result.get("architect_notes", []),
-            layout_type=result.get("layout_type"),
+            architect_narrative=result.get("architect_narrative"),
+            layout_type=result.get("layout_type") or result.get("layout_strategy"),
+            zoning_strategy=result.get("zoning_strategy") or result.get("layout_strategy"),
+            project_id=req.project_id,
             warnings=result.get("warnings", []),
         )
     except HTTPException:

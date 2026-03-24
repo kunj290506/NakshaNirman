@@ -1,0 +1,18 @@
+{
+  "runs": 4,
+  "total_cases_all_runs": 400000,
+  "direct_success_all_runs": 400000,
+  "direct_errors_all_runs": 0,
+  "api_5xx_all_runs": 0,
+  "accepted_mean": 92580,
+  "accepted_min": 92472,
+  "accepted_max": 92702,
+  "accepted_stddev": 89.23,
+  "all_runs_pass": true,
+  "files": [
+    "reports/realworld_llm_report_100k.json",
+    "reports/realworld_llm_report_100k_seed_31.json",
+    "reports/realworld_llm_report_100k_seed_41.json",
+    "reports/realworld_llm_report_100k_seed_51.json"
+  ]
+}

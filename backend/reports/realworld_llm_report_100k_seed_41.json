@@ -1,0 +1,19 @@
+{
+  "total_cases": 100000,
+  "direct": {
+    "success": 100000,
+    "errors": 0,
+    "accepted": 92472
+  },
+  "api": {
+    "2xx": 0,
+    "4xx": 100000,
+    "5xx": 0
+  },
+  "gates": {
+    "direct_no_crash": true,
+    "api_no_5xx": true,
+    "api_handled_rate_eq_1_00": true
+  },
+  "all_gates_pass": true
+}
