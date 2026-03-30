@@ -34,7 +34,6 @@ export default function FormInterface({ onGenerate, loading }) {
 
   const [bedrooms, setBedrooms] = useState(2)
   const [bathrooms, setBathrooms] = useState(2)
-  const [engineMode, setEngineMode] = useState('gnn_advanced')
   const [facing, setFacing] = useState('east')
   const [vastu, setVastu] = useState(true)
   const [extras, setExtras] = useState([])
@@ -74,7 +73,7 @@ export default function FormInterface({ onGenerate, loading }) {
       total_area: Math.round(dimensions.width * dimensions.length * 10) / 10,
       bedrooms: Number(bedrooms),
       bathrooms: Number(bathrooms || bedrooms),
-      engine_mode: engineMode,
+      engine_mode: 'gnn_advanced',
       facing,
       vastu,
       extras,
@@ -90,7 +89,7 @@ export default function FormInterface({ onGenerate, loading }) {
   return (
     <div className="form-compact-shell">
       <div className="form-section form-section-dense">
-        <h3>All Inputs</h3>
+        <h3>Basic Inputs</h3>
 
         <div className="form-group">
           <label className="form-label">Plot Input</label>
@@ -117,12 +116,9 @@ export default function FormInterface({ onGenerate, loading }) {
             <label className="form-label">Total Sqft</label>
             <input className="form-input" type="number" min={300} value={totalSqft} disabled={mode !== 'sqft'} onChange={(e) => setTotalSqft(Number(e.target.value || 0))} />
           </div>
-          <div className="form-group">
-            <label className="form-label">Engine</label>
-            <select className="form-input" value={engineMode} onChange={(e) => setEngineMode(e.target.value)}>
-              <option value="gnn_advanced">GNN</option>
-              <option value="standard">Standard</option>
-            </select>
+          <div className="form-group form-summary-chip">
+            <label className="form-label">Summary</label>
+            <div>{dimensions.width}x{dimensions.length} • {Math.round(area)} sqft</div>
           </div>
         </div>
 
@@ -164,30 +160,29 @@ export default function FormInterface({ onGenerate, loading }) {
           </div>
         </div>
 
-        <div className="form-compact-grid-4">
-          <div className="form-group">
-            <label className="form-label">City</label>
-            <input className="form-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+        <details className="advanced-options">
+          <summary>Optional Context (for smarter placement)</summary>
+          <div className="form-compact-grid-4" style={{ marginTop: '0.55rem' }}>
+            <div className="form-group">
+              <label className="form-label">City</label>
+              <input className="form-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">State</label>
+              <input className="form-input" value={stateName} onChange={(e) => setStateName(e.target.value)} placeholder="State" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Family</label>
+              <select className="form-input" value={familyType} onChange={(e) => setFamilyType(e.target.value)}>
+                <option value="nuclear">Nuclear</option>
+                <option value="joint-family">Joint</option>
+                <option value="working-couple">Working Couple</option>
+                <option value="elderly">Elderly</option>
+                <option value="rental">Rental</option>
+              </select>
+            </div>
           </div>
-          <div className="form-group">
-            <label className="form-label">State</label>
-            <input className="form-input" value={stateName} onChange={(e) => setStateName(e.target.value)} placeholder="State" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Family</label>
-            <select className="form-input" value={familyType} onChange={(e) => setFamilyType(e.target.value)}>
-              <option value="nuclear">Nuclear</option>
-              <option value="joint-family">Joint</option>
-              <option value="working-couple">Working Couple</option>
-              <option value="elderly">Elderly</option>
-              <option value="rental">Rental</option>
-            </select>
-          </div>
-          <div className="form-group form-summary-chip">
-            <label className="form-label">Summary</label>
-            <div>{dimensions.width}x{dimensions.length} • {Math.round(area)} sqft</div>
-          </div>
-        </div>
+        </details>
 
         <div className="form-group">
           <label className="form-label">Extra Rooms</label>

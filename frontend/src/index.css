@@ -3109,3 +3109,127 @@ a {
 .landing-fresh .footer-brand p {
     color: #1f1f1f;
 }
+
+/* ============================================================
+   Unified Monochrome UI (Landing + Workspace)
+   ============================================================ */
+
+.landing-fresh,
+.workspace-simple {
+    color: #111111;
+}
+
+.landing-fresh {
+    background: #f3f3f3;
+}
+
+.landing-fresh::before {
+    background: linear-gradient(180deg, #f3f3f3 0%, #efefef 100%);
+}
+
+.landing-fresh .landing-nav,
+.landing-fresh .hero-glass,
+.landing-fresh .section-glass,
+.landing-fresh .feature-card,
+.landing-fresh .cta-box,
+.landing-fresh .footer {
+    background: #ffffff !important;
+    border: 1px solid #d7d7d7 !important;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.landing-fresh .logo-icon,
+.landing-fresh .btn-primary,
+.workspace-simple .btn-primary,
+.workspace-simple .mode-tab.active {
+    background: #111111;
+    color: #ffffff;
+}
+
+.landing-fresh .btn-primary:hover,
+.workspace-simple .btn-primary:hover {
+    background: #000000;
+}
+
+.landing-fresh .section-badge,
+.landing-fresh .hero-meta-pill,
+.workspace-simple .workspace-health,
+.workspace-simple .preview-mode-tabs,
+.workspace-simple .mode-tab {
+    background: #f4f4f4;
+    border-color: #d4d4d4;
+    color: #333333;
+}
+
+.workspace-simple {
+    background: #f2f2f2;
+    gap: 0.75rem;
+}
+
+.workspace-simple-header,
+.workspace-simple-card {
+    border: 1px solid #d6d6d6;
+    border-radius: 12px;
+}
+
+.workspace-simple-subtitle,
+.workspace-simple-card > p {
+    color: #555555;
+}
+
+.workspace-simple .form-label {
+    color: #3a3a3a;
+    font-weight: 600;
+}
+
+.workspace-simple .form-input {
+    border-color: #d5d5d5;
+    color: #111111;
+    background: #ffffff;
+}
+
+.workspace-simple .form-input:focus {
+    border-color: #111111;
+    box-shadow: none;
+}
+
+.workspace-simple .amenity-item {
+    border-color: #d5d5d5;
+    background: #ffffff;
+}
+
+.workspace-simple .amenity-item.selected {
+    border-color: #111111;
+    background: #f4f4f4;
+}
+
+.workspace-simple .advanced-options {
+    border: 1px solid #d9d9d9;
+    border-radius: 10px;
+    padding: 0.5rem 0.6rem 0.6rem;
+    background: #fafafa;
+}
+
+.workspace-simple .advanced-options summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #2f2f2f;
+}
+
+.workspace-simple .advanced-options summary::-webkit-details-marker {
+    display: none;
+}
+
+.workspace-simple .advanced-options summary::after {
+    content: '+';
+    float: right;
+    color: #666666;
+}
+
+.workspace-simple .advanced-options[open] summary::after {
+    content: '-';
+}

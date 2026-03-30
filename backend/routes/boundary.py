@@ -1,4 +1,4 @@
-"""Boundary upload and processing routes — Phase 1.
+"""Boundary upload and processing routes — Phase 1 with Security.
 
 Endpoints:
   POST /api/upload-boundary        — Upload DXF/image, get file_id
@@ -9,6 +9,7 @@ Endpoints:
 
 import os
 import uuid
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,9 +21,11 @@ from services.boundary import (
     compute_buildable_footprint,
     generate_boundary_preview,
 )
+from middleware.security import validate_file_upload, sanitize_string, log_security_event
 from app_config import UPLOAD_DIR, EXPORT_DIR
 import json
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["boundary"])
 
 
@@ -36,17 +39,32 @@ async def upload_boundary(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Upload a boundary file (.dxf or image).
+    Upload a boundary file (.dxf or image) with security validation.
 
     - If *project_id* is provided the upload is linked to that project.
     - Returns a **file_id** that identifies this upload for subsequent calls
       (`/extract-boundary`, `/buildable-footprint`).
     """
+    # Security: Validate file upload
+    try:
+        await validate_file_upload(file)
+    except HTTPException as e:
+        log_security_event(
+            "file_upload_rejected",
+            {"filename": file.filename, "reason": e.detail},
+            severity="WARNING"
+        )
+        raise
+    
+    # Sanitize inputs
+    if project_id:
+        project_id = sanitize_string(project_id, max_length=64)
+    
     # Determine file type
-    filename = file.filename or "upload"
+    filename = sanitize_string(file.filename or "upload", max_length=255)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
-    image_extensions = ("png", "jpg", "jpeg", "bmp", "tiff", "tif", "gif", "webp")
+    image_extensions = ("png", "jpg", "jpeg", "bmp", "tiff", "tif")
 
     if ext in image_extensions:
         file_type = "image"
@@ -65,13 +83,21 @@ async def upload_boundary(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-    # Save file to disk
+    # Save file to disk with secure filename
     file_id = str(uuid.uuid4())
-    save_path = os.path.join(str(UPLOAD_DIR), f"{file_id}.{ext}")
+    safe_filename = f"{file_id}.{ext}"
+    save_path = os.path.join(str(UPLOAD_DIR), safe_filename)
 
     content = await file.read()
     with open(save_path, "wb") as f:
         f.write(content)
+    
+    logger.info(f"File uploaded: {safe_filename} ({len(content)} bytes)")
+    log_security_event(
+        "file_uploaded",
+        {"file_id": file_id, "type": file_type, "size": len(content)},
+        severity="INFO"
+    )
 
     # Persist record (polygon extraction is deferred to /extract-boundary)
     upload = BoundaryUpload(

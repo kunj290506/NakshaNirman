@@ -89,6 +89,37 @@ def _norm_extras(value: Any) -> List[str]:
     return out
 
 
+def _norm_constraints(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    items: List[Any]
+    if isinstance(value, dict):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        room = str(item.get("room") or "").strip().lower()
+        intent = str(item.get("intent") or "").strip().lower()
+        if not room or not intent:
+            continue
+        normalized = {
+            "room": room,
+            "intent": intent,
+            "band": item.get("band"),
+            "forbid_adjacent": list(item.get("forbid_adjacent") or []),
+            "prefer_walls": list(item.get("prefer_walls") or []),
+            "note": str(item.get("note") or "")[:200],
+        }
+        out.append(normalized)
+    return out
+
+
 def _norm_key(value: str) -> str:
     return "".join(ch for ch in str(value).lower() if ch.isalnum())
 
@@ -190,6 +221,16 @@ def _sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     city_raw = _pick_alias(raw, ["city", "location_city", "town"])
     state_raw = _pick_alias(raw, ["state", "province", "region", "location_state"])
     prev_strategy_raw = _pick_alias(raw, ["previous_strategy", "previousstrategy", "last_strategy", "retry_strategy"])
+    constraints_raw = _pick_alias(
+        raw,
+        [
+            "placement_constraints",
+            "placementconstraints",
+            "chat_constraints",
+            "design_constraints",
+            "preferences",
+        ],
+    )
 
     out = dict(raw)
     out["plot_width"] = _to_float(width_raw if width_raw is not None else parsed_w, 0.0)
@@ -206,6 +247,7 @@ def _sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     out["state"] = str(state_raw or "").strip()[:64]
     prev_strategy = prev_strategy_raw
     out["previous_strategy"] = str(prev_strategy).strip()[:64] if prev_strategy is not None else None
+    out["placement_constraints"] = _norm_constraints(constraints_raw)
 
     # If width/length are not meaningful, rely on total area path.
     if out["plot_width"] <= 0 or out["plot_length"] <= 0:
@@ -325,7 +367,11 @@ def _corner_analysis() -> List[Dict[str, Any]]:
     ]
 
 
-def agent_plot_intelligence(payload: Dict[str, Any]) -> Dict[str, Any]:
+def agent_plot_intelligence(
+    payload: Dict[str, Any],
+    band_profile: Optional[Dict[str, float]] = None,
+    spine_override: Optional[str] = None,
+) -> Dict[str, Any]:
     width, length, total_area = _derive_plot(payload.get("plot_width"), payload.get("plot_length"), payload.get("total_area"))
     facing = _norm_facing(payload.get("facing"))
     setbacks = _setbacks(total_area)
@@ -345,15 +391,35 @@ def agent_plot_intelligence(payload: Dict[str, Any]) -> Dict[str, Any]:
     if shorter <= 0:
         raise ValueError("Invalid usable dimensions after setbacks")
 
-    aspect_ratio = _r2(longer / shorter)
+    aspect_ratio = _r2(usable_width / max(usable_length, 0.01))
     if aspect_ratio < 1.0:
-        raise ValueError("Aspect ratio invalid (< 1.0). Check plot dimensions")
+        aspect_ratio = _r2(1.0 / max(aspect_ratio, 0.01))
+
+    ratio_w_l = usable_width / max(usable_length, 0.01)
+    if ratio_w_l < 0.65:
+        plot_class = "narrow-deep"
+        recommended_spine = "horizontal"
+    elif ratio_w_l > 1.5:
+        plot_class = "wide-shallow"
+        recommended_spine = "vertical"
+    elif 0.8 <= ratio_w_l <= 1.2:
+        plot_class = "near-square"
+        recommended_spine = "horizontal"
+    else:
+        plot_class = "elongated"
+        recommended_spine = "horizontal" if usable_length >= usable_width else "vertical"
+
+    primary_spine = spine_override if spine_override in {"horizontal", "vertical"} else recommended_spine
 
     seed = int(round(width + length))
     rng = random.Random(seed)
-    public_pct = 0.30 + (rng.random() * 0.05)
-    service_pct = 0.20 + (rng.random() * 0.05)
-    private_pct = 1.0 - public_pct - service_pct
+    if band_profile:
+        public_pct = float(band_profile.get("public", 0.32))
+        service_pct = float(band_profile.get("service", 0.20))
+    else:
+        public_pct = 0.28 + (rng.random() * 0.07)
+        service_pct = 0.18 + (rng.random() * 0.04)
+    private_pct = max(0.40, 1.0 - public_pct - service_pct)
 
     public_depth = _r2(usable_length * public_pct)
     service_depth = _r2(usable_length * service_pct)
@@ -363,20 +429,33 @@ def agent_plot_intelligence(payload: Dict[str, Any]) -> Dict[str, Any]:
         private_depth = _r2(private_depth - (depth_total - usable_length))
 
     climate, vent_axis, climate_strategy = _climate_zone(payload.get("city", ""), payload.get("state", ""))
-    dominant_axis = "horizontal" if usable_width >= usable_length else "vertical"
+    dominant_axis = primary_spine
     road_side = facing
     entry_wall = road_side
-    plot_shape = "rectangular" if not payload.get("boundary_polygon") else "irregular"
-    if aspect_ratio > 1.5:
-        layout_hint = "linear_spine"
+    plot_shape = plot_class
+    if plot_class == "narrow-deep":
+        layout_hint = "rear_private_spine"
+    elif plot_class == "wide-shallow":
+        layout_hint = "side_private_spine"
+    elif plot_class == "near-square":
+        layout_hint = "courtyard_hub"
     else:
-        layout_hint = "cluster_hub"
+        layout_hint = "elongated_spine"
 
     parking_feasible = (usable_width if road_side in {"north", "south"} else usable_length) >= 18.0
     grid = _r2(min(15.0, max(10.0, longer / max(round(longer / 12.0), 1))))
 
     constraints.append("At least two opposite-wall windows required for habitable rooms")
     constraints.append("Brahmasthan must remain open/light; no toilet, kitchen, or heavy loads")
+
+    corners = {
+        "south_west": {"x": 0.0, "y": 0.0},
+        "south_east": {"x": usable_width, "y": 0.0},
+        "north_west": {"x": 0.0, "y": usable_length},
+        "north_east": {"x": usable_width, "y": usable_length},
+    }
+
+    strategy_name = f"{plot_class}_{primary_spine}_spine"
 
     return {
         "plot_shape": plot_shape,
@@ -385,6 +464,21 @@ def agent_plot_intelligence(payload: Dict[str, Any]) -> Dict[str, Any]:
         "dominant_axis": dominant_axis,
         "aspect_ratio": aspect_ratio,
         "layout_hint": layout_hint,
+        "strategy_name": strategy_name,
+        "spatial_contract": {
+            "plot_class": plot_class,
+            "primary_spine": primary_spine,
+            "band_ratios": {
+                "public": _r2(public_pct),
+                "service": _r2(service_pct),
+                "private": _r2(private_pct),
+            },
+            "corner_coordinates": corners,
+            "usable_dimensions": {
+                "width": usable_width,
+                "length": usable_length,
+            },
+        },
         "plot": {
             "width": width,
             "length": length,
@@ -549,14 +643,280 @@ def _ensure_program_rules(rooms: List[Dict[str, Any]], bhk: int, bathrooms: int,
     for room in out:
         if room["type"] == "kitchen":
             room["must_touch_exterior"] = True
-            room["vastu_zone"] = "south_east"
+            room["vastu_zone"] = str(room.get("vastu_zone") or "south_east")
         if room["type"] == "master_bedroom":
-            room["vastu_zone"] = "south_west"
+            room["vastu_zone"] = str(room.get("vastu_zone") or "south_west")
         if room["type"] == "pooja":
             room["vastu_zone"] = "north_east"
             room["must_touch_exterior"] = True
 
     return out
+
+
+def _apply_placement_constraints(
+    rooms: List[Dict[str, Any]],
+    constraints: List[Dict[str, Any]],
+) -> List[str]:
+    notes: List[str] = []
+    if not constraints:
+        return notes
+
+    def _find_room(room_type: str) -> Optional[Dict[str, Any]]:
+        for room in rooms:
+            if room.get("type") == room_type:
+                return room
+        return None
+
+    for c in constraints:
+        room = _find_room(str(c.get("room") or ""))
+        if not room:
+            continue
+        intent = str(c.get("intent") or "")
+        band = c.get("band")
+        if isinstance(band, int) and 1 <= band <= 3:
+            room["band"] = int(band)
+            room["zone"] = "public" if band == 1 else "service" if band == 2 else "private"
+            notes.append(f"Constraint applied: {room['id']} moved to band {band}")
+
+        if intent == "rear_garden_preference":
+            room["band"] = 3
+            room["zone"] = "private"
+            walls = set(c.get("prefer_walls") or [])
+            room["preferred_exposure"] = sorted(walls) if walls else ["north", "rear"]
+            notes.append(f"Constraint applied: {room['id']} prefers rear/north exposure")
+
+        forbidden = {str(v).strip().lower() for v in (c.get("forbid_adjacent") or [])}
+        if forbidden:
+            room["forbid_adjacent"] = sorted(forbidden)
+            notes.append(f"Constraint applied: {room['id']} forbids adjacency with {', '.join(sorted(forbidden))}")
+
+    return notes
+
+
+def _dynamic_kitchen_preferences(
+    spatial_brief: Dict[str, Any],
+    payload: Dict[str, Any],
+    constraints: List[Dict[str, Any]],
+    seed: int,
+) -> Tuple[int, str, List[str]]:
+    facing = str(spatial_brief.get("road_side") or "east")
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+    family = _norm_family(payload.get("family_type"))
+    vastu = bool(payload.get("vastu", True))
+
+    rear_wall = {
+        "north": "south",
+        "south": "north",
+        "east": "west",
+        "west": "east",
+    }.get(facing, "north")
+
+    for c in constraints:
+        if str(c.get("room") or "") == "kitchen" and str(c.get("intent") or "") == "rear_garden_preference":
+            pref_walls = [str(w).lower() for w in (c.get("prefer_walls") or [])]
+            if not pref_walls:
+                pref_walls = [rear_wall]
+            return 3, "rear_service", pref_walls
+
+    if vastu:
+        band = 2 if family != "joint-family" else 3
+        return band, "south_east", ["south", "east"]
+
+    # Relaxed mode: adapt by facing + climate instead of fixed south-east.
+    variant = seed % 2
+    if climate in {"warm_humid", "moderate"}:
+        zone_map = {
+            "east": ["north", "south"],
+            "west": ["north_west", "south_west"],
+            "north": ["west", "south_west"],
+            "south": ["east", "north_east"],
+        }
+    else:
+        zone_map = {
+            "east": ["south", "south_west"],
+            "west": ["south_east", "south"],
+            "north": ["west", "south"],
+            "south": ["east", "north"],
+        }
+
+    zone_opts = zone_map.get(facing, ["south", "east"])
+    kitchen_zone = zone_opts[variant % len(zone_opts)]
+    band = 2 if family in {"nuclear", "working-couple", "elderly"} else (3 if variant else 2)
+
+    wall_hint = {
+        "north": ["north"],
+        "south": ["south"],
+        "east": ["east"],
+        "west": ["west"],
+        "north_east": ["north", "east"],
+        "north_west": ["north", "west"],
+        "south_east": ["south", "east"],
+        "south_west": ["south", "west"],
+    }.get(kitchen_zone, [rear_wall])
+    return band, kitchen_zone, wall_hint
+
+
+def _dynamic_master_preferences(spatial_brief: Dict[str, Any], payload: Dict[str, Any], seed: int) -> Tuple[int, str]:
+    family = _norm_family(payload.get("family_type"))
+    vastu = bool(payload.get("vastu", True))
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+
+    band = 2 if family == "elderly" else 3
+    if vastu:
+        return band, "south_west"
+
+    options = ["west", "south_west", "north_west"] if climate in {"warm_humid", "moderate"} else ["south_west", "west"]
+    return band, options[seed % len(options)]
+
+
+def _dynamic_living_zone(spatial_brief: Dict[str, Any], payload: Dict[str, Any], seed: int) -> str:
+    facing = str(spatial_brief.get("road_side") or "east")
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+    family = _norm_family(payload.get("family_type"))
+    if climate == "warm_humid":
+        living_opts = {
+            "east": ["east", "north_east"],
+            "west": ["north_west", "west"],
+            "north": ["north", "north_east"],
+            "south": ["east", "south_east"],
+        }
+    else:
+        living_opts = {
+            "east": ["north", "east"],
+            "west": ["south", "west"],
+            "north": ["east", "north"],
+            "south": ["east", "south"],
+        }
+    picks = living_opts.get(facing, ["east", "north"])
+    if family == "joint-family":
+        return picks[0]
+    return picks[seed % len(picks)]
+
+
+def _dynamic_dining_preferences(
+    spatial_brief: Dict[str, Any],
+    payload: Dict[str, Any],
+    strategy: str,
+    seed: int,
+) -> Tuple[int, str, List[str]]:
+    family = _norm_family(payload.get("family_type"))
+    facing = str(spatial_brief.get("road_side") or "east")
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+
+    if family == "joint-family":
+        return 1, "center", ["living", "kitchen"]
+
+    if strategy in {"linear_spine", "elongated_spine", "central_corridor"}:
+        band = 2
+    else:
+        band = 1 if (seed % 2 == 0) else 2
+
+    zone_map = {
+        "east": ["east", "center"],
+        "west": ["west", "center"],
+        "north": ["north", "center"],
+        "south": ["south", "center"],
+    }
+    zone_opts = zone_map.get(facing, ["center"])
+    if climate in {"warm_humid", "moderate"}:
+        zone = zone_opts[0]
+    else:
+        zone = zone_opts[seed % len(zone_opts)]
+    return band, zone, ["living", "kitchen"]
+
+
+def _dynamic_bedroom_preferences(
+    spatial_brief: Dict[str, Any],
+    payload: Dict[str, Any],
+    idx: int,
+    seed: int,
+) -> Tuple[int, str]:
+    family = _norm_family(payload.get("family_type"))
+    facing = str(spatial_brief.get("road_side") or "east")
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+    vastu = bool(payload.get("vastu", True))
+
+    band = 2 if family == "elderly" else 3
+    if vastu:
+        opts = ["north_west", "west", "north"]
+        return band, opts[idx % len(opts)]
+
+    if climate in {"warm_humid", "moderate"}:
+        by_facing = {
+            "east": ["north", "north_west", "west"],
+            "west": ["north_west", "north", "south_west"],
+            "north": ["north", "west", "east"],
+            "south": ["east", "north_east", "west"],
+        }
+    else:
+        by_facing = {
+            "east": ["west", "north_west", "south_west"],
+            "west": ["west", "south_west", "north_west"],
+            "north": ["west", "south", "north_west"],
+            "south": ["east", "north", "south_east"],
+        }
+    opts = by_facing.get(facing, ["north_west", "west"])
+    return band, opts[(seed + idx) % len(opts)]
+
+
+def _dynamic_bathroom_preferences(
+    spatial_brief: Dict[str, Any],
+    payload: Dict[str, Any],
+    idx: int,
+    seed: int,
+) -> Tuple[int, str]:
+    family = _norm_family(payload.get("family_type"))
+    facing = str(spatial_brief.get("road_side") or "east")
+    vastu = bool(payload.get("vastu", True))
+
+    if family == "elderly":
+        band = 2
+    else:
+        band = 2 if idx == 0 else (2 if (seed + idx) % 2 == 0 else 3)
+
+    if vastu:
+        opts = ["north_west", "west", "south"]
+        return band, opts[idx % len(opts)]
+
+    by_facing = {
+        "east": ["west", "south_west", "north_west"],
+        "west": ["east", "south_east", "north_east"],
+        "north": ["west", "south_west", "south"],
+        "south": ["east", "north_east", "north"],
+    }
+    opts = by_facing.get(facing, ["west", "south"])
+    # Still avoid north-east in relaxed mode for practical hygiene preference.
+    opts = [z for z in opts if z != "north_east"] or ["west", "south"]
+    return band, opts[(seed + idx) % len(opts)]
+
+
+def _dynamic_extra_preferences(
+    extra_type: str,
+    spatial_brief: Dict[str, Any],
+    payload: Dict[str, Any],
+    seed: int,
+) -> Tuple[int, str, bool]:
+    family = _norm_family(payload.get("family_type"))
+    facing = str(spatial_brief.get("road_side") or "east")
+    climate = str(spatial_brief.get("climate_zone") or "moderate")
+    vastu = bool(payload.get("vastu", True))
+
+    if extra_type == "pooja":
+        return 1 if family != "elderly" else 2, "north_east", True
+    if extra_type == "study":
+        zone = "north" if climate in {"warm_humid", "moderate"} else "west"
+        return 2 if family == "working-couple" else 3, zone, True
+    if extra_type == "store":
+        return 2, "north_west" if vastu else "west", False
+    if extra_type == "balcony":
+        zone_by_facing = {"east": "east", "west": "west", "north": "north", "south": "south"}
+        return 1, zone_by_facing.get(facing, "north"), True
+    if extra_type == "garage":
+        if vastu:
+            return 1, "north_west" if (seed % 2 == 0) else "south_east", True
+        zone_by_facing = {"east": "east", "west": "west", "north": "north_west", "south": "south_east"}
+        return 1, zone_by_facing.get(facing, "west"), True
+    return 2, "center", False
 
 
 def agent_program_architect(spatial_brief: Dict[str, Any], payload: Dict[str, Any], forced_strategy: Optional[str] = None) -> Dict[str, Any]:
@@ -569,7 +929,7 @@ def agent_program_architect(spatial_brief: Dict[str, Any], payload: Dict[str, An
     aspect_ratio = float(spatial_brief["aspect_ratio"])
     seed = int(round(spatial_brief["plot"]["width"] + spatial_brief["plot"]["length"]))
 
-    strategy = forced_strategy or _strategy_for(aspect_ratio, bhk, seed)
+    strategy = forced_strategy or spatial_brief.get("strategy_name") or _strategy_for(aspect_ratio, bhk, seed)
     circulation_type = "hub" if strategy in {"hub", "butterfly", "cluster"} else "linear"
 
     allocations: Dict[str, float] = {}
@@ -602,50 +962,121 @@ def agent_program_architect(spatial_brief: Dict[str, Any], payload: Dict[str, An
     if bhk >= 2:
         allocations["dining"] = max(allocations["dining"], 70.0)
 
-    facing = spatial_brief.get("road_side", "east")
-    if facing == "east":
-        living_zone = "north"
-        kitchen_zone = "south_east"
-    elif facing == "north":
-        living_zone = "east"
-        kitchen_zone = "west"
-    elif facing == "west":
-        living_zone = "south"
-        kitchen_zone = "south_west"
-    else:
-        living_zone = "center"
-        kitchen_zone = "east"
+    constraints = _norm_constraints(payload.get("placement_constraints"))
+    living_zone = _dynamic_living_zone(spatial_brief, payload, seed)
+    dining_band, dining_zone, dining_adj = _dynamic_dining_preferences(spatial_brief, payload, strategy, seed)
+    kitchen_band, kitchen_zone, kitchen_wall_pref = _dynamic_kitchen_preferences(
+        spatial_brief,
+        payload,
+        constraints,
+        seed,
+    )
+    master_band, master_zone = _dynamic_master_preferences(spatial_brief, payload, seed)
 
     rooms: List[Dict[str, Any]] = []
     rooms.append(_build_room("living", "living", allocations["living"], seed, "public", 1, living_zone, True, ["dining", "kitchen"], 10))
-    rooms.append(_build_room("dining", "dining", allocations["dining"], seed + 1, "public", 1, "east", False, ["living", "kitchen"], 9))
-    rooms.append(_build_room("kitchen", "kitchen", allocations["kitchen"], seed + 2, "service", 2, kitchen_zone, True, ["dining"], 10))
-    rooms.append(_build_room("master", "master_bedroom", allocations["master_bedroom"], seed + 3, "private", 3, "south_west", True, ["bath_1"], 10))
+    rooms.append(
+        _build_room(
+            "dining",
+            "dining",
+            allocations["dining"],
+            seed + 1,
+            "public" if dining_band == 1 else "service",
+            dining_band,
+            dining_zone,
+            True,
+            dining_adj,
+            9,
+        )
+    )
+    rooms.append(
+        _build_room(
+            "kitchen",
+            "kitchen",
+            allocations["kitchen"],
+            seed + 2,
+            "service" if kitchen_band == 2 else "private",
+            kitchen_band,
+            kitchen_zone,
+            True,
+            ["dining"],
+            10,
+        )
+    )
+    rooms.append(
+        _build_room(
+            "master",
+            "master_bedroom",
+            allocations["master_bedroom"],
+            seed + 3,
+            "service" if master_band == 2 else "private",
+            master_band,
+            master_zone,
+            True,
+            ["bath_1"],
+            10,
+        )
+    )
+    rooms[-2]["preferred_exposure"] = list(kitchen_wall_pref)
 
     for idx in range(other_bedrooms):
         rid = f"bed_{idx + 1}"
-        rooms.append(_build_room(rid, "bedroom", allocations["bedroom"], seed + 10 + idx, "private", 3, "north_west", True, [f"bath_{min(idx + 2, bathrooms)}"], 8))
+        bed_band, bed_zone = _dynamic_bedroom_preferences(spatial_brief, payload, idx, seed)
+        rooms.append(
+            _build_room(
+                rid,
+                "bedroom",
+                allocations["bedroom"],
+                seed + 10 + idx,
+                "service" if bed_band == 2 else "private",
+                bed_band,
+                bed_zone,
+                True,
+                [f"bath_{min(idx + 2, bathrooms)}"],
+                8,
+            )
+        )
 
     for idx in range(bathrooms):
         rid = f"bath_{idx + 1}"
-        bathroom_zone = "north_west" if idx % 2 == 0 else "west"
-        rooms.append(_build_room(rid, "bathroom", allocations["bathroom"], seed + 20 + idx, "service", 2 if idx == 0 else 3, bathroom_zone, True, [], 7))
+        bath_band, bathroom_zone = _dynamic_bathroom_preferences(spatial_brief, payload, idx, seed)
+        rooms.append(
+            _build_room(
+                rid,
+                "bathroom",
+                allocations["bathroom"],
+                seed + 20 + idx,
+                "service" if bath_band == 2 else "private",
+                bath_band,
+                bathroom_zone,
+                True,
+                [],
+                7,
+            )
+        )
 
     if "pooja" in allocations:
-        rooms.append(_build_room("pooja", "pooja", allocations["pooja"], seed + 30, "private", 1, "north_east", True, ["living"], 8))
+        pb, pz, pe = _dynamic_extra_preferences("pooja", spatial_brief, payload, seed)
+        rooms.append(_build_room("pooja", "pooja", allocations["pooja"], seed + 30, "public" if pb == 1 else "service", pb, pz, pe, ["living"], 8))
     if "study" in allocations:
-        rooms.append(_build_room("study", "study", allocations["study"], seed + 31, "private", 3, "west", True, ["master"], 7))
+        sb, sz, se = _dynamic_extra_preferences("study", spatial_brief, payload, seed)
+        rooms.append(_build_room("study", "study", allocations["study"], seed + 31, "service" if sb == 2 else "private", sb, sz, se, ["master"], 7))
     if "store" in allocations:
-        rooms.append(_build_room("store", "store", allocations["store"], seed + 32, "service", 2, "north_west", False, ["kitchen"], 4))
+        stb, stz, ste = _dynamic_extra_preferences("store", spatial_brief, payload, seed)
+        rooms.append(_build_room("store", "store", allocations["store"], seed + 32, "service" if stb == 2 else "private", stb, stz, ste, ["kitchen"], 4))
     if "balcony" in allocations:
-        rooms.append(_build_room("balcony", "balcony", allocations["balcony"], seed + 33, "public", 1, "north", True, ["living"], 3))
+        bb, bz, be = _dynamic_extra_preferences("balcony", spatial_brief, payload, seed)
+        rooms.append(_build_room("balcony", "balcony", allocations["balcony"], seed + 33, "public", bb, bz, be, ["living"], 3))
     if "garage" in allocations:
-        rooms.append(_build_room("garage", "garage", allocations["garage"], seed + 34, "service", 1, "north_west", True, ["living"], 6))
+        gb, gz, ge = _dynamic_extra_preferences("garage", spatial_brief, payload, seed)
+        rooms.append(_build_room("garage", "garage", allocations["garage"], seed + 34, "service" if gb == 2 else "public", gb, gz, ge, ["living"], 6))
 
     if family == "joint-family":
         has_formal_dining = any(r["type"] == "dining" for r in rooms)
         if not has_formal_dining:
             rooms.append(_build_room("dining", "dining", max(90.0, usable_area * 0.08), seed + 35, "public", 1, "east", False, ["living", "kitchen"], 9))
+        if not any(r["type"] == "pooja" for r in rooms):
+            rooms.append(_build_room("pooja_jf", "pooja", max(20.0, usable_area * 0.025), seed + 36, "public", 1, "north_east", True, ["living"], 8))
     if family == "elderly":
         circulation_type = "linear"
 
@@ -667,6 +1098,8 @@ def agent_program_architect(spatial_brief: Dict[str, Any], payload: Dict[str, An
         usable_area=usable_area,
     )
 
+    constraint_notes = _apply_placement_constraints(rooms, constraints)
+
     explanation = (
         f"Strategy '{strategy}' fits a {aspect_ratio:.2f} aspect ratio plot with {bhk}BHK requirements. "
         f"The program prioritizes living-kitchen-dining flow, Vastu alignment, and climate-aware exterior exposure."
@@ -676,6 +1109,7 @@ def agent_program_architect(spatial_brief: Dict[str, Any], payload: Dict[str, An
         "layout_strategy": strategy,
         "circulation_type": circulation_type,
         "rooms": rooms,
+        "constraint_notes": constraint_notes,
         "explanation": explanation,
     }
 
@@ -715,11 +1149,37 @@ def agent_geometry_engine(
     usable_width = float(spatial_brief["plot"]["usable_width"])
     usable_length = float(spatial_brief["plot"]["usable_length"])
     bands = spatial_brief["zone_bands"]
-    band_y = {
-        1: (0.0, bands["public"]),
-        2: (bands["public"], bands["public"] + bands["service"]),
-        3: (bands["public"] + bands["service"], usable_length),
-    }
+    road_side = str(spatial_brief.get("road_side") or "east")
+
+    # Facing-aware bands: public must sit near road-facing edge, private farthest away.
+    if road_side == "south":
+        band_rects = {
+            1: {"x": 0.0, "y": 0.0, "w": usable_width, "h": bands["public"]},
+            2: {"x": 0.0, "y": bands["public"], "w": usable_width, "h": bands["service"]},
+            3: {"x": 0.0, "y": bands["public"] + bands["service"], "w": usable_width, "h": max(0.5, usable_length - bands["public"] - bands["service"])},
+        }
+    elif road_side == "north":
+        p1 = max(0.0, usable_length - bands["public"])
+        p2 = max(0.0, p1 - bands["service"])
+        band_rects = {
+            1: {"x": 0.0, "y": p1, "w": usable_width, "h": bands["public"]},
+            2: {"x": 0.0, "y": p2, "w": usable_width, "h": bands["service"]},
+            3: {"x": 0.0, "y": 0.0, "w": usable_width, "h": max(0.5, p2)},
+        }
+    elif road_side == "west":
+        band_rects = {
+            1: {"x": 0.0, "y": 0.0, "w": bands["public"], "h": usable_length},
+            2: {"x": bands["public"], "y": 0.0, "w": bands["service"], "h": usable_length},
+            3: {"x": bands["public"] + bands["service"], "y": 0.0, "w": max(0.5, usable_width - bands["public"] - bands["service"]), "h": usable_length},
+        }
+    else:  # east
+        p1 = max(0.0, usable_width - bands["public"])
+        p2 = max(0.0, p1 - bands["service"])
+        band_rects = {
+            1: {"x": p1, "y": 0.0, "w": bands["public"], "h": usable_length},
+            2: {"x": p2, "y": 0.0, "w": bands["service"], "h": usable_length},
+            3: {"x": 0.0, "y": 0.0, "w": max(0.5, p2), "h": usable_length},
+        }
 
     grouped: Dict[int, List[Dict[str, Any]]] = {1: [], 2: [], 3: []}
     for room in room_program["rooms"]:
@@ -734,92 +1194,247 @@ def agent_geometry_engine(
 
     placed: List[Dict[str, Any]] = []
     adjustments: List[str] = []
+    primary_spine = str(spatial_brief.get("spatial_contract", {}).get("primary_spine") or "horizontal")
+
+    def _clamp_room(room: Dict[str, Any]) -> None:
+        room["x"] = _r2(max(0.0, min(usable_width - room["width"], _snap_half(room["x"]))))
+        room["y"] = _r2(max(0.0, min(usable_length - room["height"], _snap_half(room["y"]))))
+        room["area"] = _r2(room["width"] * room["height"])
+
+    def _sum_overlap(candidate: Dict[str, Any], others: List[Dict[str, Any]]) -> float:
+        return sum(_overlap_area(candidate, other) for other in others if other["id"] != candidate["id"])
+
+    def _zone_target(zone: str, y1: float, y2: float) -> Tuple[float, float]:
+        z = str(zone or "center").lower()
+        xm = usable_width * 0.5
+        ym = (y1 + y2) * 0.5
+        x_map = {
+            "west": usable_width * 0.18,
+            "north_west": usable_width * 0.18,
+            "south_west": usable_width * 0.18,
+            "east": usable_width * 0.82,
+            "north_east": usable_width * 0.82,
+            "south_east": usable_width * 0.82,
+            "center": usable_width * 0.5,
+            "north": usable_width * 0.5,
+            "south": usable_width * 0.5,
+            "rear_service": usable_width * 0.5,
+        }
+        y_map = {
+            "south": y1 + (y2 - y1) * 0.18,
+            "south_west": y1 + (y2 - y1) * 0.18,
+            "south_east": y1 + (y2 - y1) * 0.18,
+            "center": y1 + (y2 - y1) * 0.5,
+            "east": y1 + (y2 - y1) * 0.5,
+            "west": y1 + (y2 - y1) * 0.5,
+            "north": y1 + (y2 - y1) * 0.82,
+            "north_west": y1 + (y2 - y1) * 0.82,
+            "north_east": y1 + (y2 - y1) * 0.82,
+            "rear_service": y1 + (y2 - y1) * 0.82,
+        }
+        return x_map.get(z, xm), y_map.get(z, ym)
+
+    def _touches_exterior_rect(rect: Dict[str, float]) -> bool:
+        rx1 = rect["x"]
+        ry1 = rect["y"]
+        rx2 = rect["x"] + rect["w"]
+        ry2 = rect["y"] + rect["h"]
+        return (
+            abs(rx1 - 0.0) < 0.01
+            or abs(rx2 - usable_width) < 0.01
+            or abs(ry1 - 0.0) < 0.01
+            or abs(ry2 - usable_length) < 0.01
+        )
+
+    def _rect_exterior_walls(rect: Dict[str, float]) -> List[str]:
+        walls: List[str] = []
+        if abs(rect["x"] - 0.0) < 0.01:
+            walls.append("west")
+        if abs((rect["x"] + rect["w"]) - usable_width) < 0.01:
+            walls.append("east")
+        if abs(rect["y"] - 0.0) < 0.01:
+            walls.append("south")
+        if abs((rect["y"] + rect["h"]) - usable_length) < 0.01:
+            walls.append("north")
+        return walls
 
     for band in [1, 2, 3]:
         rooms = grouped[band]
         if not rooms:
             continue
-        y1, y2 = band_y[band]
-        depth = max(0.5, y2 - y1)
+        band_rect = band_rects[band]
+        y1 = band_rect["y"]
+        y2 = band_rect["y"] + band_rect["h"]
 
-        target_areas = [max(_room_min_area(r["type"]), float(r.get("target_area", 40.0))) for r in rooms]
-        total = sum(target_areas)
+        free_rects: List[Dict[str, float]] = [dict(band_rect)]
 
-        x = 0.0
         for idx, room in enumerate(rooms):
-            share = target_areas[idx] / total if total > 0 else (1.0 / len(rooms))
-            width = usable_width * share
-            height = depth
+            target_area = max(_room_min_area(room["type"]), float(room.get("target_area", 40.0)))
+            zone_x, zone_y = _zone_target(str(room.get("vastu_zone") or "center"), y1, y2)
+            if not free_rects:
+                container = dict(band_rect)
+            else:
+                scored_rects: List[Tuple[float, Dict[str, float]]] = []
+                for rect in free_rects:
+                    cx = rect["x"] + rect["w"] / 2.0
+                    cy = rect["y"] + rect["h"] / 2.0
+                    area_score = rect["w"] * rect["h"]
+                    dist_penalty = abs(cx - zone_x) + abs(cy - zone_y)
+                    ext_bonus = 8.0 if bool(room.get("must_touch_exterior")) and _touches_exterior_rect(rect) else 0.0
+                    pref_walls = {str(w).strip().lower() for w in (room.get("preferred_exposure") or [])}
+                    rect_walls = set(_rect_exterior_walls(rect))
+                    pref_bonus = 5.0 if pref_walls and (pref_walls & rect_walls) else 0.0
+                    score = area_score - dist_penalty + ext_bonus + pref_bonus
+                    scored_rects.append((score, rect))
+                scored_rects.sort(key=lambda t: t[0], reverse=True)
+                container = scored_rects[0][1]
+                free_rects.remove(container)
 
-            width = _snap_half(max(4.0, width))
-            height = _snap_half(max(4.0, height))
+            min_w = 4.0
+            min_h = 4.0
             if idx == len(rooms) - 1:
-                width = _snap_half(max(4.0, usable_width - x))
+                rw = container["w"]
+                rh = container["h"]
+            else:
+                if primary_spine == "vertical" and container["h"] > min_h:
+                    rh = _snap_half(max(min_h, min(container["h"], target_area / max(container["w"], 0.5))))
+                    rw = _snap_half(max(min_w, container["w"]))
+                else:
+                    rw = _snap_half(max(min_w, min(container["w"], target_area / max(container["h"], 0.5))))
+                    rh = _snap_half(max(min_h, container["h"]))
 
-            min_area = _room_min_area(room["type"])
-            if width * height < min_area:
-                width = _snap_half(min(usable_width - x, max(4.0, min_area / max(height, 0.5))))
-                if width * height < min_area:
-                    height = _snap_half(min(y2 - y1, max(4.0, min_area / max(width, 0.5))))
+            rw = _snap_half(max(3.0, min(container["w"], rw)))
+            rh = _snap_half(max(3.0, min(container["h"], rh)))
 
-            px = _snap_half(x)
-            py = _snap_half(y1)
+            px = _snap_half(container["x"])
+            py = _snap_half(container["y"])
 
-            if px + width > usable_width:
-                width = _snap_half(max(3.0, usable_width - px))
+            placed_room = {
+                "id": room["id"],
+                "type": room["type"],
+                "label": room["label"],
+                "zone": room["zone"],
+                "x": _r2(px),
+                "y": _r2(py),
+                "width": _r2(rw),
+                "height": _r2(rh),
+                "area": _r2(rw * rh),
+                "must_touch_exterior": bool(room.get("must_touch_exterior")),
+                "adjacent_to": list(room.get("adjacent_to") or []),
+                "forbid_adjacent": list(room.get("forbid_adjacent") or []),
+                "preferred_exposure": list(room.get("preferred_exposure") or []),
+                "vastu_zone": str(room.get("vastu_zone") or "center"),
+                "priority": int(room.get("priority", 1)),
+                "band": band,
+            }
+            placed.append(placed_room)
 
-            placed.append(
-                {
-                    "id": room["id"],
-                    "type": room["type"],
-                    "label": room["label"],
-                    "zone": room["zone"],
-                    "x": _r2(px),
-                    "y": _r2(py),
-                    "width": _r2(width),
-                    "height": _r2(height),
-                    "area": _r2(width * height),
-                    "must_touch_exterior": bool(room.get("must_touch_exterior")),
-                    "adjacent_to": list(room.get("adjacent_to") or []),
-                    "priority": int(room.get("priority", 1)),
-                }
-            )
+            right_w = container["w"] - rw
+            top_h = container["h"] - rh
+            if right_w >= 2.5:
+                free_rects.append({"x": container["x"] + rw, "y": container["y"], "w": right_w, "h": rh})
+            if top_h >= 2.5:
+                free_rects.append({"x": container["x"], "y": container["y"] + rh, "w": container["w"], "h": top_h})
 
-            x += width
+    room_map = {r["id"]: r for r in placed}
+    for _ in range(8):
+        moved = False
+        for room in placed:
+            for target_id in room.get("adjacent_to", []):
+                other = room_map.get(target_id)
+                if not other or _adjacent(room, other):
+                    continue
+                dx = (other["x"] + other["width"] / 2.0) - (room["x"] + room["width"] / 2.0)
+                dy = (other["y"] + other["height"] / 2.0) - (room["y"] + room["height"] / 2.0)
+                step_x = 0.5 if dx > 0 else -0.5 if dx < 0 else 0.0
+                step_y = 0.5 if dy > 0 else -0.5 if dy < 0 else 0.0
+                old_x = room["x"]
+                old_y = room["y"]
+                current_overlap = _sum_overlap(room, placed)
 
-    # Resolve overlaps by shifting lower-priority rooms right when needed.
-    for i in range(len(placed)):
-        for j in range(i + 1, len(placed)):
-            a = placed[i]
-            b = placed[j]
-            ov = _overlap_area(a, b)
-            if ov > 0.1:
+                if abs(dx) >= abs(dy):
+                    room["x"] += step_x
+                else:
+                    room["y"] += step_y
+                _clamp_room(room)
+
+                new_overlap = _sum_overlap(room, placed)
+                if new_overlap <= current_overlap + 0.05:
+                    moved = moved or (old_x != room["x"] or old_y != room["y"])
+                    if old_x != room["x"] or old_y != room["y"]:
+                        adjustments.append(
+                            f"Adjacency slide: {room['id']} moved ({old_x},{old_y}) -> ({room['x']},{room['y']}) toward {other['id']}"
+                        )
+                else:
+                    room["x"] = old_x
+                    room["y"] = old_y
+
+        if not moved:
+            break
+
+    for _ in range(6):
+        had_overlap = False
+        for i in range(len(placed)):
+            for j in range(i + 1, len(placed)):
+                a = placed[i]
+                b = placed[j]
+                ov = _overlap_area(a, b)
+                if ov <= 0.05:
+                    continue
+                had_overlap = True
                 low = b if b["priority"] <= a["priority"] else a
-                old_x = low["x"]
-                low["x"] = _r2(_snap_half(min(usable_width - low["width"], low["x"] + 0.5)))
-                if _overlap_area(a, b) > 0.1:
-                    low["width"] = _r2(max(3.0, low["width"] * 0.9))
-                    low["area"] = _r2(low["width"] * low["height"])
-                adjustments.append(f"Resolved overlap {a['id']} vs {b['id']} by moving/shrinking {low['id']} (x {old_x} -> {low['x']})")
 
-    # Nudge critical adjacency pairs within same band to improve door connectivity.
+                candidates = []
+                candidates.append((low["x"] + 0.5, low["y"]))
+                candidates.append((low["x"] - 0.5, low["y"]))
+                candidates.append((low["x"], low["y"] + 0.5))
+                candidates.append((low["x"], low["y"] - 0.5))
+
+                best_xy = (low["x"], low["y"])
+                best_ov = _sum_overlap(low, placed)
+                best_disp = 0.0
+                for cand_x, cand_y in candidates:
+                    old_x = low["x"]
+                    old_y = low["y"]
+                    low["x"] = cand_x
+                    low["y"] = cand_y
+                    _clamp_room(low)
+                    cand_ov = _sum_overlap(low, placed)
+                    disp = abs(low["x"] - old_x) + abs(low["y"] - old_y)
+                    if cand_ov < best_ov - 0.01 or (abs(cand_ov - best_ov) <= 0.01 and disp < best_disp):
+                        best_ov = cand_ov
+                        best_xy = (low["x"], low["y"])
+                        best_disp = disp
+                    low["x"] = old_x
+                    low["y"] = old_y
+
+                if best_xy != (low["x"], low["y"]):
+                    old_x = low["x"]
+                    old_y = low["y"]
+                    low["x"], low["y"] = best_xy
+                    _clamp_room(low)
+                    adjustments.append(
+                        f"Overlap resolve: moved {low['id']} ({old_x},{old_y}) -> ({low['x']},{low['y']})"
+                    )
+
+        if not had_overlap:
+            break
+
     room_map = {r["id"]: r for r in placed}
     for room in placed:
-        for target_id in room.get("adjacent_to", []):
-            other = room_map.get(target_id)
-            if not other:
+        actual_shared: List[str] = []
+        for other in placed:
+            if other["id"] == room["id"]:
                 continue
             if _adjacent(room, other):
-                continue
-            if abs(room["y"] - other["y"]) > 0.6:
-                continue
-            desired_x = _snap_half(other["x"] + other["width"])
-            if desired_x + room["width"] <= usable_width:
-                old_x = room["x"]
-                room["x"] = _r2(desired_x)
-                adjustments.append(
-                    f"Adjusted {room['id']} near {other['id']} for adjacency (x {old_x} -> {room['x']})"
-                )
+                actual_shared.append(other["id"])
+        room["actual_shared_walls"] = sorted(actual_shared)
+        room["polygon"] = [
+            [_r2(room["x"]), _r2(room["y"])],
+            [_r2(room["x"] + room["width"]), _r2(room["y"])],
+            [_r2(room["x"] + room["width"]), _r2(room["y"] + room["height"])],
+            [_r2(room["x"]), _r2(room["y"] + room["height"])],
+        ]
 
     checks: Dict[str, bool] = {
         "all_within_bbox": True,
@@ -879,6 +1494,17 @@ def agent_geometry_engine(
                 checks["adjacency_ok"] = False
                 failures.append(f"Adjacency missing: {room['id']} -> {need}")
 
+        forbidden = {str(v).strip().lower() for v in room.get("forbid_adjacent", [])}
+        if forbidden:
+            for other in placed:
+                if other["id"] == room["id"]:
+                    continue
+                if other["type"] in forbidden and _adjacent(room, other):
+                    checks["adjacency_ok"] = False
+                    failures.append(
+                        f"Forbidden adjacency present: {room['id']} next to {other['id']}"
+                    )
+
     return {
         "rooms": placed,
         "validation_report": {
@@ -935,10 +1561,12 @@ def agent_connectivity_doors(
     usable_width = float(spatial_brief["plot"]["usable_width"])
     usable_length = float(spatial_brief["plot"]["usable_length"])
     road_side = spatial_brief.get("road_side", "east")
+    climate_zone = str(spatial_brief.get("climate_zone") or "moderate")
 
     doors: List[Dict[str, Any]] = []
     windows: List[Dict[str, Any]] = []
     issues: List[str] = []
+    suggested_adjustments: List[str] = []
     adjacency_edges: Dict[str, List[str]] = {r["id"]: [] for r in rooms}
 
     for i in range(len(rooms)):
@@ -952,6 +1580,12 @@ def agent_connectivity_doors(
             wall, anchor, ov1, ov2 = shared
             span = ov2 - ov1
             if span < 3.0:
+                continue
+
+            if (
+                (a["type"] in {"bathroom", "toilet"} and b["type"] in {"kitchen", "pooja"})
+                or (b["type"] in {"bathroom", "toilet"} and a["type"] in {"kitchen", "pooja"})
+            ):
                 continue
 
             door_width = 3.0
@@ -978,6 +1612,7 @@ def agent_connectivity_doors(
                     "room_id": a["id"],
                     "to_room_id": b["id"],
                     "wall": wall,
+                    "wall_direction": wall,
                     "x": _r2(_snap_half(x)),
                     "y": _r2(_snap_half(y)),
                     "width": door_width,
@@ -1008,6 +1643,7 @@ def agent_connectivity_doors(
                 "room_id": living["id"],
                 "to_room_id": "outside",
                 "wall": side,
+                "wall_direction": side,
                 "x": _r2(_snap_half(mx)),
                 "y": _r2(_snap_half(my)),
                 "width": 3.5,
@@ -1041,6 +1677,7 @@ def agent_connectivity_doors(
                 "room_id": room["id"],
                 "to_room_id": living["id"],
                 "wall": wall,
+                "wall_direction": wall,
                 "x": _r2(_snap_half(x)),
                 "y": _r2(_snap_half(y)),
                 "width": 3.0,
@@ -1064,8 +1701,25 @@ def agent_connectivity_doors(
             edges.append(("north", room["y"] + room["height"], room["x"], room["x"] + room["width"]))
 
         if room.get("must_touch_exterior") and edges:
-            # Place one centered window on the longest exterior edge.
-            chosen = max(edges, key=lambda e: (e[3] - e[2]))
+            preferred = {str(w).strip().lower() for w in room.get("preferred_exposure", [])}
+            hot_dry = climate_zone in {"composite_hot_dry", "hot_dry"}
+            candidate_edges = list(edges)
+            non_west = [e for e in candidate_edges if e[0] != "west"]
+            # In hot-dry climates, avoid west-facing primary openings when alternatives exist.
+            if hot_dry and non_west:
+                candidate_edges = non_west
+
+            def _edge_score(edge: Tuple[str, float, float, float]) -> float:
+                wall, _, p1, p2 = edge
+                length = p2 - p1
+                pref_bonus = 5.0 if preferred and wall in preferred else 0.0
+                climate_penalty = 0.0
+                if hot_dry and wall == "west":
+                    climate_penalty = 2.5
+                return length + pref_bonus - climate_penalty
+
+            # Place one centered window on the best-scoring exterior edge.
+            chosen = max(candidate_edges, key=_edge_score)
             wall, anchor, p1, p2 = chosen
             center = (p1 + p2) / 2.0
             if wall in {"east", "west"}:
@@ -1076,21 +1730,26 @@ def agent_connectivity_doors(
                 base_dim = room["width"]
 
             if room["type"] in {"living", "bedroom", "master_bedroom"}:
-                ww = _r2(max(2.5, base_dim * 0.5))
+                ww = _r2(max(2.5, base_dim * 0.40))
             elif room["type"] == "kitchen":
-                ww = _r2(max(2.0, base_dim * 0.4))
+                ww = _r2(max(2.0, base_dim * 0.25))
+            elif room["type"] in {"bathroom", "toilet"}:
+                ww = _r2(max(1.5, base_dim * 0.25))
             else:
-                ww = _r2(max(1.5, base_dim * 0.3))
+                ww = _r2(max(1.5, base_dim * 0.25))
 
             windows.append(
                 {
                     "id": f"win_{room['id']}_1",
                     "room_id": room["id"],
                     "wall": wall,
+                    "wall_direction": wall,
                     "x": _r2(_snap_half(wx)),
                     "y": _r2(_snap_half(wy)),
                     "width": ww,
-                    "type": "high" if room["type"] in {"bathroom", "toilet"} else "standard",
+                    "type": "vent" if room["type"] in {"bathroom", "toilet"} else "standard",
+                    "sill_height": 6.0 if room["type"] in {"bathroom", "toilet"} else 3.0,
+                    "opening_height": 1.5 if room["type"] in {"bathroom", "toilet"} else 4.0,
                 }
             )
             room_windows += 1
@@ -1099,10 +1758,19 @@ def agent_connectivity_doors(
         if room["width"] > 12.0 and len(edges) >= 2:
             walls = {e[0] for e in edges}
             opposite = None
-            if "east" in walls and "west" in walls:
+            primary_wall = next((w.get("wall") for w in windows if w.get("room_id") == room["id"]), None)
+            if primary_wall == "east" and "west" in walls:
                 opposite = "west"
+            elif primary_wall == "west" and "east" in walls:
+                opposite = "east"
+            elif primary_wall == "north" and "south" in walls:
+                opposite = "south"
+            elif primary_wall == "south" and "north" in walls:
+                opposite = "north"
             elif "north" in walls and "south" in walls:
                 opposite = "south"
+            elif "east" in walls and "west" in walls:
+                opposite = "east" if climate_zone in {"composite_hot_dry", "hot_dry"} else "west"
             if opposite:
                 alt = next((e for e in edges if e[0] == opposite), None)
                 if alt:
@@ -1117,6 +1785,7 @@ def agent_connectivity_doors(
                             "id": f"win_{room['id']}_{room_windows + 1}",
                             "room_id": room["id"],
                             "wall": wall,
+                            "wall_direction": wall,
                             "x": _r2(_snap_half(wx)),
                             "y": _r2(_snap_half(wy)),
                             "width": _r2(max(2.0, (room["width"] if wall in {"north", "south"} else room["height"]) * 0.35)),
@@ -1173,12 +1842,22 @@ def agent_connectivity_doors(
         "living_to_master": path_3,
         "kitchen_dining_direct": path_4,
         "bedroom_to_bathroom": path_5,
+        "all_bedrooms_reachable_within_2_doors": all(
+            shortest_doors(living_id, bed["id"]) is not None and shortest_doors(living_id, bed["id"]) <= 2
+            for bed in bedrooms
+        ) if living else False,
     }
     failed = sum(1 for ok in paths.values() if not ok)
     circulation_score = max(0, 100 - failed * 20)
 
     if not all(paths.values()):
         issues.append("One or more circulation tests failed; consider regeneration")
+        if not paths["living_to_kitchen"]:
+            suggested_adjustments.append("Move kitchen to share wall with living/dining or add direct connector")
+        if not paths["all_bedrooms_reachable_within_2_doors"]:
+            suggested_adjustments.append("Reposition bedrooms closer to transition corridor from living")
+        if not paths["bedroom_to_bathroom"]:
+            suggested_adjustments.append("Swap bathroom with nearest service room in same band")
 
     return {
         "rooms": rooms,
@@ -1187,6 +1866,7 @@ def agent_connectivity_doors(
         "circulation_score": circulation_score,
         "paths": paths,
         "issues": issues,
+        "suggested_adjustments": suggested_adjustments,
     }
 
 
@@ -1455,8 +2135,11 @@ class _AttemptResult:
 def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = _sanitize_payload(payload)
     payload, feasibility_notes = _normalize_payload_for_feasibility(payload)
+
+    band_profile: Optional[Dict[str, float]] = None
+    spine_override: Optional[str] = None
     try:
-        spatial = agent_plot_intelligence(payload)
+        spatial = agent_plot_intelligence(payload, band_profile=band_profile, spine_override=spine_override)
     except ValueError as exc:
         return {
             "error": str(exc),
@@ -1476,27 +2159,84 @@ def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
     strategy_used = None
     service_first = False
     drop_lowest_extra = False
+    enable_swap_non_critical = False
     attempt_scores: List[float] = []
+    failure_history: List[Dict[str, Any]] = []
 
-    for attempt in range(1, 7):
+    def _swap_non_critical_same_band(rooms: List[Dict[str, Any]]) -> bool:
+        candidates = [
+            r for r in rooms if r.get("type") not in {"living", "master_bedroom", "kitchen", "pooja"}
+        ]
+        by_band: Dict[int, List[Dict[str, Any]]] = {1: [], 2: [], 3: []}
+        for room in candidates:
+            by_band[int(room.get("band", 2))].append(room)
+        for band in [2, 1, 3]:
+            bucket = sorted(by_band.get(band, []), key=lambda r: int(r.get("priority", 1)))
+            if len(bucket) < 2:
+                continue
+            a = bucket[0]
+            b = bucket[-1]
+            a["x"], b["x"] = b["x"], a["x"]
+            a["y"], b["y"] = b["y"], a["y"]
+            a["width"], b["width"] = b["width"], a["width"]
+            a["height"], b["height"] = b["height"], a["height"]
+            a["area"] = _r2(a["width"] * a["height"])
+            b["area"] = _r2(b["width"] * b["height"])
+            a["polygon"] = [
+                [_r2(a["x"]), _r2(a["y"])],
+                [_r2(a["x"] + a["width"]), _r2(a["y"])],
+                [_r2(a["x"] + a["width"]), _r2(a["y"] + a["height"])],
+                [_r2(a["x"]), _r2(a["y"] + a["height"])],
+            ]
+            b["polygon"] = [
+                [_r2(b["x"]), _r2(b["y"])],
+                [_r2(b["x"] + b["width"]), _r2(b["y"])],
+                [_r2(b["x"] + b["width"]), _r2(b["y"] + b["height"])],
+                [_r2(b["x"]), _r2(b["y"] + b["height"])],
+            ]
+            return True
+        return False
+
+    def _drop_lowest_priority_extra(program: Dict[str, Any]) -> Optional[str]:
+        core = {"living", "dining", "kitchen", "master_bedroom", "bedroom", "bathroom", "toilet", "pooja"}
+        extras = [r for r in program.get("rooms", []) if r.get("type") not in core]
+        if not extras:
+            return None
+        victim = sorted(extras, key=lambda r: int(r.get("priority", 1)))[0]
+        victim_area = float(victim.get("target_area", 0.0))
+        neighbors = [r for r in program.get("rooms", []) if r.get("id") in (victim.get("adjacent_to") or [])]
+        if neighbors and victim_area > 0:
+            bump = victim_area / len(neighbors)
+            for n in neighbors:
+                n["target_area"] = _r2(float(n.get("target_area", 0.0)) + bump)
+        program["rooms"] = [r for r in program.get("rooms", []) if r.get("id") != victim.get("id")]
+        return str(victim.get("id"))
+
+    for attempt in range(1, 6):
         program_input = dict(payload)
         if drop_lowest_extra:
             extras = _norm_extras(program_input.get("extras"))
             if extras:
-                extras = extras[:-1]
-            program_input["extras"] = extras
+                program_input["extras"] = extras[:-1]
 
         program = agent_program_architect(spatial, program_input, forced_strategy=forced_strategy)
+        dropped_room = None
+        if drop_lowest_extra:
+            dropped_room = _drop_lowest_priority_extra(program)
         strategy_used = program["layout_strategy"]
         geometry = agent_geometry_engine(program, spatial, service_first=service_first)
+        if enable_swap_non_critical:
+            _swap_non_critical_same_band(geometry["rooms"])
         connectivity = agent_connectivity_doors(geometry, spatial, program)
         scoring = agent_design_intelligence(connectivity, spatial, payload, geometry)
 
         signature = _layout_signature(connectivity["rooms"], bhk, strategy_used)
         design_score = {
             "composite": scoring["scores"]["composite"],
+            "composite_score": scoring["scores"]["composite"],
             "grade": scoring["grade"],
             "breakdown": scoring["breakdown"],
+            "per_dimension": scoring["breakdown"],
             "issues": scoring["issues"],
             "vastu_bonuses": scoring["vastu_bonuses"],
             "layout_signature": signature,
@@ -1531,10 +2271,13 @@ def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
             "room_program": program,
             "validation": geometry["validation_report"],
             "attempt": attempt,
+            "constraint_notes": program.get("constraint_notes", []),
             "circulation": {
                 "score": connectivity["circulation_score"],
                 "paths": connectivity["paths"],
             },
+            "connectivity_suggestions": connectivity.get("suggested_adjustments", []),
+            "dropped_room": dropped_room,
         }
 
         result = _AttemptResult(
@@ -1552,14 +2295,34 @@ def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
             break
 
         rejection_count += 1
+        failed_checks = [
+            key for key, ok in geometry.get("validation_report", {}).get("checks", {}).items() if not ok
+        ]
+        failed_paths = [
+            key for key, ok in connectivity.get("paths", {}).items() if not ok
+        ]
+        reason = scoring.get("reject_reason") or "unknown"
+        failure_history.append(
+            {
+                "attempt": attempt,
+                "reason": reason,
+                "failed_checks": failed_checks,
+                "failed_paths": failed_paths,
+            }
+        )
+
         if rejection_count == 1:
-            forced_strategy = _next_strategy(strategy_used or "cluster")
+            band_profile = {"public": 0.35, "service": 0.18}
+            spatial = agent_plot_intelligence(payload, band_profile=band_profile, spine_override=spine_override)
         elif rejection_count == 2:
+            enable_swap_non_critical = True
             service_first = True
         elif rejection_count == 3:
             drop_lowest_extra = True
-        elif rejection_count >= 4:
-            forced_strategy = _next_strategy(forced_strategy or strategy_used or "cluster")
+        elif rejection_count == 4:
+            current = str(spatial.get("spatial_contract", {}).get("primary_spine") or "horizontal")
+            spine_override = "vertical" if current == "horizontal" else "horizontal"
+            spatial = agent_plot_intelligence(payload, band_profile=band_profile, spine_override=spine_override)
 
     assert best is not None
 
@@ -1572,6 +2335,8 @@ def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
         out["issues"].append(
             f"Accepted best attempt after retries. Last reject reason: {best.reject_reason or 'unspecified'}"
         )
+        out.setdefault("warnings", [])
+        out["warnings"].append("Manual adjustment recommended after retry budget exhausted")
         out["partial_accept"] = True
 
     operational_accept = bool(best.accept)
@@ -1582,6 +2347,7 @@ def generate_dynamic_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
     out["strict_accepted"] = bool(best.accept)
     out["accepted"] = operational_accept
     out["attempt_scores"] = attempt_scores
+    out["failure_history"] = failure_history
     out["design_score"] = out.get("design_score") or {
         "composite": best.score,
         "grade": out.get("grade", _grade(best.score)),

@@ -1,7 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Canvas } from '@react-three/fiber'
-import HouseScrollScene from '../components/canvas/HouseScrollScene'
 
 const FEATURES = [
     {
@@ -60,16 +58,6 @@ const FEATURES = [
     },
 ]
 
-const CHAPTERS = [
-    { id: 'site', label: 'Site + Grid', from: 0.0, to: 0.22 },
-    { id: 'zoning', label: 'Zoning', from: 0.22, to: 0.44 },
-    { id: 'adjacency', label: 'Adjacency', from: 0.44, to: 0.64 },
-    { id: 'stacking', label: 'Room Stacking', from: 0.64, to: 0.84 },
-    { id: 'final', label: 'Final Plan', from: 0.84, to: 1.01 },
-]
-
-
-
 const ArrowIcon = () => (
     <span className="btn-icon">
         <svg width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
@@ -80,22 +68,8 @@ const ArrowIcon = () => (
 
 export default function LandingPage() {
     const navigate = useNavigate()
-    const [scrollProgress, setScrollProgress] = useState(0)
-
-    const activeChapter = CHAPTERS.find((chapter) => scrollProgress >= chapter.from && scrollProgress < chapter.to) || CHAPTERS[CHAPTERS.length - 1]
-
-    useEffect(() => {
-        const handleScroll = () => {
-            const totalScrollable = document.documentElement.scrollHeight - window.innerHeight
-            const progress = totalScrollable > 0 ? window.scrollY / totalScrollable : 0
-            setScrollProgress(Math.max(0, Math.min(1, progress)))
-        }
-
-        window.addEventListener('scroll', handleScroll, { passive: true })
-        handleScroll()
-
-        return () => window.removeEventListener('scroll', handleScroll)
-    }, [])
+    const [showAllFeatures, setShowAllFeatures] = useState(false)
+    const visibleFeatures = showAllFeatures ? FEATURES : FEATURES.slice(0, 4)
 
     return (
         <div className="landing landing-fresh">
@@ -110,7 +84,6 @@ export default function LandingPage() {
                     NakshaNirman
                 </a>
                 <div className="nav-links">
-                    <a href="#cinema">3D Tour</a>
                     <a href="#features">Features</a>
                     <a href="#project">Project</a>
                     <button className="btn btn-primary btn-sm" onClick={() => navigate('/workspace')}>
@@ -124,72 +97,25 @@ export default function LandingPage() {
                 <div className="glass-read hero-glass">
                 <div className="hero-badge fade-in fade-in-1">
                     <span className="badge-dot"></span>
-                    GNN-Powered Architecture Engine
+                    Simple Home Planning Dashboard
                 </div>
                 <h1 className="fade-in fade-in-2">
-                    AI-Powered <span className="accent-text">Floor Plan</span><br />
-                    Architecture Generator
+                    Plan Your Home In <span className="accent-text">Three Simple Steps</span>
                 </h1>
                 <p className="hero-subtitle fade-in fade-in-3">
-                    Generate professional 2D floor plans, 3D models, and CAD exports using our
-                    GNN-inspired layout engine. Upload your plot boundary, configure rooms, and
-                    get Vastu-compliant designs instantly.
+                    Enter your plot details, choose room requirements, and generate a practical plan.
+                    Everything is designed for quick decisions and easy edits.
                 </p>
-                <p className="hero-scroll-note fade-in fade-in-4">Scroll to direct the 3D camera and reveal each CAD planning stage.</p>
                 <div className="hero-buttons fade-in fade-in-4">
                     <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
                         Start Designing <ArrowIcon />
                     </button>
                 </div>
                 <div className="hero-meta-row fade-in fade-in-4">
-                    <span className="hero-meta-pill">Plot-aware layouts</span>
-                    <span className="hero-meta-pill">CAD-first exports</span>
-                    <span className="hero-meta-pill">Interactive 3D story</span>
+                    <span className="hero-meta-pill">Step 1: Plot</span>
+                    <span className="hero-meta-pill">Step 2: Rooms</span>
+                    <span className="hero-meta-pill">Step 3: Preview & Export</span>
                 </div>
-                </div>
-
-                {/* 3D Background Canvas */}
-                <div className="canvas-bg fade-in">
-                    <Canvas shadows camera={{ position: [0, 8, 8], fov: 45 }} dpr={[1, 1.6]}>
-                        <HouseScrollScene progress={scrollProgress} />
-                    </Canvas>
-                </div>
-            </section>
-
-            <section className="cad-cinema" id="cinema">
-                <div className="section">
-                    <div className="section-header glass-read section-glass">
-                        <span className="section-badge">CAD Film</span>
-                        <h2 className="section-title">Scroll-Controlled 3D House Plan Tour</h2>
-                        <p className="section-subtitle">
-                            Built using scroll-storyboarding patterns from modern WebGL landing pages:
-                            guided camera spline, phase-based reveal, and scanline pass to mimic a CAD design film.
-                        </p>
-                    </div>
-                    <div className="cad-video-shell">
-                        <div className="cad-video-topbar">
-                            <span className="rec-dot"></span>
-                            <span>REC</span>
-                            <span className="cad-scene-label">SCENE: {activeChapter.label}</span>
-                            <span className="cad-time">{`${String(Math.floor(scrollProgress * 2)).padStart(2, '0')}:${String(Math.floor((scrollProgress * 60) % 60)).padStart(2, '0')}`}</span>
-                        </div>
-                        <div className="cad-video-canvas">
-                            <Canvas camera={{ position: [0, 7, 7], fov: 42 }} dpr={[1, 1.5]}>
-                                <HouseScrollScene progress={scrollProgress} cinematic />
-                            </Canvas>
-                            <div className="scanline-overlay" />
-                        </div>
-                        <div className="cad-video-progress">
-                            <div className="cad-video-progress-bar" style={{ width: `${scrollProgress * 100}%` }} />
-                        </div>
-                        <div className="cad-chapters">
-                            {CHAPTERS.map((chapter) => (
-                                <span key={chapter.id} className={`cad-chapter-chip ${activeChapter.id === chapter.id ? 'active' : ''}`}>
-                                    {chapter.label}
-                                </span>
-                            ))}
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -198,20 +124,24 @@ export default function LandingPage() {
                 <div className="section">
                     <div className="section-header glass-read section-glass">
                         <span className="section-badge">Features</span>
-                        <h2 className="section-title">Everything You Need to Create Floor Plans</h2>
+                        <h2 className="section-title">Everything You Need In One Place</h2>
                         <p className="section-subtitle">
-                            From AI-powered chat to professional CAD exports, NakshaNirman gives you
-                            a complete toolkit for residential design.
+                            A focused toolset that keeps planning fast and straightforward.
                         </p>
                     </div>
                     <div className="features-grid">
-                        {FEATURES.map((f, i) => (
+                        {visibleFeatures.map((f, i) => (
                             <div className="feature-card" key={i}>
                                 <div className="feature-icon">{f.icon}</div>
                                 <h3>{f.title}</h3>
                                 <p>{f.desc}</p>
                             </div>
                         ))}
+                    </div>
+                    <div style={{ marginTop: '0.9rem', textAlign: 'center' }}>
+                        <button className="btn btn-secondary" onClick={() => setShowAllFeatures((prev) => !prev)}>
+                            {showAllFeatures ? 'Show Less' : 'Show All Features'}
+                        </button>
                     </div>
                 </div>
             </section>
@@ -223,7 +153,7 @@ export default function LandingPage() {
                         <span className="section-badge">Project Workspace</span>
                         <h2 className="section-title">Open the CAD Project Workspace</h2>
                         <p className="section-subtitle">
-                            Start a new project, set requirements, upload boundary, and generate CAD-ready floor plans.
+                            Open a new project, fill one simple form, and generate your plan.
                         </p>
                         <button className="btn btn-primary btn-lg" onClick={() => navigate('/workspace')}>
                             Start Designing Now <ArrowIcon />
@@ -252,7 +182,6 @@ export default function LandingPage() {
                     <div className="footer-col">
                         <h4>Project</h4>
                         <a href="#features">Features</a>
-                        <a href="#cinema">3D Tour</a>
                         <a href="#project">Overview</a>
                     </div>
                     <div className="footer-col">

@@ -30,6 +30,14 @@ function normalizeRooms(plan) {
     .filter((r) => r.width > 0.1 && r.height > 0.1)
 }
 
+function northArrowTransform(facing) {
+  const side = String(facing || 'east').toLowerCase()
+  if (side === 'north') return 'rotate(180)'
+  if (side === 'south') return 'rotate(0)'
+  if (side === 'west') return 'rotate(-90)'
+  return 'rotate(90)'
+}
+
 function toSvgY(usableLength, y, h = 0) {
   return usableLength - y - h
 }
@@ -156,6 +164,7 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
 
   const doors = plan.doors || []
   const windows = plan.windows || []
+  const facing = String(plot.facing || plot.road_side || 'east').toLowerCase()
 
   return (
     <div style={{ width: '100%', height: '100%', background: '#fff' }}>
@@ -195,6 +204,8 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
         {rooms.map((room) => {
           const y = toSvgY(ul, room.y, room.height)
           const fill = room.type === 'open_area' ? 'url(#openHatch)' : (room.color || ROOM_COLORS[room.type] || '#F8FAFC')
+          const midX = room.x + room.width / 2
+          const midY = y + room.height / 2
           return (
             <g key={room.id} data-room-id={room.id}>
               <rect
@@ -239,6 +250,33 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
                   </>
                 )
               })()}
+              {showDimensions && (
+                <>
+                  <text
+                    x={midX}
+                    y={Math.max(y + 0.8, y + room.height * 0.2)}
+                    textAnchor='middle'
+                    fill='#475569'
+                    fontSize='0.8'
+                    fontWeight='600'
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {Math.round(room.width * 10) / 10} ft
+                  </text>
+                  <text
+                    x={Math.max(room.x + 0.7, room.x + room.width * 0.2)}
+                    y={midY}
+                    textAnchor='middle'
+                    fill='#64748B'
+                    fontSize='0.75'
+                    fontWeight='600'
+                    transform={`rotate(-90 ${Math.max(room.x + 0.7, room.x + room.width * 0.2)} ${midY})`}
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {Math.round(room.height * 10) / 10} ft
+                  </text>
+                </>
+              )}
             </g>
           )
         })}
@@ -290,7 +328,9 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
 
 
         <g transform={`translate(${uw - 2.5}, 1.2)`}>
-          <polygon points='0,-0.8 0.7,0.8 0,0.3 -0.7,0.8' fill='#0F172A' />
+          <g transform={northArrowTransform(facing)}>
+            <polygon points='0,-0.8 0.7,0.8 0,0.3 -0.7,0.8' fill='#0F172A' />
+          </g>
           <text x='0' y='1.8' textAnchor='middle' fontSize='1.1' fontWeight='700' fill='#0F172A'>N</text>
         </g>
 
@@ -302,7 +342,7 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
           <text x='5' y='1.2' textAnchor='middle' fill='#334155' fontSize='1.0'>Scale: 10 ft</text>
         </g>
 
-        <text x={uw / 2} y={ul + 4.4} textAnchor='middle' fontSize='1.1' fill='#334155' fontWeight='700'>ROAD / FRONT SIDE</text>
+        <text x={uw / 2} y={ul + 4.4} textAnchor='middle' fontSize='1.1' fill='#334155' fontWeight='700'>ROAD / FRONT SIDE ({facing.toUpperCase()})</text>
       </svg>
     </div>
   )

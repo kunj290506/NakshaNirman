@@ -1,5 +1,6 @@
 """Floor plan generation and DXF download routes."""
 
+import asyncio
 import os
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -9,6 +10,7 @@ from database import get_db
 from models import Project, Room, ProjectStatus, RoomType
 from schemas import GenerateRequest, GenerateResponse
 from services.multi_agent_orchestrator import generate_dynamic_layout
+from services.openrouter_planner import prepare_floorplan_payload
 from services.cad_export import generate_dxf
 from app_config import EXPORT_DIR
 import json
@@ -99,10 +101,32 @@ async def generate_floorplan(data: GenerateRequest, db: AsyncSession = Depends(g
             "vastu": True,
             "boundary_polygon": boundary,
             "family_type": "nuclear",
+            "plan_mode": data.plan_mode or "perfcat",
         }
+
+        payload, planner_meta = await asyncio.to_thread(
+            prepare_floorplan_payload,
+            payload,
+            data.plan_mode or "perfcat",
+        )
+
         plan = generate_dynamic_layout(payload)
         if "error" in plan:
             raise ValueError(plan["error"])
+
+        planner_warnings = list(planner_meta.get("warnings") or [])
+        if planner_meta.get("used") or planner_warnings:
+            plan["planner"] = {
+                "mode": planner_meta.get("plan_mode"),
+                "provider": planner_meta.get("provider"),
+                "model": planner_meta.get("model"),
+            }
+        if planner_warnings:
+            existing = list(plan.get("warnings") or [])
+            for warning in planner_warnings:
+                if warning not in existing:
+                    existing.append(warning)
+            plan["warnings"] = existing
 
         # Save rooms to DB
         for room_data in plan.get("rooms", []):

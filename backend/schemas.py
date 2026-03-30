@@ -48,6 +48,7 @@ class GenerateRequest(BaseModel):
     rooms: list[RoomCreate]
     total_area: Optional[float] = None
     boundary_polygon: Optional[list] = None
+    plan_mode: Optional[str] = "perfcat"
 
 
 class GenerateResponse(BaseModel):

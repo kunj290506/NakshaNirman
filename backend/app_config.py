@@ -20,6 +20,15 @@ GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini")
 GROK_BASE_URL = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
 
+# OpenRouter API - Preferred planner/model gateway
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "black-forest-labs/flux.2-klein-4b")
+OPENROUTER_TEXT_MODEL = os.getenv("OPENROUTER_TEXT_MODEL", "").strip()
+OPENROUTER_IMAGE_MODEL = os.getenv("OPENROUTER_IMAGE_MODEL", OPENROUTER_MODEL).strip()
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_ENABLED = os.getenv("OPENROUTER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+OPENROUTER_VERIFY_SSL = os.getenv("OPENROUTER_VERIFY_SSL", "true").strip().lower() not in {"0", "false", "no", "off"}
+
 # File Storage
 UPLOAD_DIR = BASE_DIR / "uploads"
 EXPORT_DIR = BASE_DIR / "exports"

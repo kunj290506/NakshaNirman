@@ -866,6 +866,143 @@ def _create_roof(boundary):
     return meshes
 
 
+def _norm_wall_token(value):
+    token = str(value or '').strip().lower()
+    table = {
+        'north': 'N',
+        'south': 'S',
+        'east': 'E',
+        'west': 'W',
+        'n': 'N',
+        's': 'S',
+        'e': 'E',
+        'w': 'W',
+    }
+    return table.get(token, 'N')
+
+
+def _default_boundary_from_plot(plot):
+    p = plot or {}
+    width = float(p.get('usable_width') or p.get('width') or 0.0)
+    length = float(p.get('usable_length') or p.get('length') or 0.0)
+    if width <= 0.1 or length <= 0.1:
+        return []
+    return [[0.0, 0.0], [width, 0.0], [width, length], [0.0, length]]
+
+
+def _room_from_polygon(room):
+    poly = room.get('polygon')
+    if not isinstance(poly, list) or len(poly) < 4:
+        return None
+    xs = []
+    ys = []
+    for pt in poly:
+        try:
+            xs.append(float(pt[0]))
+            ys.append(float(pt[1]))
+        except Exception:
+            return None
+    if not xs or not ys:
+        return None
+    min_x = min(xs)
+    min_y = min(ys)
+    max_x = max(xs)
+    max_y = max(ys)
+    width = max(0.0, max_x - min_x)
+    length = max(0.0, max_y - min_y)
+    if width < 0.1 or length < 0.1:
+        return None
+    return {
+        'position': {'x': min_x, 'y': min_y},
+        'width': width,
+        'length': length,
+    }
+
+
+def _normalize_plan_for_3d(plan):
+    rooms_in = list(plan.get('rooms') or [])
+    windows_in = list(plan.get('windows') or [])
+    doors_in = list(plan.get('doors') or [])
+
+    boundary = plan.get('boundary') or _default_boundary_from_plot(plan.get('plot'))
+
+    room_by_id = {}
+    rooms = []
+    for idx, room in enumerate(rooms_in):
+        rid = str(room.get('id') or f'room_{idx + 1}')
+
+        poly_room = _room_from_polygon(room)
+        if poly_room is not None:
+            rx = poly_room['position']['x']
+            ry = poly_room['position']['y']
+            rw = poly_room['width']
+            rl = poly_room['length']
+        else:
+            rx = float(room.get('x') or 0.0)
+            ry = float(room.get('y') or 0.0)
+            rw = float(room.get('width') or 0.0)
+            rl = float(room.get('height') or 0.0)
+
+        normalized = {
+            'id': rid,
+            'room_type': room.get('type') or room.get('room_type') or 'room',
+            'position': {'x': rx, 'y': ry},
+            'width': rw,
+            'length': rl,
+            'windows': [],
+            'doors': [],
+        }
+        rooms.append(normalized)
+        room_by_id[rid] = normalized
+
+    # Attach global windows to room-local window lists.
+    for win in windows_in:
+        rid = str(win.get('room_id') or '')
+        room = room_by_id.get(rid)
+        if not room:
+            continue
+        room['windows'].append(
+            {
+                'wall': _norm_wall_token(win.get('wall_direction') or win.get('wall')),
+                'width': float(win.get('width') or 3.0),
+                'type': 'ventilation' if str(win.get('type') or '').lower() in {'vent', 'high'} else 'standard',
+            }
+        )
+
+    # Normalize global doors for panel generation and internal wall openings.
+    doors = []
+    for door in doors_in:
+        wall = _norm_wall_token(door.get('wall_direction') or door.get('wall'))
+        dx = float(door.get('x') or 0.0)
+        dy = float(door.get('y') or 0.0)
+        swing = {
+            'N': [0, 1],
+            'S': [0, -1],
+            'E': [1, 0],
+            'W': [-1, 0],
+        }[wall]
+        door_obj = {
+            'id': str(door.get('id') or ''),
+            'position': [dx, dy],
+            'width': float(door.get('width') or 3.0),
+            'swing_dir': swing,
+            'wall': wall,
+            'room_id': str(door.get('room_id') or ''),
+            'to_room_id': str(door.get('to_room_id') or ''),
+        }
+        doors.append(door_obj)
+
+        owner = room_by_id.get(door_obj['room_id'])
+        if owner:
+            owner['doors'].append({'wall': wall, 'width': door_obj['width']})
+
+    return {
+        'boundary': boundary,
+        'rooms': rooms,
+        'doors': doors,
+    }
+
+
 # ===========================================================================
 # MAIN ENTRY POINT
 # ===========================================================================
@@ -892,10 +1029,11 @@ def generate_3d_model(plan: dict, output_path: str) -> str:
         Path to the generated file.
     """
     all_meshes = []
+    normalized = _normalize_plan_for_3d(plan or {})
 
-    boundary = plan.get("boundary", [])
-    rooms = plan.get("rooms", [])
-    doors_list = plan.get("doors", [])
+    boundary = normalized.get("boundary", [])
+    rooms = normalized.get("rooms", [])
+    doors_list = normalized.get("doors", [])
 
     if not boundary or len(boundary) < 3:
         raise ValueError("Invalid boundary coordinates for 3D generation.")

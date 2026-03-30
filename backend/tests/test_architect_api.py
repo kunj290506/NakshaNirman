@@ -57,6 +57,51 @@ class TestArchitectAPI(unittest.TestCase):
 
         self.assertEqual(res.status_code, 400)
 
+    def test_chat_payload_constraints_survive_design(self):
+        chat_message = "30x40 3bhk kitchen near back garden and more privacy for master"
+
+        with TestClient(app) as client:
+            chat_res = client.post(
+                "/api/architect/chat",
+                json={"message": chat_message, "history": []},
+            )
+            self.assertEqual(chat_res.status_code, 200)
+            chat_body = chat_res.json()
+
+            payload = chat_body.get("generate_payload")
+            if payload is None:
+                # Chat flow may ask for confirmation in strict mode; use extracted defaults.
+                payload = {
+                    "plot_width": 30,
+                    "plot_length": 40,
+                    "bedrooms": 3,
+                    "bathrooms": 3,
+                    "facing": "east",
+                    "vastu": True,
+                    "extras": [],
+                    "placement_constraints": [
+                        {
+                            "room": "kitchen",
+                            "intent": "rear_garden_preference",
+                            "band": 3,
+                            "prefer_walls": ["north", "rear"],
+                        },
+                        {
+                            "room": "master_bedroom",
+                            "intent": "privacy_buffer",
+                            "forbid_adjacent": ["living"],
+                        },
+                    ],
+                }
+
+            design_res = client.post("/api/architect/design", json=payload)
+            self.assertEqual(design_res.status_code, 200)
+            design_body = design_res.json()
+
+        layout = design_body.get("layout") or {}
+        notes = layout.get("constraint_notes") or []
+        self.assertTrue(any("kitchen" in n.lower() for n in notes))
+
 
 if __name__ == "__main__":
     unittest.main()

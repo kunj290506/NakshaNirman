@@ -132,6 +132,7 @@ export default function Workspace() {
                 total_area: totalArea,
                 plot_width: requirements?.plot_width || null,
                 plot_length: requirements?.plot_length || null,
+                plan_mode: 'perfcat',
                 rooms: rooms,
                 bedrooms: requirements?.bedrooms || rooms.filter(r => r.room_type === 'bedroom' || r.room_type === 'master_bedroom').reduce((s, r) => s + (r.quantity || 1), 0) || 2,
                 bathrooms: requirements?.bathrooms || rooms.filter(r => r.room_type === 'bathroom').reduce((s, r) => s + (r.quantity || 1), 0) || 1,
@@ -140,6 +141,7 @@ export default function Workspace() {
                 facing: requirements?.facing || 'east',
                 vastu: requirements?.vastu ?? true,
                 extras: allExtras,
+                placement_constraints: requirements?.placement_constraints || [],
                 boundary_polygon: boundary || null,
             }
 

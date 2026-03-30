@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 import importlib
+import ssl
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
-from app_config import GROQ_API_KEY
+from app_config import (
+    GROQ_API_KEY,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_ENABLED,
+    OPENROUTER_TEXT_MODEL,
+    OPENROUTER_VERIFY_SSL,
+)
 
 logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -101,6 +112,37 @@ def _extract_collected(text: str, seed: Optional[Dict[str, Any]] = None) -> Dict
     if extras:
         data["extras"] = sorted(extras)
 
+    constraints = list(data.get("placement_constraints", []))
+    if any(tok in t for tok in ["kitchen near back", "kitchen near rear", "kitchen near garden", "kitchen at back garden"]):
+        constraints.append(
+            {
+                "room": "kitchen",
+                "intent": "rear_garden_preference",
+                "band": 3,
+                "prefer_walls": ["north", "rear"],
+                "note": "Kitchen preferred near rear garden side",
+            }
+        )
+    if any(tok in t for tok in ["privacy for master", "more privacy for master", "master more private"]):
+        constraints.append(
+            {
+                "room": "master_bedroom",
+                "intent": "privacy_buffer",
+                "forbid_adjacent": ["living"],
+                "note": "Master should not directly open/abut living room",
+            }
+        )
+    if constraints:
+        dedup = []
+        seen = set()
+        for c in constraints:
+            key = (c.get("room"), c.get("intent"), tuple(c.get("forbid_adjacent", [])), tuple(c.get("prefer_walls", [])))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(c)
+        data["placement_constraints"] = dedup
+
     return data
 
 
@@ -120,6 +162,7 @@ def _build_generate_payload(collected: Dict[str, Any]) -> Dict[str, Any]:
         "facing": str(collected.get("facing") or "east").lower(),
         "vastu": bool(collected.get("vastu", True)),
         "extras": list(collected.get("extras", [])),
+        "placement_constraints": list(collected.get("placement_constraints", [])),
     }
     return payload
 
@@ -151,6 +194,56 @@ async def _call_groq(prompt: str, history: List[Dict[str, str]]) -> Optional[str
         return text.strip() if text else None
     except Exception as exc:
         logger.warning("Groq chat failed: %s", exc)
+        return None
+
+
+async def _call_openrouter(prompt: str, history: List[Dict[str, str]]) -> Optional[str]:
+    if not OPENROUTER_ENABLED or not OPENROUTER_API_KEY or not OPENROUTER_TEXT_MODEL:
+        return None
+
+    def _request() -> Optional[str]:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history[-8:])
+        messages.append({"role": "user", "content": prompt})
+
+        body = {
+            "model": OPENROUTER_TEXT_MODEL,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 400,
+        }
+        req = urllib.request.Request(
+            url=f"{OPENROUTER_BASE_URL.rstrip('/')}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "NakshaNirman",
+            },
+            method="POST",
+        )
+
+        ssl_context = None
+        if not OPENROUTER_VERIFY_SSL:
+            ssl_context = ssl._create_unverified_context()
+
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as resp:
+            result = json.loads(resp.read().decode("utf-8", errors="replace"))
+
+        choices = result.get("choices") or []
+        if not choices:
+            return None
+        text = ((choices[0] or {}).get("message") or {}).get("content")
+        return text.strip() if isinstance(text, str) and text.strip() else None
+
+    try:
+        return await asyncio.to_thread(_request)
+    except urllib.error.HTTPError as exc:
+        logger.warning("OpenRouter chat HTTP failure: %s", exc)
+        return None
+    except Exception as exc:
+        logger.warning("OpenRouter chat failed: %s", exc)
         return None
 
 
@@ -228,7 +321,9 @@ async def chat_reply(user_message: str, history: List[Dict[str, str]]) -> str:
         )
 
     # Try LLM polish, but keep strict fallback for reliability.
-    llm = await _call_groq(user_message, history)
+    llm = await _call_openrouter(user_message, history)
+    if not llm:
+        llm = await _call_groq(user_message, history)
     if not llm:
         llm = await _call_claude(user_message, history)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
 from services.graph_refiner import refine_layout_with_graph
 from services.multi_agent_orchestrator import generate_dynamic_layout
+from services.openrouter_planner import prepare_floorplan_payload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/architect", tags=["architect"])
@@ -36,7 +38,9 @@ class ArchitectDesignRequest(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     family_type: Optional[str] = "nuclear"
+    plan_mode: str = Field("perfcat")
     previous_strategy: Optional[str] = None
+    placement_constraints: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 def _use_graph_refiner(engine_mode: Optional[str]) -> bool:
@@ -90,11 +94,44 @@ async def architect_design(req: ArchitectDesignRequest):
 
     input_data = req.dict() if hasattr(req, "dict") else req.model_dump()
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
+    input_data["plan_mode"] = req.plan_mode
+
+    planner_meta = {
+        "provider": "deterministic",
+        "model": None,
+        "used": False,
+        "plan_mode": req.plan_mode,
+        "warnings": [],
+    }
+
+    try:
+        input_data, planner_meta = await asyncio.to_thread(
+            prepare_floorplan_payload,
+            input_data,
+            req.plan_mode,
+        )
+    except Exception:
+        logger.warning("Planner pre-processing skipped due to internal issue", exc_info=True)
+        planner_meta["warnings"] = ["Planner pre-processing failed; used deterministic fallback."]
 
     try:
         result = generate_dynamic_layout(input_data)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
+
+        planner_warnings = list(planner_meta.get("warnings") or [])
+        if planner_meta.get("used") or planner_warnings:
+            result["planner"] = {
+                "mode": planner_meta.get("plan_mode"),
+                "provider": planner_meta.get("provider"),
+                "model": planner_meta.get("model"),
+            }
+        if planner_warnings:
+            existing = list(result.get("warnings") or [])
+            for warning in planner_warnings:
+                if warning not in existing:
+                    existing.append(warning)
+            result["warnings"] = existing
 
         if _use_graph_refiner(req.engine_mode):
             # Graph refinement is optional and non-blocking for the new multi-agent layout.
@@ -137,11 +174,44 @@ async def architect_redesign(req: ArchitectDesignRequest):
     input_data = req.dict() if hasattr(req, "dict") else req.model_dump()
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
     input_data["previous_strategy"] = req.previous_strategy
+    input_data["plan_mode"] = req.plan_mode
+
+    planner_meta = {
+        "provider": "deterministic",
+        "model": None,
+        "used": False,
+        "plan_mode": req.plan_mode,
+        "warnings": [],
+    }
+
+    try:
+        input_data, planner_meta = await asyncio.to_thread(
+            prepare_floorplan_payload,
+            input_data,
+            req.plan_mode,
+        )
+    except Exception:
+        logger.warning("Planner pre-processing skipped due to internal issue", exc_info=True)
+        planner_meta["warnings"] = ["Planner pre-processing failed; used deterministic fallback."]
 
     try:
         result = generate_dynamic_layout(input_data)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
+
+        planner_warnings = list(planner_meta.get("warnings") or [])
+        if planner_meta.get("used") or planner_warnings:
+            result["planner"] = {
+                "mode": planner_meta.get("plan_mode"),
+                "provider": planner_meta.get("provider"),
+                "model": planner_meta.get("model"),
+            }
+        if planner_warnings:
+            existing = list(result.get("warnings") or [])
+            for warning in planner_warnings:
+                if warning not in existing:
+                    existing.append(warning)
+            result["warnings"] = existing
 
         if _use_graph_refiner(req.engine_mode):
             try:
