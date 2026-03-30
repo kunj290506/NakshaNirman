@@ -23,6 +23,7 @@ export default function Workspace() {
     const [boundaryData, setBoundaryData] = useState(null)  // full Phase 1 data
     const [sessionId] = useState(() => generateSessionId())
     const [error, setError] = useState(null)
+    const [warning, setWarning] = useState(null)
 
     const [backendHealthy, setBackendHealthy] = useState(true)
     const backendUrl = '/api'
@@ -52,6 +53,7 @@ export default function Workspace() {
         setPreviewMode('2d')
         setLoading(false)
         setError(null)
+        setWarning(null)
     }
 
     const checkBackend = async () => {
@@ -101,6 +103,7 @@ export default function Workspace() {
         setLoading(true)
         setLoadingMessage('Creating project...')
         setError(null)
+        setWarning(null)
         try {
             // Ensure project exists
             const pid = await ensureProject(totalArea)
@@ -149,16 +152,27 @@ export default function Workspace() {
 
             let data
             try {
-                const res = await fetch('/api/architect/design', {
+                const res = await fetchWithTimeout('/api/architect/design', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(roomPayload),
-                })
+                }, 35000)
 
                 const json = await res.json().catch(() => ({}))
 
                 if (!res.ok) {
                     throw new Error(json.detail || json.error || 'Floor plan generation failed. Please check your inputs.')
+                }
+
+                const responseWarnings = Array.isArray(json.warnings)
+                    ? json.warnings.filter(Boolean)
+                    : []
+                const provider = json.layout?.planner?.provider
+                if (provider && provider !== 'openrouter') {
+                    responseWarnings.push(`Planner provider: ${provider}. DeepSeek output is not active for this run.`)
+                }
+                if (responseWarnings.length > 0) {
+                    setWarning(responseWarnings.join(' | '))
                 }
 
                 if (json.layout) {
@@ -171,7 +185,7 @@ export default function Workspace() {
                     throw new Error('No floor plan was returned. Please try again.')
                 }
             } catch (err) {
-                throw new Error(err.message || 'Failed to connect to design engine')
+                throw new Error(err.message || 'Design generation timed out. Please retry with simpler requirements.')
             }
             if (data.plan) {
                 setPlan(data.plan)
@@ -181,6 +195,7 @@ export default function Workspace() {
         } catch (err) {
             console.error('Generation failed:', err)
             setError(err.message || 'Generation failed. Please try again.')
+            setWarning(null)
         } finally {
             setLoading(false)
             setLoadingMessage('')
@@ -422,6 +437,16 @@ export default function Workspace() {
                         <div className="loading-overlay">
                             <div className="spinner"></div>
                             <span className="loading-text">{loadingMessage || 'Processing...'}</span>
+                        </div>
+                    )}
+                    {warning && !loading && !error && (
+                        <div style={{
+                            position: 'absolute', top: '1rem', left: '50%', transform: 'translateX(-50%)',
+                            padding: '0.6rem 1.15rem', background: '#fffbeb', border: '1px solid #fde68a',
+                            borderRadius: '10px', fontSize: '0.82rem', color: '#92400e',
+                            zIndex: 10, maxWidth: '90%', textAlign: 'center',
+                        }}>
+                            {warning}
                         </div>
                     )}
                     {error && !loading && (

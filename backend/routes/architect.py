@@ -1,4 +1,4 @@
-"""Architect routes backed by deterministic hub open-plan engine."""
+"""Architect routes backed by Perfcat + DeepSeek preprocessing."""
 
 from __future__ import annotations
 
@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 from app_config import EXPORT_DIR
 from services.cad_export import generate_dxf
 from services.chat_agent import chat_reply
-from services.graph_refiner import refine_layout_with_graph
 from services.multi_agent_orchestrator import generate_dynamic_layout
 from services.openrouter_planner import prepare_floorplan_payload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/architect", tags=["architect"])
+
+_PLANNER_PREPROCESS_TIMEOUT_SECONDS = 60.0
+_DESIGN_GENERATION_TIMEOUT_SECONDS = 45.0
 
 
 class ArchitectDesignRequest(BaseModel):
@@ -41,12 +43,6 @@ class ArchitectDesignRequest(BaseModel):
     plan_mode: str = Field("perfcat")
     previous_strategy: Optional[str] = None
     placement_constraints: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-def _use_graph_refiner(engine_mode: Optional[str]) -> bool:
-    mode = str(engine_mode or "").strip().lower()
-    # Supported modes: standard | gnn_advanced
-    return mode in {"gnn_advanced", "gnn", "advanced"}
 
 
 class ArchitectDesignResponse(BaseModel):
@@ -94,28 +90,37 @@ async def architect_design(req: ArchitectDesignRequest):
 
     input_data = req.dict() if hasattr(req, "dict") else req.model_dump()
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
-    input_data["plan_mode"] = req.plan_mode
+    input_data["plan_mode"] = "perfcat"
 
     planner_meta = {
-        "provider": "deterministic",
+        "provider": "openrouter",
         "model": None,
         "used": False,
-        "plan_mode": req.plan_mode,
+        "plan_mode": "perfcat",
         "warnings": [],
     }
 
     try:
-        input_data, planner_meta = await asyncio.to_thread(
-            prepare_floorplan_payload,
-            input_data,
-            req.plan_mode,
+        input_data, planner_meta = await asyncio.wait_for(
+            asyncio.to_thread(
+                prepare_floorplan_payload,
+                input_data,
+                "perfcat",
+            ),
+            timeout=_PLANNER_PREPROCESS_TIMEOUT_SECONDS,
         )
-    except Exception:
-        logger.warning("Planner pre-processing skipped due to internal issue", exc_info=True)
-        planner_meta["warnings"] = ["Planner pre-processing failed; used deterministic fallback."]
+    except asyncio.TimeoutError:
+        logger.warning("DeepSeek planner timed out after %.1fs", _PLANNER_PREPROCESS_TIMEOUT_SECONDS)
+        raise HTTPException(status_code=504, detail="DeepSeek planner timed out. Please retry.")
+    except Exception as exc:
+        logger.warning("DeepSeek planner failed during pre-processing", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"DeepSeek planner unavailable: {exc}")
 
     try:
-        result = generate_dynamic_layout(input_data)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(generate_dynamic_layout, input_data),
+            timeout=_DESIGN_GENERATION_TIMEOUT_SECONDS,
+        )
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
@@ -133,13 +138,6 @@ async def architect_design(req: ArchitectDesignRequest):
                     existing.append(warning)
             result["warnings"] = existing
 
-        if _use_graph_refiner(req.engine_mode):
-            # Graph refinement is optional and non-blocking for the new multi-agent layout.
-            try:
-                result = refine_layout_with_graph(result)
-            except Exception:
-                logger.warning("Graph refinement skipped due to compatibility issue", exc_info=True)
-
         dxf_url = None
         if req.project_id:
             dxf_url = await _generate_dxf(req.project_id, result)
@@ -155,6 +153,8 @@ async def architect_design(req: ArchitectDesignRequest):
             project_id=req.project_id,
             warnings=result.get("warnings", []),
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Design generation timed out. Please retry.")
     except HTTPException:
         raise
     except Exception as exc:
@@ -174,28 +174,37 @@ async def architect_redesign(req: ArchitectDesignRequest):
     input_data = req.dict() if hasattr(req, "dict") else req.model_dump()
     input_data["bathrooms"] = req.bathrooms or req.bedrooms
     input_data["previous_strategy"] = req.previous_strategy
-    input_data["plan_mode"] = req.plan_mode
+    input_data["plan_mode"] = "perfcat"
 
     planner_meta = {
-        "provider": "deterministic",
+        "provider": "openrouter",
         "model": None,
         "used": False,
-        "plan_mode": req.plan_mode,
+        "plan_mode": "perfcat",
         "warnings": [],
     }
 
     try:
-        input_data, planner_meta = await asyncio.to_thread(
-            prepare_floorplan_payload,
-            input_data,
-            req.plan_mode,
+        input_data, planner_meta = await asyncio.wait_for(
+            asyncio.to_thread(
+                prepare_floorplan_payload,
+                input_data,
+                "perfcat",
+            ),
+            timeout=_PLANNER_PREPROCESS_TIMEOUT_SECONDS,
         )
-    except Exception:
-        logger.warning("Planner pre-processing skipped due to internal issue", exc_info=True)
-        planner_meta["warnings"] = ["Planner pre-processing failed; used deterministic fallback."]
+    except asyncio.TimeoutError:
+        logger.warning("DeepSeek planner timed out after %.1fs", _PLANNER_PREPROCESS_TIMEOUT_SECONDS)
+        raise HTTPException(status_code=504, detail="DeepSeek planner timed out. Please retry.")
+    except Exception as exc:
+        logger.warning("DeepSeek planner failed during pre-processing", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"DeepSeek planner unavailable: {exc}")
 
     try:
-        result = generate_dynamic_layout(input_data)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(generate_dynamic_layout, input_data),
+            timeout=_DESIGN_GENERATION_TIMEOUT_SECONDS,
+        )
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
 
@@ -213,12 +222,6 @@ async def architect_redesign(req: ArchitectDesignRequest):
                     existing.append(warning)
             result["warnings"] = existing
 
-        if _use_graph_refiner(req.engine_mode):
-            try:
-                result = refine_layout_with_graph(result)
-            except Exception:
-                logger.warning("Graph refinement skipped due to compatibility issue", exc_info=True)
-
         dxf_url = None
         if req.project_id:
             dxf_url = await _generate_dxf(req.project_id, result)
@@ -234,6 +237,8 @@ async def architect_redesign(req: ArchitectDesignRequest):
             project_id=req.project_id,
             warnings=result.get("warnings", []),
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Design generation timed out. Please retry.")
     except HTTPException:
         raise
     except Exception as exc:

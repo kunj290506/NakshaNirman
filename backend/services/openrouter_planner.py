@@ -1,9 +1,4 @@
-"""OpenRouter-assisted payload shaping for floor plan generation.
-
-This module is intentionally optional:
-- It enriches incoming requests when OpenRouter is configured.
-- It never blocks generation; deterministic planning remains the fallback.
-"""
+"""DeepSeek (via OpenRouter) payload shaping for Perfcat floor plan generation."""
 
 from __future__ import annotations
 
@@ -19,7 +14,10 @@ from app_config import (
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_ENABLED,
+    OPENROUTER_PLANNER_MODEL,
+    OPENROUTER_TEXT_MAX_TOKENS,
     OPENROUTER_TEXT_MODEL,
+    OPENROUTER_TEXT_TEMPERATURE,
     OPENROUTER_VERIFY_SSL,
 )
 
@@ -28,6 +26,20 @@ logger = logging.getLogger(__name__)
 _ALLOWED_EXTRAS = {"pooja", "study", "store", "balcony", "garage", "staircase"}
 _ALLOWED_FACING = {"east", "west", "north", "south"}
 _ALLOWED_FAMILY = {"nuclear", "joint-family", "working-couple", "elderly", "rental"}
+_PLANNER_ALLOWED_KEYS = (
+    "plot_width",
+    "plot_length",
+    "total_area",
+    "bedrooms",
+    "bathrooms",
+    "facing",
+    "vastu",
+    "extras",
+    "family_type",
+    "placement_constraints",
+)
+_PERFCAT_MODE = "perfcat"
+_DEEPSEEK_PLANNER_MODEL = "deepseek/deepseek-chat"
 
 
 def _to_int(value: Any, default: int, low: int, high: int) -> int:
@@ -60,10 +72,8 @@ def _to_bool(value: Any, default: bool = True) -> bool:
 
 
 def _norm_mode(value: Any) -> str:
-    token = str(value or "").strip().lower()
-    if token in {"perfcat", "perfcat_plan", "perfect", "performance", "pro"}:
-        return "perfcat"
-    return "standard"
+    # Perfcat is mandatory for this planner path.
+    return _PERFCAT_MODE
 
 
 def _norm_facing(value: Any) -> str:
@@ -127,6 +137,25 @@ def _norm_constraints(value: Any) -> List[Dict[str, Any]]:
         out.append(normalized)
 
     return out
+
+
+def _normalize_model_slug(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token.endswith(":free"):
+        token = token[:-5]
+    return token
+
+
+def _deepseek_model(value: str, fallback: str) -> str:
+    token = _normalize_model_slug(value)
+    if token.startswith("deepseek/"):
+        return token
+    return fallback
+
+
+def _planner_model_name() -> str:
+    configured = str(OPENROUTER_PLANNER_MODEL or OPENROUTER_TEXT_MODEL or "").strip()
+    return _deepseek_model(configured, _DEEPSEEK_PLANNER_MODEL)
 
 
 def _extract_json_object(text: str) -> Dict[str, Any]:
@@ -244,19 +273,84 @@ def _perfcat_defaults(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _planner_seed_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    seed: Dict[str, Any] = {}
+
+    for key in _PLANNER_ALLOWED_KEYS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None:
+            continue
+
+        if key in {"plot_width", "plot_length"}:
+            normalized = _to_float(value, 0.0)
+            if normalized <= 0:
+                continue
+            seed[key] = round(normalized, 1)
+            continue
+
+        if key == "total_area":
+            normalized = _to_float(value, 1200.0)
+            if normalized <= 0:
+                continue
+            seed[key] = round(normalized, 1)
+            continue
+
+        if key == "bedrooms":
+            seed[key] = _to_int(value, 2, 1, 4)
+            continue
+
+        if key == "bathrooms":
+            default_baths = int(seed.get("bedrooms") or 2)
+            seed[key] = _to_int(value, default_baths, 1, 6)
+            continue
+
+        if key == "facing":
+            seed[key] = _norm_facing(value)
+            continue
+
+        if key == "vastu":
+            seed[key] = _to_bool(value, True)
+            continue
+
+        if key == "extras":
+            seed[key] = _norm_extras(value)
+            continue
+
+        if key == "family_type":
+            seed[key] = _norm_family(value)
+            continue
+
+        if key == "placement_constraints":
+            constraints = _norm_constraints(value)
+            if constraints:
+                seed[key] = constraints
+            continue
+
+        seed[key] = value
+
+    return seed
+
+
 def _openrouter_messages(payload: Dict[str, Any], plan_mode: str) -> List[Dict[str, str]]:
+    seed_payload = _planner_seed_payload(payload)
     system_prompt = (
-        "You are an Indian residential planning assistant. Return one compact JSON object only. "
-        "No markdown and no explanation. Suggest only valid fields used by a floor-plan generator."
+        "You are Naksha Planner Optimizer for Indian residential floor plans. "
+        "Return one compact JSON object only with minimal override keys that improve feasibility, "
+        "adjacency quality, and practical Vastu alignment while preserving user intent. "
+        "Do not include markdown or explanations. Allowed keys only: "
+        "bedrooms, bathrooms, facing, vastu, extras, family_type, placement_constraints, "
+        "plot_width, plot_length, total_area."
     )
 
     user_prompt = (
-        "Optimize this payload for a realistic single-floor house plan. "
+        "Optimize this seed payload for a realistic single-floor house plan. "
         f"Plan profile: {plan_mode}. "
         "Allowed keys: bedrooms, bathrooms, facing, vastu, extras, family_type, placement_constraints, "
         "plot_width, plot_length, total_area. "
         "Only include keys that should be changed.\n"
-        f"Payload: {json.dumps(payload, separators=(',', ':'))}"
+        f"Seed payload: {json.dumps(seed_payload, separators=(',', ':'))}"
     )
 
     return [
@@ -265,18 +359,23 @@ def _openrouter_messages(payload: Dict[str, Any], plan_mode: str) -> List[Dict[s
     ]
 
 
-def _call_openrouter_overrides(payload: Dict[str, Any], plan_mode: str) -> Tuple[Dict[str, Any], List[str]]:
-    warnings: List[str] = []
+def _call_openrouter_overrides(payload: Dict[str, Any], plan_mode: str) -> Dict[str, Any]:
+    planner_model = _planner_model_name()
 
-    if not OPENROUTER_ENABLED or not OPENROUTER_API_KEY or not OPENROUTER_TEXT_MODEL:
-        return {}, warnings
+    if not OPENROUTER_ENABLED:
+        raise RuntimeError("DeepSeek planner is disabled. Set OPENROUTER_ENABLED=true.")
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("DeepSeek planner is not configured. Set OPENROUTER_API_KEY.")
+    if not planner_model:
+        raise RuntimeError("DeepSeek planner model is not configured.")
 
     try:
+        max_tokens = max(220, min(int(OPENROUTER_TEXT_MAX_TOKENS), 520))
         body = {
-            "model": OPENROUTER_TEXT_MODEL,
+            "model": planner_model,
             "messages": _openrouter_messages(payload, plan_mode),
-            "temperature": 0.15,
-            "max_tokens": 500,
+            "temperature": max(0.0, min(0.6, float(OPENROUTER_TEXT_TEMPERATURE))),
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         }
         req = urllib.request.Request(
@@ -295,7 +394,7 @@ def _call_openrouter_overrides(payload: Dict[str, Any], plan_mode: str) -> Tuple
         if not OPENROUTER_VERIFY_SSL:
             ssl_context = ssl._create_unverified_context()
 
-        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as resp:
+        with urllib.request.urlopen(req, timeout=45, context=ssl_context) as resp:
             result = json.loads(resp.read().decode("utf-8", errors="replace"))
 
         choices = result.get("choices") or []
@@ -304,20 +403,18 @@ def _call_openrouter_overrides(payload: Dict[str, Any], plan_mode: str) -> Tuple
             raw_text = str(((choices[0] or {}).get("message") or {}).get("content") or "")
 
         parsed = _extract_json_object(raw_text)
-        return _sanitize_overrides(parsed), warnings
+        return _sanitize_overrides(parsed)
 
     except urllib.error.HTTPError as exc:
-        warnings.append("OpenRouter planner unavailable; used deterministic fallback.")
-        logger.warning("OpenRouter planner HTTP failure: %s", exc)
-        return {}, warnings
+        logger.warning("DeepSeek planner HTTP failure: %s", exc)
+        raise RuntimeError(f"DeepSeek planner request failed ({exc.code}).") from exc
     except Exception as exc:
-        warnings.append("OpenRouter planner unavailable; used deterministic fallback.")
-        logger.warning("OpenRouter planner call failed: %s", exc)
-        return {}, warnings
+        logger.warning("DeepSeek planner call failed: %s", exc)
+        raise RuntimeError("DeepSeek planner call failed.") from exc
 
 
 def prepare_floorplan_payload(payload: Dict[str, Any], plan_mode: Any = "perfcat") -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Prepare a robust generation payload with optional OpenRouter overrides.
+    """Prepare a robust Perfcat payload with required DeepSeek overrides.
 
     Returns:
         Tuple[prepared_payload, planner_meta]
@@ -326,25 +423,20 @@ def prepare_floorplan_payload(payload: Dict[str, Any], plan_mode: Any = "perfcat
     out = dict(payload or {})
 
     meta: Dict[str, Any] = {
-        "provider": "deterministic",
-        "model": None,
+        "provider": "openrouter",
+        "model": _planner_model_name(),
         "used": False,
         "plan_mode": mode,
         "warnings": [],
     }
 
-    if mode == "perfcat":
-        out = _merge_payload(out, _perfcat_defaults(out))
+    out = _merge_payload(out, _perfcat_defaults(out))
 
-    overrides, warnings = _call_openrouter_overrides(out, mode)
-    if warnings:
-        meta["warnings"].extend(warnings)
+    overrides = _call_openrouter_overrides(out, mode)
 
     if overrides:
         out = _merge_payload(out, overrides)
-        meta["provider"] = "openrouter"
-        meta["model"] = OPENROUTER_TEXT_MODEL
-        meta["used"] = True
+    meta["used"] = True
 
     out["plan_mode"] = mode
     return out, meta

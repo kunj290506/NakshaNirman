@@ -16,6 +16,20 @@ function parseGenerateToken(reply) {
   }
 }
 
+function formatAssistantReply(reply) {
+  if (typeof reply !== 'string') return 'Please share your plot size and BHK requirement.'
+  const trimmed = reply.trim()
+  if (!trimmed) return 'Please share your plot size and BHK requirement.'
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2)
+    } catch {
+      return reply
+    }
+  }
+  return reply
+}
+
 function payloadToRooms(payload) {
   const rooms = [
     { room_type: 'master_bedroom', quantity: 1 },
@@ -71,11 +85,12 @@ export default function AIDesignChat({ onGenerate, loading }) {
         body: JSON.stringify({ message: text, history }),
       })
       const data = await res.json().catch(() => ({}))
-      const reply = data.reply || 'Please share your plot size and BHK requirement.'
+      const rawReply = data.reply || 'Please share your plot size and BHK requirement.'
+      const reply = formatAssistantReply(rawReply)
 
       setMessages((prev) => [...prev, { role: 'assistant', content: reply, ts: Date.now() }])
 
-      const payload = data.generate_payload || parseGenerateToken(reply)
+      const payload = data.generate_payload || parseGenerateToken(rawReply)
       if (payload) {
         const rooms = payloadToRooms(payload)
         const totalArea = Number(payload.total_area || (payload.plot_width * payload.plot_length))

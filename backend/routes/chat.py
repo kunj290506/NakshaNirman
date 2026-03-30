@@ -1,11 +1,10 @@
-"""WebSocket chat route for real-time Groq-powered conversation."""
+"""WebSocket chat route for real-time DeepSeek-powered conversation."""
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
-from database import get_db, async_session
+from database import async_session
 from models import Project
-from services.chat import chat_with_groq
+from services.chat_agent import chat_reply
 import json
 
 router = APIRouter(tags=["chat"])
@@ -13,7 +12,7 @@ router = APIRouter(tags=["chat"])
 
 @router.websocket("/api/chat")
 async def chat_websocket(websocket: WebSocket):
-    """WebSocket endpoint for real-time chat with Groq."""
+    """WebSocket endpoint for real-time chat with DeepSeek."""
     await websocket.accept()
 
     history = []
@@ -30,12 +29,20 @@ async def chat_websocket(websocket: WebSocket):
             if not user_text:
                 continue
 
-            # Get response from Groq (or fallback)
-            result = await chat_with_groq(user_text, history)
+            reply_text = await chat_reply(user_text, history)
+            should_generate = "GENERATE_PLAN:" in reply_text
+
+            extracted_data = None
+            stripped = reply_text.strip()
+            if stripped.startswith("{"):
+                try:
+                    extracted_data = json.loads(stripped)
+                except Exception:
+                    extracted_data = None
 
             # Update history
             history.append({"role": "user", "content": user_text})
-            history.append({"role": "assistant", "content": result["reply"]})
+            history.append({"role": "assistant", "content": reply_text})
 
             # Save history to project if we have one
             if project_id:
@@ -53,9 +60,9 @@ async def chat_websocket(websocket: WebSocket):
 
             # Send response
             await websocket.send_text(json.dumps({
-                "reply": result["reply"],
-                "extracted_data": result.get("extracted_data"),
-                "should_generate": result.get("should_generate", False),
+                "reply": reply_text,
+                "extracted_data": extracted_data,
+                "should_generate": should_generate,
             }))
 
     except WebSocketDisconnect:

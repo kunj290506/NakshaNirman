@@ -16,6 +16,7 @@ from app_config import EXPORT_DIR
 import json
 
 router = APIRouter(prefix="/api", tags=["floorplan"])
+_PLANNER_PREPROCESS_TIMEOUT_SECONDS = 60.0
 
 
 def _default_boundary(total_area: float) -> list:
@@ -101,14 +102,22 @@ async def generate_floorplan(data: GenerateRequest, db: AsyncSession = Depends(g
             "vastu": True,
             "boundary_polygon": boundary,
             "family_type": "nuclear",
-            "plan_mode": data.plan_mode or "perfcat",
+            "plan_mode": "perfcat",
         }
 
-        payload, planner_meta = await asyncio.to_thread(
-            prepare_floorplan_payload,
-            payload,
-            data.plan_mode or "perfcat",
-        )
+        try:
+            payload, planner_meta = await asyncio.wait_for(
+                asyncio.to_thread(
+                    prepare_floorplan_payload,
+                    payload,
+                    "perfcat",
+                ),
+                timeout=_PLANNER_PREPROCESS_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="DeepSeek planner timed out. Please retry.")
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DeepSeek planner unavailable: {exc}")
 
         plan = generate_dynamic_layout(payload)
         if "error" in plan:
@@ -173,6 +182,10 @@ async def generate_floorplan(data: GenerateRequest, db: AsyncSession = Depends(g
             dxf_url=f"/api/download-dxf/{project.id}",
         )
 
+    except HTTPException:
+        project.status = ProjectStatus.DRAFTING
+        await db.flush()
+        raise
     except Exception as e:
         project.status = ProjectStatus.DRAFTING
         await db.flush()

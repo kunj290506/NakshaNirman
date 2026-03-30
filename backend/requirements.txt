@@ -5,7 +5,6 @@ sqlalchemy
 aiosqlite
 pydantic
 pydantic-settings
-groq
 opencv-python-headless
 numpy
 shapely
