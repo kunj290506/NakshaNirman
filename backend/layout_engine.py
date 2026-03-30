@@ -5,6 +5,10 @@ All coordinate placement is done mathematically — zero overlaps guaranteed.
 """
 from __future__ import annotations
 import logging
+
+def _rnd(val: float, d: int = 2) -> float:
+    return int(val * (10**d)) / (10.0**d)
+
 from models import (
     PlanRequest, PlanResponse, PlotInfo,
     RoomData, DoorData, WindowData,
@@ -36,11 +40,13 @@ Return ONLY this JSON:
 }"""
 
 
+from typing import List, Dict, Any
+
 # ─────────────────────────────────────────────────────────────
 # Room spec builder
 # ─────────────────────────────────────────────────────────────
-def build_room_list(bedrooms: int, extras: list[str],
-                    usable_w: float, usable_l: float) -> list[dict]:
+def build_room_list(bedrooms: int, extras: List[str],
+                    usable_w: float, usable_l: float) -> List[Dict[str, Any]]:
     """Build room specifications based on BHK count and extras."""
     rooms = []
 
@@ -156,17 +162,17 @@ def build_room_list(bedrooms: int, extras: list[str],
 # ─────────────────────────────────────────────────────────────
 # BSP Packing — zero-overlap guaranteed
 # ─────────────────────────────────────────────────────────────
-def pack_rooms_bsp(room_specs: list[dict],
-                   usable_w: float, usable_l: float) -> list[dict]:
+def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
+                   usable_w: float, usable_l: float) -> List[Dict[str, Any]]:
     """
     Pack rooms into three horizontal bands with zero overlaps.
     Band 1 (public, front/road):  y=0               height = 30% of usable_l
     Band 2 (service, middle):     y=band1_h          height = 27% of usable_l
     Band 3 (private, rear):       y=band1_h+band2_h  height = 43% of usable_l
     """
-    band1_h = round(usable_l * 0.30, 2)
-    band2_h = round(usable_l * 0.27, 2)
-    band3_h = round(usable_l - band1_h - band2_h, 2)  # remainder to avoid gaps
+    band1_h = _rnd(usable_l * 0.30, 2)
+    band2_h = _rnd(usable_l * 0.27, 2)
+    band3_h = _rnd(usable_l - band1_h - band2_h, 2)  # remainder to avoid gaps
 
     bands = [
         {"y": 0, "h": band1_h, "zone": 1},
@@ -208,8 +214,8 @@ def pack_rooms_bsp(room_specs: list[dict],
     return placed
 
 
-def _pack_strip(rooms: list[dict], bx: float, by: float,
-                bw: float, bh: float, band_num: int) -> list[dict]:
+def _pack_strip(rooms: List[Dict[str, Any]], bx: float, by: float,
+                bw: float, bh: float, band_num: int) -> List[Dict[str, Any]]:
     """Pack rooms left-to-right in a strip, scaling to fill the band exactly."""
     if not rooms:
         return []
@@ -222,35 +228,35 @@ def _pack_strip(rooms: list[dict], bx: float, by: float,
     for i, room in enumerate(rooms):
         if i == len(rooms) - 1:
             # Last room gets remaining width
-            rw = round(bx + bw - current_x, 2)
+            rw = _rnd(bx + bw - current_x, 2)
         else:
-            rw = round(bw * (room["pref_w"] / total_pref_w), 2)
+            rw = _rnd(bw * (room["pref_w"] / total_pref_w), 2)
             rw = max(rw, room["min_w"])
 
         # Ensure doesn't exceed band
         if current_x + rw > bx + bw:
-            rw = round(bx + bw - current_x, 2)
+            rw = _rnd(bx + bw - current_x, 2)
 
         rh = bh  # room fills full band height
 
         placed.append({
             "type": room["type"],
             "label": room["label"],
-            "x": round(current_x, 2),
-            "y": round(by, 2),
-            "width": round(rw, 2),
-            "height": round(rh, 2),
+            "x": _rnd(current_x, 2),
+            "y": _rnd(by, 2),
+            "width": _rnd(rw, 2),
+            "height": _rnd(rh, 2),
             "zone": room["zone"],
             "band": band_num,
         })
 
-        current_x = round(current_x + rw, 2)
+        current_x = _rnd(current_x + rw, 2)
 
     return placed
 
 
-def _pack_band2(rooms: list[dict], bx: float, by: float,
-                bw: float, bh: float) -> list[dict]:
+def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
+                bw: float, bh: float) -> List[Dict[str, Any]]:
     """
     Band 2 special layout:
     - Corridor spine runs down the center (4ft wide)
@@ -290,10 +296,10 @@ def _pack_band2(rooms: list[dict], bx: float, by: float,
     if has_corridor:
         placed.append({
             "type": "corridor", "label": "Corridor",
-            "x": round(corridor_x, 2),
-            "y": round(by, 2),
-            "width": round(corridor_w, 2),
-            "height": round(bh, 2),
+            "x": _rnd(corridor_x, 2),
+            "y": _rnd(by, 2),
+            "width": _rnd(corridor_w, 2),
+            "height": _rnd(bh, 2),
             "zone": 2, "band": 2,
         })
 
@@ -311,36 +317,36 @@ def _pack_band2(rooms: list[dict], bx: float, by: float,
     return placed
 
 
-def _pack_side_vertical(rooms: list[dict], sx: float, sy: float,
-                        sw: float, sh: float, placed: list[dict]):
+def _pack_side_vertical(rooms: List[Dict[str, Any]], sx: float, sy: float,
+                        sw: float, sh: float, placed: List[Dict[str, Any]]):
     """Pack rooms vertically in a side strip."""
     total_pref_h = sum(r.get("pref_h", r["min_h"]) for r in rooms)
     current_y = sy
 
     for i, room in enumerate(rooms):
         if i == len(rooms) - 1:
-            rh = round(sy + sh - current_y, 2)
+            rh = _rnd(sy + sh - current_y, 2)
         else:
-            rh = round(sh * (room.get("pref_h", room["min_h"]) / total_pref_h), 2)
+            rh = _rnd(sh * (room.get("pref_h", room["min_h"]) / total_pref_h), 2)
             rh = max(rh, room["min_h"])
 
         if current_y + rh > sy + sh:
-            rh = round(sy + sh - current_y, 2)
+            rh = _rnd(sy + sh - current_y, 2)
 
         placed.append({
             "type": room["type"],
             "label": room["label"],
-            "x": round(sx, 2),
-            "y": round(current_y, 2),
-            "width": round(sw, 2),
-            "height": round(rh, 2),
+            "x": _rnd(sx, 2),
+            "y": _rnd(current_y, 2),
+            "width": _rnd(sw, 2),
+            "height": _rnd(rh, 2),
             "zone": room.get("zone", 2),
             "band": 2,
         })
-        current_y = round(current_y + rh, 2)
+        current_y = _rnd(current_y + rh, 2)
 
 
-def _verify_no_overlaps(placed: list[dict]):
+def _verify_no_overlaps(placed: List[Dict[str, Any]]):
     """Check all placed rooms for overlaps. Log warnings if found."""
     for i, a in enumerate(placed):
         for j in range(i + 1, len(placed)):
@@ -352,10 +358,10 @@ def _verify_no_overlaps(placed: list[dict]):
                     b["label"], b["x"], b["y"], b["width"], b["height"],
                 )
                 # Auto-resolve: shrink the second room slightly
-                b["width"] = round(b["width"] - 0.1, 2)
+                b["width"] = _rnd(b["width"] - 0.1, 2)
 
 
-def _rects_overlap(a: dict, b: dict) -> bool:
+def _rects_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     """Check if two rectangles overlap (with 0.1ft tolerance)."""
     eps = 0.1
     return (
@@ -369,17 +375,16 @@ def _rects_overlap(a: dict, b: dict) -> bool:
 # ─────────────────────────────────────────────────────────────
 # Door & Window placement
 # ─────────────────────────────────────────────────────────────
-def add_doors_and_windows(placed_rooms: list[dict],
+def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
                           usable_w: float, usable_l: float,
                           facing: str) -> tuple[list[DoorData], list[WindowData]]:
     """Add doors between adjacent rooms and windows on exterior walls."""
-    doors = []
-    windows = []
-    door_count = 0
-    win_count = 0
+    doors: List[DoorData] = []
+    windows: List[WindowData] = []
+    door_count: int = 0
+    win_count: int = 0
 
-    # Build a lookup for quick adjacency checks
-    room_map = {r["label"]: r for r in placed_rooms}
+    # Build a lookup for quick adjacency checks (Removed unused room_map)
 
     # Find the living room for main entrance
     living = None
@@ -390,7 +395,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
 
     # Main entrance door on the road-facing wall of living room
     if living:
-        door_count += 1
+        door_count = door_count + 1
         if facing == "south":
             doors.append(DoorData(
                 id=f"door_{door_count:02d}", type="main",
@@ -431,12 +436,12 @@ def add_doors_and_windows(placed_rooms: list[dict],
             shared = _shared_wall(a, b)
             if shared:
                 wall_side, sx, sy = shared
-                door_count += 1
+                door_count = door_count + 1
                 doors.append(DoorData(
                     id=f"door_{door_count:02d}", type="interior",
                     room_id=a.get("type", ""),
                     wall=wall_side,
-                    x=round(sx, 2), y=round(sy, 2),
+                    x=_rnd(sx, 2), y=_rnd(sy, 2),
                     width=3.0,
                 ))
 
@@ -448,7 +453,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
         eps = 0.3
         # South wall (y == 0 means touching front setback boundary)
         if r["y"] <= eps:
-            win_count += 1
+            win_count = win_count + 1
             windows.append(WindowData(
                 id=f"win_{win_count:02d}", room_id=r["type"],
                 wall="south",
@@ -458,7 +463,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
             ))
         # North wall (touching rear boundary)
         if abs(r["y"] + r["height"] - usable_l) <= eps:
-            win_count += 1
+            win_count = win_count + 1
             windows.append(WindowData(
                 id=f"win_{win_count:02d}", room_id=r["type"],
                 wall="north",
@@ -468,7 +473,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
             ))
         # West wall (x == 0 means touching left setback boundary)
         if r["x"] <= eps:
-            win_count += 1
+            win_count = win_count + 1
             windows.append(WindowData(
                 id=f"win_{win_count:02d}", room_id=r["type"],
                 wall="west",
@@ -478,7 +483,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
             ))
         # East wall (touching right boundary)
         if abs(r["x"] + r["width"] - usable_w) <= eps:
-            win_count += 1
+            win_count = win_count + 1
             windows.append(WindowData(
                 id=f"win_{win_count:02d}", room_id=r["type"],
                 wall="east",
@@ -490,7 +495,7 @@ def add_doors_and_windows(placed_rooms: list[dict],
     return doors, windows
 
 
-def _shared_wall(a: dict, b: dict) -> tuple[str, float, float] | None:
+def _shared_wall(a: Dict[str, Any], b: Dict[str, Any]) -> tuple[str, float, float] | None:
     """
     Check if rooms a and b share a wall segment.
     Returns (wall_side, door_x, door_y) or None.
@@ -539,8 +544,8 @@ async def generate_plan_deterministic(req: PlanRequest) -> PlanResponse:
     Generate a floor plan using deterministic BSP packing.
     LLM is used ONLY for vastu_score and architect_note.
     """
-    uw = round(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
-    ul = round(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
+    uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
+    ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
 
     # Step 1: Try LLM for Vastu advice (non-critical)
     vastu_score = 75.0
@@ -582,7 +587,7 @@ async def generate_plan_deterministic(req: PlanRequest) -> PlanResponse:
             y=p["y"],
             width=p["width"],
             height=p["height"],
-            area=round(p["width"] * p["height"], 1),
+            area=_rnd(p["width"] * p["height"], 1),
             zone=("public" if p["zone"] == 1
                   else "service" if p["zone"] == 2
                   else "private"),

@@ -3,7 +3,6 @@ DXF export — converts a PlanResponse into a professional AutoCAD-style DXF fil
 Includes furniture symbols, hatch patterns, dimension lines, north arrow, and title block.
 """
 from __future__ import annotations
-import math
 import os
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
@@ -134,7 +133,6 @@ def plan_to_dxf(plan: PlanResponse, filepath: str) -> str:
 
         # Door swing arc
         if door.wall in ("south", "north"):
-            arc_dir = 1 if door.wall == "south" else -1
             msp.add_line(
                 (dx, dy), (dx + dw, dy),
                 dxfattribs={"layer": "DOORS"},
@@ -225,7 +223,7 @@ def _add_hatch(msp, room_type: str, rx, ry, rw, rh):
     if room_type in ("bathroom", "master_bath", "toilet"):
         # Diagonal lines for wet areas
         spacing = 150
-        x1, y1, x2, y2 = rx, ry, rx + rw, ry + rh
+        x1, y1, y2 = rx, ry, ry + rh
         d = 0
         while d < rw + rh:
             lx1 = x1 + min(d, rw)

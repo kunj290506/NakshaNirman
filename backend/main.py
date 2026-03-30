@@ -56,7 +56,6 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-
 # ── Simple rate limiter (per IP) ─────────────────────────────
 _rate_store: Dict[str, List[float]] = defaultdict(list)
 RATE_LIMIT = 20

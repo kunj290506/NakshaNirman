@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
 
@@ -16,7 +16,7 @@ class PlanRequest(BaseModel):
         description="Road-facing direction",
         pattern="^(north|south|east|west)$",
     )
-    extras: list[str] = Field(
+    extras: List[str] = Field(
         default_factory=list,
         description="Optional rooms: pooja, study, garage, balcony, store",
     )
@@ -62,7 +62,7 @@ class PlotInfo(BaseModel):
     usable_width: float
     usable_length: float
     road_side: str = "south"
-    setbacks: dict = Field(
+    setbacks: Dict[str, float] = Field(
         default_factory=lambda: {
             "front": 6.5,
             "rear": 5,
@@ -75,9 +75,9 @@ class PlotInfo(BaseModel):
 # ── Full plan response ──────────────────────────────────────
 class PlanResponse(BaseModel):
     plot: PlotInfo
-    rooms: list[RoomData]
-    doors: list[DoorData] = []
-    windows: list[WindowData] = []
+    rooms: List[RoomData]
+    doors: List[DoorData] = []
+    windows: List[WindowData] = []
     vastu_score: float = 0
     architect_note: str = ""
     dxf_url: Optional[str] = None
