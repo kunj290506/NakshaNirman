@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '';  // Use Vite proxy — requests go through /api
 
 export async function generatePlan(data) {
   const resp = await fetch(`${API_BASE}/api/generate`, {
@@ -15,5 +15,6 @@ export async function generatePlan(data) {
 
 export function getDownloadUrl(dxfUrl) {
   if (!dxfUrl) return null;
+  // Use proxy path (no need for absolute URL)
   return `${API_BASE}${dxfUrl}`;
 }

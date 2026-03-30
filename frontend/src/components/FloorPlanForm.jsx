@@ -75,7 +75,7 @@ export default function FloorPlanForm({ onGenerate, loading }) {
       </div>
 
       {/* Configuration */}
-      <div className="form-section" style={{ marginTop: 16 }}>
+      <div className="form-section" style={{ marginTop: 14 }}>
         <div className="form-section-title">Configuration</div>
         <div className="form-row">
           <div className="form-group">
@@ -110,7 +110,7 @@ export default function FloorPlanForm({ onGenerate, loading }) {
       </div>
 
       {/* Extras */}
-      <div className="form-section" style={{ marginTop: 16 }}>
+      <div className="form-section" style={{ marginTop: 14 }}>
         <div className="form-section-title">Optional Rooms</div>
         <div className="extras-grid">
           {EXTRAS.map(extra => (
@@ -135,7 +135,7 @@ export default function FloorPlanForm({ onGenerate, loading }) {
         type="submit"
         className={`btn-generate ${loading ? 'loading' : ''}`}
         disabled={loading}
-        style={{ marginTop: 20 }}
+        style={{ marginTop: 18 }}
       >
         {loading ? 'Generating Plan...' : 'Generate Floor Plan'}
       </button>

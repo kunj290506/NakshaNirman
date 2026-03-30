@@ -1,6 +1,6 @@
 """
 NakshaNirman — FastAPI backend.
-Endpoints: /api/generate, /api/download/{filename}, /api/health, /api/validate
+Uses deterministic BSP layout engine. LLM only for Vastu advice.
 """
 from __future__ import annotations
 import logging
@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 import time
+from typing import Dict, List
 from collections import defaultdict
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from config import EXPORTS_DIR
 from models import PlanRequest, PlanResponse
-from layout import generate_plan
+from layout_engine import generate_plan_deterministic
 from dxf_export import plan_to_dxf
 
 logging.basicConfig(level=logging.INFO)
@@ -24,15 +25,19 @@ log = logging.getLogger("main")
 # ── App ──────────────────────────────────────────────────────
 app = FastAPI(
     title="NakshaNirman API",
-    version="2.0.0",
-    description="Indian residential floor plan generator",
+    version="3.0.0",
+    description="Indian residential floor plan generator with deterministic BSP layout",
     docs_url="/api/docs",
     redoc_url=None,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
@@ -51,10 +56,11 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+
 # ── Simple rate limiter (per IP) ─────────────────────────────
-_rate_store: dict[str, list[float]] = defaultdict(list)
-RATE_LIMIT = 10  # max requests per minute to /api/generate
-RATE_WINDOW = 60  # seconds
+_rate_store: Dict[str, List[float]] = defaultdict(list)
+RATE_LIMIT = 20
+RATE_WINDOW = 60
 
 
 @app.middleware("http")
@@ -75,20 +81,19 @@ async def rate_limit_generate(request: Request, call_next):
 # ── Health ───────────────────────────────────────────────────
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "NakshaNirman"}
-
+    return {"status": "ok", "service": "NakshaNirman", "version": "3.0.0"}
 
 
 # ── Generate ─────────────────────────────────────────────────
 @app.post("/api/generate", response_model=PlanResponse)
 async def generate(req: PlanRequest):
-    """Generate a floor plan from user inputs."""
+    """Generate a floor plan using deterministic BSP layout engine."""
     log.info(
         "Generate request: %sx%s %dBHK %s extras=%s",
         req.plot_width, req.plot_length, req.bedrooms, req.facing, req.extras,
     )
     try:
-        plan = await generate_plan(req)
+        plan = await generate_plan_deterministic(req)
     except Exception as e:
         log.exception("Plan generation failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -111,11 +116,9 @@ async def generate(req: PlanRequest):
 @app.get("/api/download/{filename}")
 async def download(filename: str):
     """Download a generated DXF file."""
-    # Security: validate filename format (prevent path traversal)
     if not re.match(r"^plan_[a-f0-9]{8}\.dxf$", filename):
         raise HTTPException(status_code=400, detail="Invalid filename format")
     filepath = os.path.join(EXPORTS_DIR, filename)
-    # Ensure resolved path is inside exports dir
     real_path = os.path.realpath(filepath)
     if not real_path.startswith(os.path.realpath(EXPORTS_DIR)):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -137,7 +140,6 @@ async def validate(plan: PlanResponse):
     ul = plan.plot.usable_length
 
     for room in plan.rooms:
-        # Check bounds
         if room.x + room.width > uw + 0.5:
             issues.append(f"{room.label} exceeds usable width")
         if room.y + room.height > ul + 0.5:
@@ -145,9 +147,8 @@ async def validate(plan: PlanResponse):
         if room.x < -0.5 or room.y < -0.5:
             issues.append(f"{room.label} has negative coordinates")
 
-    # Check overlaps (simple rectangle intersection)
     for i, a in enumerate(plan.rooms):
-        for b in plan.rooms[i + 1 :]:
+        for b in plan.rooms[i + 1:]:
             if (
                 a.x < b.x + b.width
                 and a.x + a.width > b.x

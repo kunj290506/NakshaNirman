@@ -1,5 +1,6 @@
 """
 LLM caller — single async function that hits OpenRouter and returns parsed JSON.
+Now used ONLY for room-ordering preference and Vastu advice, NOT coordinates.
 """
 from __future__ import annotations
 import json
@@ -12,8 +13,8 @@ async def call_openrouter(
     system_prompt: str,
     user_message: str,
     *,
-    temperature: float = 0.3,
-    max_tokens: int = 3000,
+    temperature: float = 0.2,
+    max_tokens: int = 1500,
 ) -> dict:
     """Call DeepSeek via OpenRouter. Returns parsed dict or raises."""
     url = f"{OPENROUTER_BASE_URL}/chat/completions"
