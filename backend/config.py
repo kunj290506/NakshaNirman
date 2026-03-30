@@ -1,0 +1,18 @@
+"""
+Configuration — loads environment variables for OpenRouter API.
+"""
+import os
+from dotenv import load_dotenv
+
+# Load from backend/.env first, fallback to root .env
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+OPENROUTER_BASE_URL = os.getenv(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+)
+
+EXPORTS_DIR = os.path.join(os.path.dirname(__file__), "exports")
+os.makedirs(EXPORTS_DIR, exist_ok=True)

@@ -1,107 +1,83 @@
-"""SQLAlchemy ORM models matching the data model in final_doc.md."""
-
-import uuid
-from datetime import datetime, timezone
-from sqlalchemy import Column, String, Float, Integer, DateTime, Text, ForeignKey, Enum as SAEnum
-from sqlalchemy.orm import relationship
-from database import Base
-import enum
+"""
+Pydantic models for request/response validation.
+"""
+from __future__ import annotations
+from typing import Optional
+from pydantic import BaseModel, Field
 
 
-def generate_uuid():
-    return str(uuid.uuid4())
+# ── Request ──────────────────────────────────────────────────
+class PlanRequest(BaseModel):
+    plot_width: float = Field(..., ge=20, le=200, description="Plot width in feet")
+    plot_length: float = Field(..., ge=20, le=200, description="Plot length in feet")
+    bedrooms: int = Field(..., ge=1, le=4, description="Number of bedrooms (BHK)")
+    facing: str = Field(
+        default="south",
+        description="Road-facing direction",
+        pattern="^(north|south|east|west)$",
+    )
+    extras: list[str] = Field(
+        default_factory=list,
+        description="Optional rooms: pooja, study, garage, balcony, store",
+    )
 
 
-class ProjectStatus(enum.Enum):
-    DRAFTING = "drafting"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
+# ── Room / Door / Window ────────────────────────────────────
+class RoomData(BaseModel):
+    id: str
+    type: str
+    label: str
+    x: float
+    y: float
+    width: float
+    height: float
+    area: float
+    zone: str = "public"
+    band: int = 1
 
 
-class RoomType(enum.Enum):
-    MASTER_BEDROOM = "master_bedroom"
-    BEDROOM = "bedroom"
-    BATHROOM = "bathroom"
-    KITCHEN = "kitchen"
-    LIVING = "living"
-    DINING = "dining"
-    STUDY = "study"
-    GARAGE = "garage"
-    GARDEN = "garden"
-    CORRIDOR = "corridor"
-    BALCONY = "balcony"
-    POOJA = "pooja"
-    STORE = "store"
-    OTHER = "other"
+class DoorData(BaseModel):
+    id: str
+    type: str = "interior"
+    room_id: str = ""
+    wall: str = "south"
+    x: float = 0
+    y: float = 0
+    width: float = 3.5
 
 
-class Project(Base):
-    __tablename__ = "projects"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    session_id = Column(String, index=True, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    total_area = Column(Float, nullable=True)
-    boundary_polygon = Column(Text, nullable=True)  # JSON string
-    status = Column(SAEnum(ProjectStatus), default=ProjectStatus.DRAFTING)
-    chat_history = Column(Text, nullable=True)  # JSON string
-    generated_plan = Column(Text, nullable=True)  # JSON string of generated layout
-    dxf_path = Column(String, nullable=True)
-    model3d_path = Column(String, nullable=True)
-
-    rooms = relationship("Room", back_populates="project", cascade="all, delete-orphan")
-    boundary_uploads = relationship("BoundaryUpload", back_populates="project", cascade="all, delete-orphan")
-    requirements = relationship("Requirements", back_populates="project", cascade="all, delete-orphan")
+class WindowData(BaseModel):
+    id: str
+    room_id: str = ""
+    wall: str = "south"
+    x: float = 0
+    y: float = 0
+    width: float = 4.0
 
 
-class Room(Base):
-    __tablename__ = "rooms"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
-    room_type = Column(SAEnum(RoomType), nullable=False)
-    quantity = Column(Integer, default=1)
-    desired_area = Column(Float, nullable=True)
-    generated_polygon = Column(Text, nullable=True)  # JSON string
-
-    project = relationship("Project", back_populates="rooms")
-
-
-class BoundaryUpload(Base):
-    __tablename__ = "boundary_uploads"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=True)
-    file_path = Column(String, nullable=False)
-    file_type = Column(String, nullable=False)  # "image" or "dxf"
-    processed_polygon = Column(Text, nullable=True)  # JSON string of boundary polygon
-    usable_polygon = Column(Text, nullable=True)  # JSON string of buildable footprint
-    setback_applied = Column(Float, nullable=True)  # setback distance in meters
-    boundary_area = Column(Float, nullable=True)  # total plot area
-    usable_area = Column(Float, nullable=True)  # buildable area after setback
-    preview_path = Column(String, nullable=True)  # path to preview image
-
-    project = relationship("Project", back_populates="boundary_uploads")
+# ── Plot info ────────────────────────────────────────────────
+class PlotInfo(BaseModel):
+    width: float
+    length: float
+    usable_width: float
+    usable_length: float
+    road_side: str = "south"
+    setbacks: dict = Field(
+        default_factory=lambda: {
+            "front": 6.5,
+            "rear": 5,
+            "left": 3.5,
+            "right": 3.5,
+        }
+    )
 
 
-class Requirements(Base):
-    __tablename__ = "requirements"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=True)
-
-    # Hard constraints
-    floors = Column(Integer, nullable=False)
-    bedrooms = Column(Integer, nullable=False)
-    bathrooms = Column(Integer, nullable=False)
-    kitchen = Column(Integer, nullable=False)
-    max_area = Column(Float, nullable=False)
-
-    # Soft constraints
-    balcony = Column(Integer, nullable=False, default=0)
-    parking = Column(Integer, nullable=False, default=0)
-    pooja_room = Column(Integer, nullable=False, default=0)
-
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    project = relationship("Project", back_populates="requirements")
+# ── Full plan response ──────────────────────────────────────
+class PlanResponse(BaseModel):
+    plot: PlotInfo
+    rooms: list[RoomData]
+    doors: list[DoorData] = []
+    windows: list[WindowData] = []
+    vastu_score: float = 0
+    architect_note: str = ""
+    dxf_url: Optional[str] = None

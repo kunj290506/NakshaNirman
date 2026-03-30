@@ -1,116 +1,172 @@
 """
-AutoCAD Floor Plan Generator – FastAPI Backend
-
-Main entry point. Sets up CORS, includes all routes, initializes DB.
+NakshaNirman — FastAPI backend.
+Endpoints: /api/generate, /api/download/{filename}, /api/health, /api/validate
 """
-
-from contextlib import asynccontextmanager
-import importlib
+from __future__ import annotations
 import logging
-from fastapi import FastAPI, Request
+import os
+import re
+import uuid
+import time
+from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
-from app_config import CORS_ORIGINS, EXPORT_DIR, UPLOAD_DIR
-from database import init_db
-from middleware.security import SecurityMiddleware, check_rate_limit, log_security_event
+from fastapi.responses import FileResponse, JSONResponse
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from config import EXPORTS_DIR
+from models import PlanRequest, PlanResponse
+from layout import generate_plan
+from dxf_export import plan_to_dxf
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("main")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Initialize database on startup."""
-    await init_db()
-    yield
-
-
+# ── App ──────────────────────────────────────────────────────
 app = FastAPI(
-    title="NakshaNirman Floor Plan Generator",
-    description="Generate 2D floor plans and 3D models from simple inputs",
+    title="NakshaNirman API",
     version="2.0.0",
-    lifespan=lifespan,
+    description="Indian residential floor plan generator",
+    docs_url="/api/docs",
+    redoc_url=None,
 )
 
-# Security middleware (must be first)
-app.add_middleware(SecurityMiddleware)
-
-# Rate limiting middleware
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    """Apply rate limiting to all requests."""
-    client_ip = request.client.host
-    
-    # Skip rate limiting for health check
-    if request.url.path == "/api/health":
-        return await call_next(request)
-    
-    if not check_rate_limit(client_ip):
-        log_security_event(
-            "rate_limit_exceeded",
-            {"ip": client_ip, "path": request.url.path},
-            severity="WARNING"
-        )
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Rate limit exceeded. Please try again later."}
-        )
-    
-    return await call_next(request)
-
-# CORS (after security middleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
-# Static file serving for exports
-app.mount("/exports", StaticFiles(directory=str(EXPORT_DIR)), name="exports")
 
-def _include_router(module_path: str, label: str) -> None:
-    """Load and include route modules without crashing startup on optional deps."""
-    try:
-        module = importlib.import_module(module_path)
-        router = getattr(module, "router", None)
-        if router is None:
-            logger.warning("Route module %s has no router object; skipped", module_path)
-            return
-        app.include_router(router)
-        logger.info("Loaded router: %s", label)
-    except Exception as exc:
-        logger.warning("Skipping router %s due to import error: %s", label, exc)
+# ── Security headers middleware ──────────────────────────────
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
-# Include routers
-_include_router("routes.project", "project")
-_include_router("routes.boundary", "boundary")
-_include_router("routes.floorplan", "floorplan")
-_include_router("routes.model3d", "model3d")
-_include_router("routes.chat", "chat")
-_include_router("routes.requirements", "requirements")
-_include_router("routes.architect", "architect")
-_include_router("routes.image", "image")
+# ── Simple rate limiter (per IP) ─────────────────────────────
+_rate_store: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT = 10  # max requests per minute to /api/generate
+RATE_WINDOW = 60  # seconds
 
 
+@app.middleware("http")
+async def rate_limit_generate(request: Request, call_next):
+    if request.url.path == "/api/generate" and request.method == "POST":
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        _rate_store[ip] = [t for t in _rate_store[ip] if now - t < RATE_WINDOW]
+        if len(_rate_store[ip]) >= RATE_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please wait a minute."},
+            )
+        _rate_store[ip].append(now)
+    return await call_next(request)
+
+
+# ── Health ───────────────────────────────────────────────────
 @app.get("/api/health")
-async def health_check():
-    """Health check endpoint."""
+async def health():
+    return {"status": "ok", "service": "NakshaNirman"}
+
+
+
+# ── Generate ─────────────────────────────────────────────────
+@app.post("/api/generate", response_model=PlanResponse)
+async def generate(req: PlanRequest):
+    """Generate a floor plan from user inputs."""
+    log.info(
+        "Generate request: %sx%s %dBHK %s extras=%s",
+        req.plot_width, req.plot_length, req.bedrooms, req.facing, req.extras,
+    )
+    try:
+        plan = await generate_plan(req)
+    except Exception as e:
+        log.exception("Plan generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Generate DXF
+    try:
+        filename = f"plan_{uuid.uuid4().hex[:8]}.dxf"
+        filepath = os.path.join(EXPORTS_DIR, filename)
+        plan_to_dxf(plan, filepath)
+        plan.dxf_url = f"/api/download/{filename}"
+        log.info("DXF saved: %s", filename)
+    except Exception as e:
+        log.warning("DXF generation failed: %s", e)
+        plan.dxf_url = None
+
+    return plan
+
+
+# ── Download DXF ─────────────────────────────────────────────
+@app.get("/api/download/{filename}")
+async def download(filename: str):
+    """Download a generated DXF file."""
+    # Security: validate filename format (prevent path traversal)
+    if not re.match(r"^plan_[a-f0-9]{8}\.dxf$", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename format")
+    filepath = os.path.join(EXPORTS_DIR, filename)
+    # Ensure resolved path is inside exports dir
+    real_path = os.path.realpath(filepath)
+    if not real_path.startswith(os.path.realpath(EXPORTS_DIR)):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isfile(real_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        real_path,
+        media_type="application/dxf",
+        filename=filename,
+    )
+
+
+# ── Validate ─────────────────────────────────────────────────
+@app.post("/api/validate")
+async def validate(plan: PlanResponse):
+    """Validate an existing plan for overlaps and bounds."""
+    issues = []
+    uw = plan.plot.usable_width
+    ul = plan.plot.usable_length
+
+    for room in plan.rooms:
+        # Check bounds
+        if room.x + room.width > uw + 0.5:
+            issues.append(f"{room.label} exceeds usable width")
+        if room.y + room.height > ul + 0.5:
+            issues.append(f"{room.label} exceeds usable length")
+        if room.x < -0.5 or room.y < -0.5:
+            issues.append(f"{room.label} has negative coordinates")
+
+    # Check overlaps (simple rectangle intersection)
+    for i, a in enumerate(plan.rooms):
+        for b in plan.rooms[i + 1 :]:
+            if (
+                a.x < b.x + b.width
+                and a.x + a.width > b.x
+                and a.y < b.y + b.height
+                and a.y + a.height > b.y
+            ):
+                overlap_w = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
+                overlap_h = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
+                if overlap_w > 0.5 and overlap_h > 0.5:
+                    issues.append(f"{a.label} overlaps with {b.label}")
+
     return {
-        "status": "ok",
-        "version": "2.0.0",
-        "security": "enabled"
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "room_count": len(plan.rooms),
     }
 
 
+# ── Run ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    from app_config import HOST, PORT
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
