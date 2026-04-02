@@ -25,6 +25,8 @@ function normalizeRooms(plan) {
       width: Number(r.width || 0),
       height: Number(r.height || 0),
       area: Number(r.area || Number(r.width || 0) * Number(r.height || 0)),
+      color: r.color,
+      polygon: Array.isArray(r.polygon) ? r.polygon : [],
       furniture: Array.isArray(r.furniture) ? r.furniture : [],
     }))
     .filter((r) => r.width > 0.1 && r.height > 0.1)
@@ -165,6 +167,17 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
   const doors = plan.doors || []
   const windows = plan.windows || []
   const facing = String(plot.facing || plot.road_side || 'east').toLowerCase()
+  const plotBoundary = Array.isArray(plot.boundary)
+    ? plot.boundary
+      .map((p) => {
+        if (!p || typeof p !== 'object') return null
+        const x = Number(p.x)
+        const y = Number(p.y)
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+        return [x, toSvgY(ul, y)]
+      })
+      .filter(Boolean)
+    : []
 
   return (
     <div style={{ width: '100%', height: '100%', background: '#fff' }}>
@@ -178,16 +191,26 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
 
         <rect x={vbX} y={vbY} width={vbW} height={vbH} fill='#fff' />
 
-        <rect
-          x={-setbacks.left}
-          y={-setbacks.rear}
-          width={plotW}
-          height={plotL}
-          fill='#F8FAFC'
-          stroke='#111827'
-          strokeWidth='3'
-          vectorEffect='non-scaling-stroke'
-        />
+        {plotBoundary.length >= 3 ? (
+          <polygon
+            points={plotBoundary.map((pt) => `${pt[0]},${pt[1]}`).join(' ')}
+            fill='#F8FAFC'
+            stroke='#111827'
+            strokeWidth='3'
+            vectorEffect='non-scaling-stroke'
+          />
+        ) : (
+          <rect
+            x={-setbacks.left}
+            y={-setbacks.rear}
+            width={plotW}
+            height={plotL}
+            fill='#F8FAFC'
+            stroke='#111827'
+            strokeWidth='3'
+            vectorEffect='non-scaling-stroke'
+          />
+        )}
 
         <rect
           x={0}
@@ -203,32 +226,63 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
 
         {rooms.map((room) => {
           const y = toSvgY(ul, room.y, room.height)
+          const poly = (room.polygon || [])
+            .map((p) => {
+              if (!p || typeof p !== 'object') return null
+              const px = Number(p.x)
+              const py = Number(p.y)
+              if (!Number.isFinite(px) || !Number.isFinite(py)) return null
+              return [px, toSvgY(ul, py)]
+            })
+            .filter(Boolean)
+          const hasPoly = poly.length >= 3
+
+          const xs = hasPoly ? poly.map((pt) => pt[0]) : [room.x, room.x + room.width]
+          const ys = hasPoly ? poly.map((pt) => pt[1]) : [y, y + room.height]
+          const minX = Math.min(...xs)
+          const maxX = Math.max(...xs)
+          const minY = Math.min(...ys)
+          const maxY = Math.max(...ys)
+
           const fill = room.type === 'open_area' ? 'url(#openHatch)' : (room.color || ROOM_COLORS[room.type] || '#F8FAFC')
-          const midX = room.x + room.width / 2
-          const midY = y + room.height / 2
+          const midX = (minX + maxX) / 2
+          const midY = (minY + maxY) / 2
+          const displayW = maxX - minX
+          const displayH = maxY - minY
+
           return (
             <g key={room.id} data-room-id={room.id}>
-              <rect
-                x={room.x}
-                y={y}
-                width={room.width}
-                height={room.height}
-                fill={fill}
-                stroke={room.id === selectedRoomId ? '#0F172A' : '#334155'}
-                strokeWidth='1.5'
-                vectorEffect='non-scaling-stroke'
-              />
+              {hasPoly ? (
+                <polygon
+                  points={poly.map((pt) => `${pt[0]},${pt[1]}`).join(' ')}
+                  fill={fill}
+                  stroke={room.id === selectedRoomId ? '#0F172A' : '#334155'}
+                  strokeWidth='1.5'
+                  vectorEffect='non-scaling-stroke'
+                />
+              ) : (
+                <rect
+                  x={room.x}
+                  y={y}
+                  width={room.width}
+                  height={room.height}
+                  fill={fill}
+                  stroke={room.id === selectedRoomId ? '#0F172A' : '#334155'}
+                  strokeWidth='1.5'
+                  vectorEffect='non-scaling-stroke'
+                />
+              )}
               {showFurniture && renderFurniture(room, ul)}
               {showLabels && (() => {
-                const minDim = Math.min(room.width, room.height)
+                const minDim = Math.min(displayW, displayH)
                 const baseSize = Math.max(0.6, Math.min(1.4, minDim * 0.15))
                 const yOffset = baseSize * 0.45
                 
                 return (
                   <>
                     <text
-                      x={room.x + room.width / 2}
-                      y={y + room.height / 2 - yOffset}
+                      x={midX}
+                      y={midY - yOffset}
                       textAnchor='middle'
                       fill='#0F172A'
                       fontSize={baseSize}
@@ -238,8 +292,8 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
                       {room.label}
                     </text>
                     <text
-                      x={room.x + room.width / 2}
-                      y={y + room.height / 2 + yOffset * 1.5}
+                      x={midX}
+                      y={midY + yOffset * 1.5}
                       textAnchor='middle'
                       fill='#334155'
                       fontSize={baseSize * 0.8}
@@ -254,26 +308,26 @@ export default function PlanRenderer({ plan, selectedRoomId, showDimensions = tr
                 <>
                   <text
                     x={midX}
-                    y={Math.max(y + 0.8, y + room.height * 0.2)}
+                    y={Math.max(minY + 0.8, minY + displayH * 0.2)}
                     textAnchor='middle'
                     fill='#475569'
                     fontSize='0.8'
                     fontWeight='600'
                     style={{ pointerEvents: 'none' }}
                   >
-                    {Math.round(room.width * 10) / 10} ft
+                    {Math.round(displayW * 10) / 10} ft
                   </text>
                   <text
-                    x={Math.max(room.x + 0.7, room.x + room.width * 0.2)}
+                    x={Math.max(minX + 0.7, minX + displayW * 0.2)}
                     y={midY}
                     textAnchor='middle'
                     fill='#64748B'
                     fontSize='0.75'
                     fontWeight='600'
-                    transform={`rotate(-90 ${Math.max(room.x + 0.7, room.x + room.width * 0.2)} ${midY})`}
+                    transform={`rotate(-90 ${Math.max(minX + 0.7, minX + displayW * 0.2)} ${midY})`}
                     style={{ pointerEvents: 'none' }}
                   >
-                    {Math.round(room.height * 10) / 10} ft
+                    {Math.round(displayH * 10) / 10} ft
                   </text>
                 </>
               )}

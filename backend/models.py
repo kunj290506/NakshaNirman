@@ -6,6 +6,11 @@ from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
 
+class Point2D(BaseModel):
+    x: float
+    y: float
+
+
 # ── Request ──────────────────────────────────────────────────
 class PlanRequest(BaseModel):
     plot_width: float = Field(..., ge=20, le=200, description="Plot width in feet")
@@ -18,7 +23,38 @@ class PlanRequest(BaseModel):
     )
     extras: List[str] = Field(
         default_factory=list,
-        description="Optional rooms: pooja, study, garage, balcony, store",
+        description="Optional rooms: pooja, study, garage, balcony, store, utility, foyer, staircase",
+    )
+    bathrooms_target: int = Field(default=0, ge=0, le=8, description="Preferred total bathrooms (0 = auto)")
+    floors: int = Field(default=1, ge=1, le=4, description="Target number of floors")
+    design_style: str = Field(
+        default="modern",
+        description="Design style preference",
+        pattern="^(modern|contemporary|traditional|minimal)$",
+    )
+    kitchen_preference: str = Field(
+        default="semi_open",
+        description="Kitchen layout preference",
+        pattern="^(open|semi_open|closed)$",
+    )
+    parking_slots: int = Field(default=0, ge=0, le=4, description="Preferred parking slots")
+    vastu_priority: int = Field(default=3, ge=1, le=5, description="Vastu strictness priority")
+    natural_light_priority: int = Field(default=3, ge=1, le=5, description="Natural light priority")
+    privacy_priority: int = Field(default=3, ge=1, le=5, description="Privacy priority")
+    storage_priority: int = Field(default=3, ge=1, le=5, description="Storage priority")
+    elder_friendly: bool = Field(default=False, description="Prioritize elder-friendly movement")
+    work_from_home: bool = Field(default=False, description="Include work-from-home usability")
+    notes: str = Field(default="", description="Additional custom design notes")
+    city: str = Field(default="", description="City name for climate adaptation")
+    state: str = Field(default="", description="State for regional rules")
+    family_type: str = Field(
+        default="nuclear",
+        description="Family type: nuclear, joint, or couple",
+        pattern="^(nuclear|joint|couple)$",
+    )
+    family_notes: str = Field(
+        default="",
+        description="Optional family description for richer context",
     )
 
 
@@ -34,6 +70,9 @@ class RoomData(BaseModel):
     area: float
     zone: str = "public"
     band: int = 1
+    exterior_walls: List[str] = Field(default_factory=list)
+    color: str = "#F5F5F5"
+    polygon: List[Point2D] = Field(default_factory=list)
 
 
 class DoorData(BaseModel):
@@ -70,6 +109,7 @@ class PlotInfo(BaseModel):
             "right": 3.5,
         }
     )
+    boundary: List[Point2D] = Field(default_factory=list)
 
 
 # ── Full plan response ──────────────────────────────────────
@@ -81,3 +121,7 @@ class PlanResponse(BaseModel):
     vastu_score: float = 0
     architect_note: str = ""
     dxf_url: Optional[str] = None
+    generation_method: str = "bsp"
+    vastu_issues: List[str] = Field(default_factory=list)
+    adjacency_score: float = 0
+    reasoning_trace: List[str] = Field(default_factory=list)

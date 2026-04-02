@@ -1,6 +1,6 @@
 """
 NakshaNirman — FastAPI backend.
-Uses deterministic BSP layout engine. LLM only for Vastu advice.
+Uses LLM-first layout engine with BSP fallback.
 """
 from __future__ import annotations
 import logging
@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from config import EXPORTS_DIR
 from models import PlanRequest, PlanResponse
-from layout_engine import generate_plan_deterministic
+from layout_engine import generate_plan
 from dxf_export import plan_to_dxf
 
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +53,10 @@ async def security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
@@ -86,13 +90,13 @@ async def health():
 # ── Generate ─────────────────────────────────────────────────
 @app.post("/api/generate", response_model=PlanResponse)
 async def generate(req: PlanRequest):
-    """Generate a floor plan using deterministic BSP layout engine."""
+    """Generate a floor plan using LLM-first engine with BSP fallback."""
     log.info(
         "Generate request: %sx%s %dBHK %s extras=%s",
         req.plot_width, req.plot_length, req.bedrooms, req.facing, req.extras,
     )
     try:
-        plan = await generate_plan_deterministic(req)
+        plan = await generate_plan(req)
     except Exception as e:
         log.exception("Plan generation failed")
         raise HTTPException(status_code=500, detail=str(e))

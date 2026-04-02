@@ -3,21 +3,63 @@ import FloorPlanForm from './components/FloorPlanForm'
 import FloorPlanSVG from './components/FloorPlanSVG'
 import { generatePlan, getDownloadUrl } from './services/api'
 
+const LIVE_REASONING_STEPS = [
+  'Analyzing plot dimensions and road-facing constraints.',
+  'Preparing fresh room-program prompt with selected optional rooms only.',
+  'Requesting layout draft from the AI model chain.',
+  'Validating room overlaps, bounds, and bedroom requirements.',
+  'Repairing geometry and regenerating doors/windows for buildability.',
+  'Final quality check before rendering and DXF export.',
+]
+
 export default function App() {
   const [plan, setPlan] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [reasoningFeed, setReasoningFeed] = useState([])
 
   async function handleGenerate(formData) {
     setLoading(true)
     setError(null)
     setPlan(null)
+
+    const firstReasoning =
+      `Received ${formData.plot_width} x ${formData.plot_length} ft, ${formData.bedrooms}BHK brief. Starting AI reasoning.`
+    setReasoningFeed([firstReasoning, LIVE_REASONING_STEPS[0]])
+
+    let stepCursor = 0
+    const reasoningTimer = window.setInterval(() => {
+      stepCursor += 1
+      if (stepCursor >= LIVE_REASONING_STEPS.length) {
+        window.clearInterval(reasoningTimer)
+        return
+      }
+
+      const nextStep = LIVE_REASONING_STEPS[stepCursor]
+      setReasoningFeed(prev => (prev.includes(nextStep) ? prev : [...prev, nextStep]))
+    }, 1800)
+
     try {
       const result = await generatePlan(formData)
       setPlan(result)
+      if (Array.isArray(result.reasoning_trace) && result.reasoning_trace.length > 0) {
+        setReasoningFeed(result.reasoning_trace)
+      } else {
+        setReasoningFeed(prev => (
+          prev.includes('Plan generation completed and rendered.')
+            ? prev
+            : [...prev, 'Plan generation completed and rendered.']
+        ))
+      }
     } catch (err) {
       setError(err.message || 'Failed to generate plan')
+      setReasoningFeed(prev => (
+        prev.includes('Generation stopped due to an error response from server.')
+          ? prev
+          : [...prev, 'Generation stopped due to an error response from server.']
+      ))
     } finally {
+      window.clearInterval(reasoningTimer)
       setLoading(false)
     }
   }
@@ -37,7 +79,7 @@ export default function App() {
           <h1>Naksha<span>Nirman</span></h1>
           <span className="app-subtitle">AI Floor Plan Generator</span>
         </div>
-        <div className="app-badge">CAD ENGINE v3</div>
+        <div className="app-badge">CAD ENGINE v4</div>
       </header>
 
       {/* Main Content */}
@@ -51,6 +93,25 @@ export default function App() {
 
           {error && (
             <div className="error-banner">{error}</div>
+          )}
+
+          {(loading || reasoningFeed.length > 0) && (
+            <div className={`reasoning-panel ${loading ? 'is-live' : ''}`}>
+              <div className="reasoning-panel-title">
+                {loading ? 'Model Reasoning (Live)' : 'Model Reasoning'}
+              </div>
+              <ul className="reasoning-list">
+                {reasoningFeed.map((step, idx) => (
+                  <li
+                    key={`${idx}-${step}`}
+                    className={loading && idx === reasoningFeed.length - 1 ? 'active' : ''}
+                  >
+                    <span className="reasoning-dot" />
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {plan && (
@@ -77,10 +138,50 @@ export default function App() {
                     {plan.plot.road_side}
                   </span>
                 </div>
+                <div className="plan-info-row">
+                  <span className="label">Engine</span>
+                  <span className="value">
+                    <span
+                      className={`engine-badge ${
+                        plan.generation_method === 'llm' || plan.generation_method === 'llm_backup'
+                          ? 'llm'
+                          : plan.generation_method === 'local_backup' || plan.generation_method === 'bsp_fallback'
+                            ? 'fallback'
+                            : 'bsp'
+                      }`}
+                    >
+                      {plan.generation_method === 'llm'
+                        ? 'AI Generated'
+                        : plan.generation_method === 'llm_backup'
+                          ? 'AI Backup Model'
+                          : plan.generation_method === 'local_backup' || plan.generation_method === 'bsp_fallback'
+                            ? 'Adaptive Backup'
+                          : 'BSP Layout'}
+                    </span>
+                  </span>
+                </div>
+                {plan.adjacency_score > 0 && (
+                  <div className="plan-info-row">
+                    <span className="label">Adjacency Score</span>
+                    <span className="value">{plan.adjacency_score}/100</span>
+                  </div>
+                )}
               </div>
 
               {plan.architect_note && (
                 <div className="architect-note">{plan.architect_note}</div>
+              )}
+
+              {/* Vastu Issues */}
+              {plan.vastu_issues && plan.vastu_issues.length > 0 && (
+                <div className="vastu-issues">
+                  <div className="vastu-issues-title">Vastu Notes</div>
+                  <ul>
+                    {plan.vastu_issues.map((issue, i) => (
+                      <li key={i}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {plan.dxf_url && (
@@ -116,7 +217,7 @@ export default function App() {
               </div>
               <p>
                 {loading
-                  ? 'Generating your floor plan...'
+                  ? (reasoningFeed[reasoningFeed.length - 1] || 'Generating your floor plan...')
                   : 'Enter plot dimensions and click Generate'}
               </p>
             </div>
