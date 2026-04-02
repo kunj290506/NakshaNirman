@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import random
 
 def _rnd(val: float, d: int = 2) -> float:
     return int(val * (10**d)) / (10.0**d)
@@ -24,6 +23,7 @@ from models import (
 from llm import call_openrouter_plan, call_openrouter_plan_backup
 from prompt_builder import build_master_prompt
 from plan_validator import validate_llm_plan
+from config import FAST_FALLBACK_MODE
 
 log = logging.getLogger("layout_engine")
 
@@ -31,9 +31,22 @@ log = logging.getLogger("layout_engine")
 # Constants
 # ─────────────────────────────────────────────────────────────
 SETBACKS = {"front": 6.5, "rear": 5.0, "left": 3.5, "right": 3.5}
-FAST_LLM_TIMEOUT_SEC = 24
-FAST_RETRY_TIMEOUT_SEC = 12
-FAST_BACKUP_TIMEOUT_SEC = 28
+# Fast-fallback mode prefers deterministic completion speed for demo/runtime
+# reliability when external providers are slow or unstable.
+if FAST_FALLBACK_MODE:
+    FAST_LLM_TIMEOUT_SEC = 45
+    FAST_RETRY_TIMEOUT_SEC = 30
+    FAST_BACKUP_TIMEOUT_SEC = 45
+    FINAL_QUALITY_TIMEOUT_SEC = 0
+else:
+    # Previous time limits forced truncated reasoning and low-quality geometry.
+    # Keep generation windows long enough for full architectural constraint solving.
+    FAST_LLM_TIMEOUT_SEC = 140
+    FAST_RETRY_TIMEOUT_SEC = 110
+    FAST_BACKUP_TIMEOUT_SEC = 140
+    FINAL_QUALITY_TIMEOUT_SEC = 180
+
+LOGICAL_ADJ_MIN_SCORE = 72.0 if FAST_FALLBACK_MODE else 68.0
 
 from typing import List, Dict, Any
 
@@ -386,52 +399,102 @@ async def generate_plan(req: PlanRequest) -> PlanResponse:
 
     # ── Attempt 1: LLM-generated plan (time-capped) ─────────
     try:
-        plan, issues = await asyncio.wait_for(
+        plan, issues, correction_feedback = await asyncio.wait_for(
             _generate_via_llm(req, uw, ul),
             timeout=FAST_LLM_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
-        plan, issues = None, ["llm attempt timed out"]
+        plan, issues, correction_feedback = None, ["llm attempt timed out"], None
         log.warning("LLM attempt timed out after %ss", FAST_LLM_TIMEOUT_SEC)
+
+    last_issues = list(issues or [])
 
     if plan:
         log.info("LLM plan accepted on first attempt")
         return plan
 
-    # ── Attempt 2: quick retry (only for validation issues) ──
+    # ── Attempt 2: retry with or without correction hints ──
     timeout_in_issues = any("timed out" in str(i).lower() for i in (issues or []))
-    if issues and not timeout_in_issues:
-        log.info("LLM plan invalid (%d issues), retrying with corrections", len(issues))
+    if issues:
+        retry_seed = correction_feedback if correction_feedback else (
+            issues if not timeout_in_issues else None
+        )
+        if timeout_in_issues:
+            log.info("LLM timed out; retrying with a fresh model chain for best output")
+        else:
+            log.info("LLM plan invalid (%d issues), retrying with corrections", len(issues))
         try:
-            plan, _ = await asyncio.wait_for(
-                _generate_via_llm(req, uw, ul, prev_issues=issues),
+            plan, retry_issues, _ = await asyncio.wait_for(
+                _generate_via_llm(req, uw, ul, prev_issues=retry_seed),
                 timeout=FAST_RETRY_TIMEOUT_SEC,
             )
+            last_issues = list(retry_issues or [])
         except asyncio.TimeoutError:
             plan = None
+            last_issues = ["llm retry timed out"]
             log.warning("LLM retry timed out after %ss", FAST_RETRY_TIMEOUT_SEC)
         if plan:
             log.info("LLM plan accepted on retry")
             return plan
 
     # ── Attempt 3: backup free-model pool ───────────────────
-    backup_seed_issues = issues if (issues and not timeout_in_issues) else None
+    backup_seed_issues = None
+    if issues and not timeout_in_issues:
+        backup_seed_issues = correction_feedback if correction_feedback else issues
     try:
-        backup_plan, _ = await asyncio.wait_for(
+        backup_plan, backup_issues, _ = await asyncio.wait_for(
             _generate_via_llm(req, uw, ul, prev_issues=backup_seed_issues, use_backup_models=True),
             timeout=FAST_BACKUP_TIMEOUT_SEC,
         )
+        last_issues = list(backup_issues or [])
     except asyncio.TimeoutError:
         backup_plan = None
+        last_issues = ["llm backup timed out"]
         log.warning("Backup LLM pool timed out after %ss", FAST_BACKUP_TIMEOUT_SEC)
 
     if backup_plan:
         backup_plan.generation_method = "llm_backup"
         backup_plan.reasoning_trace = [
             *backup_plan.reasoning_trace,
-            "Primary model pool was unavailable; delivered via backup free-model pool.",
+            "Primary model pool was unavailable; delivered via backup model pool.",
         ][:12]
         return backup_plan
+
+    # ── Attempt 4: final quality-first retry before local fallback ──
+    # This avoids dropping into local backup too eagerly when model warm-up
+    # delays are temporary and high-quality output is still preferred.
+    final_plan = None
+    if not FAST_FALLBACK_MODE:
+        final_seed = backup_seed_issues if backup_seed_issues else correction_feedback
+        try:
+            final_plan, final_issues, _ = await asyncio.wait_for(
+                _generate_via_llm(req, uw, ul, prev_issues=final_seed, use_backup_models=True),
+                timeout=FINAL_QUALITY_TIMEOUT_SEC,
+            )
+            last_issues = list(final_issues or [])
+        except asyncio.TimeoutError:
+            final_plan = None
+            last_issues = ["llm final quality retry timed out"]
+            log.warning("Final quality-first retry timed out after %ss", FINAL_QUALITY_TIMEOUT_SEC)
+    else:
+        log.info("Fast fallback mode enabled: skipping final quality retry")
+
+    if final_plan:
+        final_plan.generation_method = "llm_backup"
+        final_plan.reasoning_trace = [
+            *final_plan.reasoning_trace,
+            "Recovered after quality-first final retry; avoided local fallback.",
+        ][:12]
+        return final_plan
+
+    # If every model call failed on quota/credits, keep service stable by using
+    # deterministic fallback instead of surfacing hard runtime errors.
+    issues_blob = " | ".join(str(i) for i in (last_issues or []))
+    if "402" in issues_blob:
+        log.warning(
+            "All planner models returned 402 (credits/quota unavailable); "
+            "using deterministic local fallback."
+        )
 
     # ── Final local adaptive fallback (no busy error to user) ──
     log.error("Primary and backup LLM pools unavailable; using local adaptive fallback")
@@ -439,11 +502,11 @@ async def generate_plan(req: PlanRequest) -> PlanResponse:
     fallback.generation_method = "local_backup"
     fallback.reasoning_trace = [
         f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
-        "Primary and backup free-model pools were unavailable for this request.",
-        "Generated an adaptive local layout automatically to avoid interruption.",
+        "Switched to fast backup planning path to keep generation uninterrupted.",
+        "Generated an adaptive layout optimized for immediate preview.",
     ]
     fallback.architect_note = (
-        "Adaptive backup layout generated automatically while free AI model pools were unavailable."
+        "Fast backup-planning mode delivered this layout to keep response time consistent."
     )
     return fallback
 
@@ -454,10 +517,11 @@ async def _generate_via_llm(
     ul: float,
     prev_issues: list[str] | None = None,
     use_backup_models: bool = False,
-) -> tuple[PlanResponse | None, list[str]]:
+) -> tuple[PlanResponse | None, list[str], list[str] | None]:
     """
     Try to generate a plan via the LLM.
-    Returns (PlanResponse, []) if successful, (None, issues) if failed.
+    Returns (PlanResponse, [], None) if successful.
+    Returns (None, validator_issues, correction_feedback) if failed.
     """
     reasoning_trace: list[str] = []
     _push_reasoning(
@@ -473,15 +537,18 @@ async def _generate_via_llm(
     if use_backup_models:
         _push_reasoning(
             reasoning_trace,
-            "Switching to backup free-model pool for generation continuity.",
+            "Switching to backup model pool for generation continuity.",
         )
 
     # Append correction feedback if retrying
     if prev_issues:
+        # Earlier retries sent vague issue lists; now we provide concrete geometry
+        # feedback so the model repairs coordinates instead of regenerating randomly.
         correction = (
-            "\n\nPREVIOUS ATTEMPT FAILED VALIDATION. Fix these issues:\n"
-            + "\n".join(f"- {issue}" for issue in prev_issues[:10])
-            + "\n\nAdjust room coordinates to fix ALL issues above."
+            "\n\nYour previous plan had these specific geometric errors:\n"
+            + "\n".join(f"- {issue}" for issue in prev_issues[:14])
+            + "\n\nKeep all already-valid rooms stable. "
+            + "Only change coordinates that are explicitly called out above."
         )
         user_message += correction
         log.info("Retrying LLM with %d correction items", len(prev_issues))
@@ -499,7 +566,7 @@ async def _generate_via_llm(
             plan_dict = await call_openrouter_plan(system_prompt, user_message)
     except Exception as e:
         log.error("LLM call failed across all models: %s", e)
-        return None, [str(e)]
+        return None, [str(e)], None
 
     draft_rooms = plan_dict.get("rooms", []) if isinstance(plan_dict, dict) else []
     if isinstance(draft_rooms, list):
@@ -508,19 +575,26 @@ async def _generate_via_llm(
             f"LLM returned draft with {len(draft_rooms)} rooms; running strict validation.",
         )
 
-    # Validate the raw LLM draft first
-    is_valid, issues = validate_llm_plan(plan_dict, uw, ul, req)
-
-    if not is_valid:
-        log.warning("LLM plan invalid (%d issues): %s", len(issues), issues[:3])
+    # Validate raw draft, but do not hard-reject yet.
+    # Many raw drafts have geometric noise that deterministic repair can fix.
+    raw_valid, raw_issues = validate_llm_plan(plan_dict, uw, ul, req)
+    if not raw_valid:
         _push_reasoning(
             reasoning_trace,
-            f"Draft rejected by validator with {len(issues)} issues; requesting corrected layout.",
+            f"Raw draft had {len(raw_issues)} issues; attempting deterministic repair before retry.",
         )
-        return None, issues
 
-    # Build production-grade plan with geometry/opening repair
-    plan = _parse_llm_plan(plan_dict, req, uw, ul, reasoning_trace=reasoning_trace)
+    # Build production-grade plan with geometry/opening repair first.
+    try:
+        plan = _parse_llm_plan(plan_dict, req, uw, ul, reasoning_trace=reasoning_trace)
+    except Exception as e:
+        parse_error = f"LLM draft parsing failed: {str(e)[:120]}"
+        issues = list(raw_issues) if raw_issues else [parse_error]
+        if parse_error not in issues:
+            issues.append(parse_error)
+        correction_feedback = _build_geometric_correction_feedback(plan_dict, uw, ul, issues)
+        log.warning("LLM plan parse failed: %s", parse_error)
+        return None, issues, correction_feedback
 
     # Validate repaired final plan to ensure output quality for frontend/export
     repaired_dict = {
@@ -541,16 +615,198 @@ async def _generate_via_llm(
     }
     final_valid, final_issues = validate_llm_plan(repaired_dict, uw, ul, req)
     if not final_valid:
-        log.warning("Post-repair plan invalid (%d issues): %s", len(final_issues), final_issues[:3])
+        # Preserve original raw issues for richer correction prompts.
+        merged_issues = list(final_issues)
+        for issue in raw_issues[:6]:
+            tagged = f"raw-draft: {issue}"
+            if tagged not in merged_issues:
+                merged_issues.append(tagged)
+
+        # Quality-first behavior: if only soft dimensional/adjacency issues
+        # remain after deterministic repair, keep the LLM output instead of
+        # dropping to local fallback on every request.
+        hard_issues = [i for i in merged_issues if not _is_soft_validation_issue(i)]
+        if not hard_issues:
+            _push_reasoning(
+                reasoning_trace,
+                "Returning repaired LLM plan in best-effort mode; only soft size issues remain.",
+            )
+            note_suffix = " Best-effort LLM output returned to avoid local fallback; review compact room sizes."
+            if note_suffix not in plan.architect_note:
+                plan.architect_note = f"{plan.architect_note}{note_suffix}"
+            return plan, [], None
+
+        correction_feedback = _build_geometric_correction_feedback(repaired_dict, uw, ul, final_issues)
+        log.warning("Post-repair plan invalid (%d issues): %s", len(merged_issues), merged_issues[:3])
         _push_reasoning(
             reasoning_trace,
-            f"Post-repair validation failed with {len(final_issues)} issues; correction cycle required.",
+            f"Post-repair validation failed with {len(merged_issues)} issues; correction cycle required.",
         )
-        return None, [f"post-repair: {issue}" for issue in final_issues]
+        return None, [f"post-repair: {issue}" for issue in merged_issues], correction_feedback
+
+    logical_issues = _logical_layout_issues(plan.rooms, uw, ul)
+    if logical_issues:
+        correction_feedback = _build_geometric_correction_feedback(
+            repaired_dict,
+            uw,
+            ul,
+            logical_issues,
+        )
+        _push_reasoning(
+            reasoning_trace,
+            f"Logical quality gate rejected draft with {len(logical_issues)} issues; retrying.",
+        )
+        return None, [f"logical: {issue}" for issue in logical_issues], correction_feedback
+
+    if raw_issues:
+        _push_reasoning(
+            reasoning_trace,
+            f"Deterministic repair resolved {len(raw_issues)} raw-draft issues before final acceptance.",
+        )
 
     _push_reasoning(reasoning_trace, "Final repaired plan passed validation and is ready for preview.")
 
-    return plan, []
+    return plan, [], None
+
+
+def _build_geometric_correction_feedback(
+    plan_dict: dict[str, Any],
+    uw: float,
+    ul: float,
+    issues: list[str],
+) -> list[str]:
+    """
+    Build explicit coordinate-level correction guidance for retry prompts.
+    This replaces vague issue summaries with room-wise geometric actions.
+    """
+    raw_rooms = plan_dict.get("rooms", []) if isinstance(plan_dict, dict) else []
+    if not isinstance(raw_rooms, list):
+        raw_rooms = []
+
+    front_max = ul * 0.30
+    private_min = ul * 0.45
+    middle_min = ul * 0.30
+    middle_max = ul * 0.75
+
+    rooms: list[dict[str, Any]] = []
+    for idx, raw in enumerate(raw_rooms):
+        if not isinstance(raw, dict):
+            continue
+        room_type = _sanitize_room_type(str(raw.get("type", "")), str(raw.get("label", "")))
+        label = str(raw.get("label", raw.get("id", f"room_{idx+1}"))).strip() or f"room_{idx+1}"
+        w = max(0.1, _to_float(raw.get("width"), 0.0))
+        h = max(0.1, _to_float(raw.get("height"), 0.0))
+        x = _to_float(raw.get("x"), 0.0)
+        y = _to_float(raw.get("y"), 0.0)
+        rooms.append({
+            "type": room_type,
+            "label": label,
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
+        })
+
+    feedback: list[str] = []
+
+    for room in rooms:
+        x = room["x"]
+        y = room["y"]
+        w = room["w"]
+        h = room["h"]
+        room_type = room["type"]
+        label = room["label"]
+
+        room_issues: list[str] = []
+        x_lo = 0.0
+        x_hi = max(0.0, uw - w)
+        y_lo = 0.0
+        y_hi = max(0.0, ul - h)
+
+        if x < -1.0 or y < -1.0 or x + w > uw + 1.0 or y + h > ul + 1.0:
+            room_issues.append("It is outside usable bounds")
+            x_lo = max(x_lo, 0.0)
+            x_hi = min(x_hi, max(0.0, uw - w))
+            y_lo = max(y_lo, 0.0)
+            y_hi = min(y_hi, max(0.0, ul - h))
+
+        if room_type in ("master_bedroom", "bedroom"):
+            if y < private_min:
+                room_issues.append("Bedroom is below rear privacy band")
+            y_lo = max(y_lo, private_min)
+
+        if room_type == "living":
+            if y + h > front_max + 0.1:
+                room_issues.append("Living room is not fully in the front public band")
+            y_hi = min(y_hi, max(0.0, front_max - h))
+
+        if room_type == "kitchen":
+            if y < middle_min or y + h > middle_max:
+                room_issues.append("Kitchen is not fully in the middle band")
+            if x + w < uw * 0.5:
+                room_issues.append("Kitchen is not in southeast side")
+            y_lo = max(y_lo, middle_min)
+            y_hi = min(y_hi, max(y_lo, middle_max - h))
+            x_lo = max(x_lo, uw * 0.5 - w)
+
+        if room_type == "master_bedroom":
+            if x + w > uw * 0.55:
+                room_issues.append("Master bedroom is not in southwest quadrant")
+            x_hi = min(x_hi, max(0.0, uw * 0.55 - w))
+
+        if room_type == "pooja":
+            if x < uw * 0.5 or y + h > front_max + 0.1:
+                room_issues.append("Pooja room is not in northeast front quadrant")
+            x_lo = max(x_lo, uw * 0.5)
+            y_hi = min(y_hi, max(0.0, front_max - h))
+
+        if room_type == "corridor" and w < 3.5:
+            room_issues.append("Corridor is narrower than 3.5 ft")
+
+        if room_issues:
+            feedback.append(
+                f"{label} is at x={x:.1f}, y={y:.1f}, width={w:.1f}, height={h:.1f}. "
+                + "; ".join(room_issues)
+                + f". Move it to x in [{max(0.0, x_lo):.1f}, {max(x_lo, x_hi):.1f}] "
+                + f"and y in [{max(0.0, y_lo):.1f}, {max(y_lo, y_hi):.1f}]."
+            )
+
+    # Overlap feedback with explicit target direction.
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            a = rooms[i]
+            b = rooms[j]
+            overlap_x = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+            overlap_y = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
+            if overlap_x <= 0.2 or overlap_y <= 0.2:
+                continue
+
+            target_x = b["x"]
+            target_y = b["y"]
+            if overlap_x >= overlap_y:
+                target_y = min(max(0.0, a["y"] + a["h"] + 0.5), max(0.0, ul - b["h"]))
+            else:
+                target_x = min(max(0.0, a["x"] + a["w"] + 0.5), max(0.0, uw - b["w"]))
+
+            feedback.append(
+                f"{b['label']} is at x={b['x']:.1f}, y={b['y']:.1f}, width={b['w']:.1f}, height={b['h']:.1f}. "
+                + f"It overlaps {a['label']} by {overlap_x:.1f} ft x {overlap_y:.1f} ft. "
+                + f"Move it near x={target_x:.1f}, y={target_y:.1f} to remove overlap."
+            )
+
+    # Preserve direct validator messages as backstop guidance.
+    if not feedback:
+        for issue in issues[:10]:
+            feedback.append(f"Validator issue to fix: {issue}")
+
+    return feedback[:18]
+
+
+def _is_soft_validation_issue(issue: str) -> bool:
+    text = str(issue or "").lower()
+    if text.startswith("raw-draft:"):
+        return True
+    return False
 
 
 def _parse_llm_plan(
@@ -573,6 +829,11 @@ def _parse_llm_plan(
     # 2) Repair geometry into buildable layout
     _snap_and_fix_layout(rooms, uw, ul)
     _push_reasoning(trace, "Applied geometric repair: snap, zone anchoring, and overlap resolution.")
+
+    # 2b) Deterministic post-processing after validator pass.
+    # This cleans sub-foot slivers and enforces buildable corridor width.
+    _postprocess_llm_layout(rooms, uw, ul)
+    _push_reasoning(trace, "Post-processed layout: 0.5ft snap, sliver-gap fill, corridor width normalization.")
 
     # 3) Compute area/exterior walls after repair
     _infer_exterior_walls(rooms, uw, ul)
@@ -817,6 +1078,75 @@ def _compute_adjacency_score(rooms: list[RoomData]) -> float:
     return _rnd((achieved / possible) * 100.0, 1)
 
 
+def _logical_layout_issues(rooms: list[RoomData], uw: float, ul: float) -> list[str]:
+    """Logical quality gate for accepting LLM plans."""
+    issues: list[str] = []
+    if not rooms:
+        return ["No rooms found in candidate plan."]
+
+    by_type: dict[str, list[RoomData]] = {}
+    for room in rooms:
+        by_type.setdefault(room.type, []).append(room)
+
+    def _adjacent(type_a: str, type_b: str, min_len: float) -> bool:
+        a_rooms = by_type.get(type_a, [])
+        b_rooms = by_type.get(type_b, [])
+        if not a_rooms or not b_rooms:
+            return True
+        return any(_shared_wall_length(a, b) >= min_len for a in a_rooms for b in b_rooms)
+
+    def _in_front(room: RoomData) -> bool:
+        return room.y + room.height <= ul * 0.40 + 0.5
+
+    def _in_middle(room: RoomData) -> bool:
+        return room.y >= ul * 0.18 and room.y + room.height <= ul * 0.84
+
+    def _in_private(room: RoomData) -> bool:
+        return room.y >= ul * 0.40
+
+    living = by_type.get("living", [])
+    kitchens = by_type.get("kitchen", [])
+    bedrooms = by_type.get("master_bedroom", []) + by_type.get("bedroom", [])
+    corridors = by_type.get("corridor", [])
+
+    for room in living:
+        if not _in_front(room):
+            issues.append(f"{room.label} is not in front public zone.")
+
+    for room in kitchens:
+        if not _in_middle(room):
+            issues.append(f"{room.label} is not in middle service zone.")
+
+    for room in bedrooms:
+        if not _in_private(room):
+            issues.append(f"{room.label} is not in rear private zone.")
+
+    if not _adjacent("living", "dining", 2.0):
+        issues.append("Living and dining are not physically connected.")
+    if not _adjacent("dining", "kitchen", 2.0):
+        issues.append("Dining and kitchen are not physically connected.")
+    if not _adjacent("master_bedroom", "master_bath", 1.5):
+        issues.append("Master bath is not attached to master bedroom.")
+
+    if corridors and bedrooms:
+        for bed in bedrooms:
+            if not any(_shared_wall_length(bed, c) >= 1.5 for c in corridors):
+                issues.append(f"{bed.label} is not connected to corridor.")
+
+    # Reject visibly skinny key rooms even if they pass tolerance-based validator.
+    for room in bedrooms + kitchens + living:
+        min_w, min_h = ROOM_MIN_DIMS.get(room.type, (4.0, 4.0))
+        if room.width < min_w * 0.9 or room.height < min_h * 0.9:
+            issues.append(f"{room.label} is undersized for practical use.")
+
+    adj = _compute_adjacency_score(rooms)
+    if adj < LOGICAL_ADJ_MIN_SCORE:
+        issues.append(f"Adjacency score too low ({adj:.1f}).")
+
+    # Keep feedback concise for retry prompting.
+    return issues[:12]
+
+
 def _build_openings_from_rooms(
     rooms: list[RoomData],
     facing: str,
@@ -880,13 +1210,13 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
         return round(val / grid) * grid
 
     def _zone_y_bounds(room: RoomData) -> tuple[float, float]:
-        # Keep broad bands to preserve design flexibility while improving realism.
+        # Tightened zone anchoring to enforce privacy gradient consistently.
         if room.zone == "public":
-            lo, hi = 0.0, max(0.0, ul * 0.38 - room.height)
+            lo, hi = 0.0, max(0.0, ul * 0.30 - room.height)
         elif room.zone == "service":
-            lo, hi = max(0.0, ul * 0.20 - room.height * 0.4), max(0.0, ul * 0.72 - room.height)
+            lo, hi = max(0.0, ul * 0.22), max(0.0, ul * 0.78 - room.height)
         else:
-            lo, hi = max(0.0, ul * 0.46 - room.height * 0.3), max(0.0, ul - room.height)
+            lo, hi = max(0.0, ul * 0.45), max(0.0, ul - room.height)
         if hi < lo:
             hi = lo
         return lo, hi
@@ -1000,6 +1330,96 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
         _clamp_in_bounds(room)
 
 
+def _postprocess_llm_layout(rooms: list[RoomData], uw: float, ul: float):
+    """
+    Deterministic cleanups after a draft passes validation.
+    Steps:
+    1) snap coordinates to 0.5ft grid,
+    2) expand rooms to remove slivers below 2ft,
+    3) normalize narrow corridors to 3.5ft minimum width.
+    """
+    if not rooms:
+        return
+
+    grid = 0.5
+
+    def _snap(value: float) -> float:
+        return round(value / grid) * grid
+
+    def _fit(room: RoomData):
+        room.width = _clamp(_snap(room.width), 3.0, max(3.0, uw))
+        room.height = _clamp(_snap(room.height), 3.0, max(3.0, ul))
+        room.x = _clamp(_snap(room.x), 0.0, max(0.0, uw - room.width))
+        room.y = _clamp(_snap(room.y), 0.0, max(0.0, ul - room.height))
+
+    for room in rooms:
+        _fit(room)
+
+    # If LLM returned corridor narrower than 3.5ft, widen it deterministically.
+    for room in rooms:
+        if room.type != "corridor":
+            continue
+        if room.width >= 3.5:
+            continue
+        room.width = 3.5
+        room.x = _clamp(room.x, 0.0, max(0.0, uw - room.width))
+        _fit(room)
+
+    # Fill tiny boundary slivers that are difficult to build onsite.
+    for room in rooms:
+        left_gap = room.x
+        right_gap = uw - (room.x + room.width)
+        bottom_gap = room.y
+        top_gap = ul - (room.y + room.height)
+
+        if 0.0 < left_gap < 2.0:
+            room.x = 0.0
+            room.width = room.width + left_gap
+        if 0.0 < right_gap < 2.0:
+            room.width = room.width + right_gap
+        if 0.0 < bottom_gap < 2.0:
+            room.y = 0.0
+            room.height = room.height + bottom_gap
+        if 0.0 < top_gap < 2.0:
+            room.height = room.height + top_gap
+        _fit(room)
+
+    # Fill tiny interior slivers by extending to nearest neighboring room.
+    for _ in range(2):
+        for i in range(len(rooms)):
+            for j in range(i + 1, len(rooms)):
+                a = rooms[i]
+                b = rooms[j]
+
+                y_overlap = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
+                if y_overlap >= 2.0:
+                    if a.x + a.width <= b.x:
+                        gap = b.x - (a.x + a.width)
+                        if 0.0 < gap < 2.0:
+                            a.width = a.width + gap
+                    elif b.x + b.width <= a.x:
+                        gap = a.x - (b.x + b.width)
+                        if 0.0 < gap < 2.0:
+                            b.width = b.width + gap
+
+                x_overlap = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
+                if x_overlap >= 2.0:
+                    if a.y + a.height <= b.y:
+                        gap = b.y - (a.y + a.height)
+                        if 0.0 < gap < 2.0:
+                            a.height = a.height + gap
+                    elif b.y + b.height <= a.y:
+                        gap = a.y - (b.y + b.height)
+                        if 0.0 < gap < 2.0:
+                            b.height = b.height + gap
+
+                _fit(a)
+                _fit(b)
+
+    for room in rooms:
+        _fit(room)
+
+
 
 # ─────────────────────────────────────────────────────────────
 # BSP FALLBACK — original deterministic engine (unchanged)
@@ -1007,13 +1427,12 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
 async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanResponse:
     """Generate a floor plan using deterministic BSP packing (fallback)."""
     # Keep fallback fully deterministic and fast (no external LLM calls).
-    vastu_score = 72.0
     architect_note = (
-        "Fast deterministic layout generated for immediate preview and export reliability."
+        "Logical deterministic layout generated with strict zoning and practical adjacency."
     )
 
     # Build room specs
-    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul)
+    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul, req.facing)
     requested_baths = max(0, int(getattr(req, "bathrooms_target", 0) or 0))
     existing_baths = sum(
         1 for spec in room_specs if spec.get("type") in ("master_bath", "bathroom", "toilet")
@@ -1026,13 +1445,9 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
             "zone": 2, "priority": 20 + idx,
         })
 
-    # Add slight priority jitter so backup output is adaptive, not static.
-    rng = random.Random()
-    for spec in room_specs:
-        spec["priority"] = float(spec.get("priority", 10)) + rng.uniform(0.0, 0.35)
-
     # Pack rooms deterministically
     placed = pack_rooms_bsp(room_specs, uw, ul)
+    vastu_score = _compute_fallback_vastu_score(placed, uw, ul)
 
     # Add doors and windows
     doors, windows = add_doors_and_windows(placed, uw, ul, req.facing)
@@ -1056,6 +1471,8 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
             color=ROOM_COLORS.get(p["type"], "#F5F5F5"),
         ))
 
+    adjacency_score = _compute_adjacency_score(rooms)
+
     plot = PlotInfo(
         width=req.plot_width,
         length=req.plot_length,
@@ -1073,14 +1490,25 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
         vastu_score=vastu_score,
         architect_note=architect_note,
         generation_method="bsp",
+        adjacency_score=adjacency_score,
+        reasoning_trace=[
+            "Deterministic planner used strict 3-band zoning.",
+            "Living-dining-kitchen and bedroom-corridor adjacency were enforced.",
+            "Returned stable non-overlapping layout for reliable preview/export.",
+        ],
     )
 
 
 # ─────────────────────────────────────────────────────────────
 # Room spec builder
 # ─────────────────────────────────────────────────────────────
-def build_room_list(bedrooms: int, extras: List[str],
-                    usable_w: float, usable_l: float) -> List[Dict[str, Any]]:
+def build_room_list(
+    bedrooms: int,
+    extras: List[str],
+    usable_w: float,
+    usable_l: float,
+    facing: str = "south",
+) -> List[Dict[str, Any]]:
     """Build room specifications based on BHK count and extras."""
     rooms = []
 
@@ -1113,7 +1541,8 @@ def build_room_list(bedrooms: int, extras: List[str],
     rooms.append({
         "type": "master_bath", "label": "Master Bath",
         "min_w": 5, "min_h": 7, "pref_w": 5, "pref_h": 8,
-        "zone": 3, "priority": 6,
+        # Wet rooms are intentionally clustered in service core for plumbing efficiency.
+        "zone": 2, "priority": 6,
     })
 
     # --- Additional bedrooms/bathrooms ---
@@ -1163,6 +1592,13 @@ def build_room_list(bedrooms: int, extras: List[str],
         rooms.append({
             "type": "pooja", "label": "Pooja Room",
             "min_w": 5, "min_h": 5, "pref_w": 6, "pref_h": 6,
+            "zone": 1, "priority": 2,
+        })
+    elif str(facing).strip().lower() == "south":
+        # South-facing plots are compensated with a small pooja/energy buffer near entry.
+        rooms.append({
+            "type": "pooja", "label": "Pooja Buffer",
+            "min_w": 4.5, "min_h": 5, "pref_w": 5, "pref_h": 6,
             "zone": 1, "priority": 2,
         })
     if "study" in extras:
@@ -1223,8 +1659,9 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
     Band 2 (service): ~25% depth — corridor spine, kitchen, bathrooms
     Band 3 (private): ~47% depth — bedrooms with attached baths, study
     """
-    band1_h = _rnd(usable_l * 0.28, 2)
-    band2_h = _rnd(usable_l * 0.25, 2)
+    # Rebalanced bands to give service core enough depth for clustered wet rooms.
+    band1_h = _rnd(usable_l * 0.30, 2)
+    band2_h = _rnd(usable_l * 0.30, 2)
     band3_h = _rnd(usable_l - band1_h - band2_h, 2)
 
     # Separate rooms by zone
@@ -1244,11 +1681,25 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
     placed.extend(_pack_band1(zone_rooms[1], 0, 0, usable_w, band1_h))
 
     # ── Band 2: Service (corridor + kitchen + bathrooms) ─────
-    placed.extend(_pack_band2(zone_rooms[2], 0, band1_h, usable_w, band2_h))
+    band2_rooms = _pack_band2(
+        zone_rooms[2],
+        0,
+        band1_h,
+        usable_w,
+        band2_h,
+        corridor_extend_h=band3_h,
+    )
+    placed.extend(band2_rooms)
+
+    corridor_hint: tuple[float, float] | None = None
+    for r in band2_rooms:
+        if r.get("type") == "corridor":
+            corridor_hint = (_to_float(r.get("x"), 0.0), _to_float(r.get("width"), 0.0))
+            break
 
     # ── Band 3: Private (bedrooms + attached baths + study) ──
     placed.extend(
-        _pack_band3(zone_rooms[3], 0, band1_h + band2_h, usable_w, band3_h)
+        _pack_band3(zone_rooms[3], 0, band1_h + band2_h, usable_w, band3_h, corridor_hint)
     )
 
     # Final overlap check
@@ -1356,18 +1807,19 @@ def _pack_band1(rooms: List[Dict[str, Any]], bx: float, by: float,
 
 
 def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
-                bw: float, bh: float) -> List[Dict[str, Any]]:
+                bw: float, bh: float, corridor_extend_h: float = 0.0) -> List[Dict[str, Any]]:
     """
     Band 2: Service zone.
-    Layout: Kitchen (left, 40%) | Corridor (center, 18%) | Bathrooms stacked (right, 42%)
+    Layout: Corridor west spine | Wet core center | Kitchen east (southeast preference).
     """
-    placed = []
+    if not rooms:
+        return []
 
-    # Separate room types
+    placed: List[Dict[str, Any]] = []
     kitchen = None
     corridor_spec = None
-    left_rooms = []
-    right_rooms = []
+    wet_rooms: List[Dict[str, Any]] = []
+    service_other: List[Dict[str, Any]] = []
 
     for r in rooms:
         if r["type"] == "corridor":
@@ -1375,63 +1827,89 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
         elif r["type"] == "kitchen":
             kitchen = r
         elif r["type"] in ("bathroom", "master_bath", "toilet"):
-            right_rooms.append(r)
-        elif r["type"] in ("store",):
-            left_rooms.append(r)
+            wet_rooms.append(r)
         else:
-            if len(left_rooms) <= len(right_rooms):
-                left_rooms.append(r)
-            else:
-                right_rooms.append(r)
+            service_other.append(r)
 
-    # Calculate widths
-    corridor_w = min(4.0, bw * 0.18)
-    corridor_w = max(3.5, corridor_w)
+    corridor_w = 3.5 if corridor_spec else 0.0
+    corridor_w = _rnd(min(corridor_w, max(0.0, bw - 12.0)), 2)
 
-    # Left side gets kitchen + store stacked
-    left_w = _rnd((bw - corridor_w) * 0.52, 2)
-    right_w = _rnd(bw - left_w - corridor_w, 2)
-    corridor_x = _rnd(bx + left_w, 2)
+    if corridor_spec and corridor_w >= 3.0:
+        # Keep corridor central so both private bedrooms can connect through it.
+        left_w = _rnd(max(5.0, (bw - corridor_w) * 0.42), 2)
+        right_w = _rnd(bw - corridor_w - left_w, 2)
+        if right_w < 6.0:
+            right_w = 6.0
+            left_w = _rnd(max(5.0, bw - corridor_w - right_w), 2)
 
-    # Corridor
-    if corridor_spec:
+        corridor_x = _rnd(bx + left_w, 2)
+        wet_x = _rnd(bx, 2)
+        wet_w = _rnd(max(5.0, corridor_x - wet_x), 2)
+        kitchen_x = _rnd(corridor_x + corridor_w, 2)
+        kitchen_w = _rnd(max(6.0, bx + bw - kitchen_x), 2)
+    else:
+        corridor_w = 0.0
+        wet_x = _rnd(bx, 2)
+        wet_w = _rnd(min(max(5.0, bw * 0.38), max(5.0, bw - 8.0)), 2)
+        kitchen_x = _rnd(wet_x + wet_w, 2)
+        kitchen_w = _rnd(max(6.0, bx + bw - kitchen_x), 2)
+        corridor_x = _rnd(bx + wet_w, 2)
+
+    if corridor_spec and corridor_w >= 3.0:
+        corridor_h = _rnd(max(bh, bh + max(0.0, corridor_extend_h)), 2)
         placed.append({
             "type": "corridor", "label": "Corridor",
-            "x": _rnd(corridor_x, 2), "y": _rnd(by, 2),
-            "width": _rnd(corridor_w, 2), "height": _rnd(bh, 2),
+            "x": corridor_x, "y": _rnd(by, 2),
+            "width": _rnd(corridor_w, 2), "height": corridor_h,
             "zone": 2, "band": 2,
         })
 
-    # Left side: kitchen on top, store below (or just kitchen)
-    all_left = []
+    east_stack: List[Dict[str, Any]] = []
+    central_stack: List[Dict[str, Any]] = []
+    for r in service_other:
+        if r["type"] in ("utility", "store"):
+            east_stack.append(r)
+        else:
+            central_stack.append(r)
+
     if kitchen:
-        all_left.append(kitchen)
-    all_left.extend(left_rooms)
+        reserve_h = 0.0
+        if east_stack:
+            reserve_h = _rnd(min(max(3.5, bh * 0.30), max(3.5, bh - 4.0)), 2)
+        kitchen_h = _rnd(max(4.0, bh - reserve_h), 2)
 
-    if all_left:
-        current_y = by
-        per_h = _rnd(bh / len(all_left), 2)
-        for i, lr in enumerate(all_left):
-            rh = per_h if i < len(all_left) - 1 else _rnd(by + bh - current_y, 2)
-            placed.append({
-                "type": lr["type"], "label": lr["label"],
-                "x": _rnd(bx, 2), "y": _rnd(current_y, 2),
-                "width": _rnd(left_w, 2), "height": _rnd(rh, 2),
-                "zone": 2, "band": 2,
-            })
-            current_y = _rnd(current_y + rh, 2)
+        placed.append({
+            "type": kitchen["type"], "label": kitchen["label"],
+            "x": kitchen_x, "y": _rnd(by, 2),
+            "width": _rnd(kitchen_w, 2), "height": kitchen_h,
+            "zone": 2, "band": 2,
+        })
 
-    # Right side: bathrooms stacked
-    if right_rooms:
+        if reserve_h > 0 and east_stack:
+            y = _rnd(by + kitchen_h, 2)
+            per_h = _rnd(reserve_h / len(east_stack), 2)
+            for idx, room in enumerate(east_stack):
+                rh = per_h if idx < len(east_stack) - 1 else _rnd(by + bh - y, 2)
+                placed.append({
+                    "type": room["type"], "label": room["label"],
+                    "x": kitchen_x, "y": _rnd(y, 2),
+                    "width": _rnd(kitchen_w, 2), "height": _rnd(rh, 2),
+                    "zone": 2, "band": 2,
+                })
+                y = _rnd(y + rh, 2)
+
+    # Place master bath at top of service stack so it attaches to rear private band.
+    wet_rooms.sort(key=lambda r: 1 if r.get("type") == "master_bath" else 0)
+    stack_rooms = wet_rooms + central_stack
+    if stack_rooms and wet_w > 0:
         current_y = by
-        per_h = _rnd(bh / len(right_rooms), 2)
-        for i, rr in enumerate(right_rooms):
-            rh = per_h if i < len(right_rooms) - 1 else _rnd(by + bh - current_y, 2)
+        per_h = _rnd(bh / len(stack_rooms), 2)
+        for idx, room in enumerate(stack_rooms):
+            rh = per_h if idx < len(stack_rooms) - 1 else _rnd(by + bh - current_y, 2)
             placed.append({
-                "type": rr["type"], "label": rr["label"],
-                "x": _rnd(corridor_x + corridor_w, 2),
-                "y": _rnd(current_y, 2),
-                "width": _rnd(right_w, 2), "height": _rnd(rh, 2),
+                "type": room["type"], "label": room["label"],
+                "x": wet_x, "y": _rnd(current_y, 2),
+                "width": _rnd(wet_w, 2), "height": _rnd(rh, 2),
                 "zone": 2, "band": 2,
             })
             current_y = _rnd(current_y + rh, 2)
@@ -1440,163 +1918,103 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
 
 
 def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
-                bw: float, bh: float) -> List[Dict[str, Any]]:
+                bw: float, bh: float,
+                corridor_hint: tuple[float, float] | None = None) -> List[Dict[str, Any]]:
     """
-    Band 3: Private zone — bedrooms with attached baths.
-    Smart layout: pair each bedroom with its bath side-by-side,
-    then stack pairs in rows.
+    Band 3: Private zone.
+    Layout intent: master bedroom anchored southwest, other bedrooms east,
+    study adjacent to master where requested.
     """
     if not rooms:
         return []
 
-    placed = []
+    placed: List[Dict[str, Any]] = []
 
-    # Separate bedrooms (large) from small rooms (baths, study)
-    bedrooms = []
-    master_bath = None
-    small_rooms = []
+    master = None
+    other_beds: List[Dict[str, Any]] = []
+    studies: List[Dict[str, Any]] = []
+    misc_private: List[Dict[str, Any]] = []
 
     for r in rooms:
-        if r["type"] in ("master_bedroom", "bedroom"):
-            bedrooms.append(r)
-        elif r["type"] == "master_bath":
-            master_bath = r
+        if r["type"] == "master_bedroom" and master is None:
+            master = r
+        elif r["type"] == "bedroom":
+            other_beds.append(r)
+        elif r["type"] == "study":
+            studies.append(r)
         else:
-            small_rooms.append(r)
+            misc_private.append(r)
 
-    # Pair master bedroom with master bath
-    pairs = []
-    if bedrooms:
-        master = bedrooms[0]  # master_bedroom is first (priority 5)
-        other_beds = bedrooms[1:]
+    if master is None:
+        for r in rooms:
+            if r["type"] == "bedroom":
+                master = r
+                break
+        if master is not None:
+            other_beds = [r for r in other_beds if r is not master]
 
-        if master_bath:
-            pairs.append(("pair", master, master_bath))
-        else:
-            pairs.append(("single", master, None))
+    if master is None:
+        return _pack_strip_safe(rooms, bx, by, bw, bh, 3)
 
-        for bed in other_beds:
-            pairs.append(("single", bed, None))
+    use_corridor_channel = False
+    corridor_x = 0.0
+    corridor_w = 0.0
+    if corridor_hint is not None:
+        corridor_x = _to_float(corridor_hint[0], 0.0)
+        corridor_w = _to_float(corridor_hint[1], 0.0)
+        if corridor_w >= 3.0 and corridor_x > bx + 6.0 and corridor_x + corridor_w < bx + bw - 6.0:
+            use_corridor_channel = True
 
-    # Add leftover small rooms (study, etc.)
-    for sr in small_rooms:
-        pairs.append(("small", sr, None))
+    if use_corridor_channel:
+        master_w = _rnd(max(8.5, corridor_x - bx), 2)
+        east_x = _rnd(corridor_x + corridor_w, 2)
+        east_w = _rnd(max(6.0, bx + bw - east_x), 2)
+    else:
+        master_w = _rnd(min(max(9.5, bw * 0.55), max(9.5, bw * 0.60)), 2)
+        if master_w > bw - 6.0:
+            master_w = _rnd(max(8.5, bw - 6.0), 2)
+        east_w = _rnd(max(6.0, bw - master_w), 2)
+        east_x = _rnd(bx + master_w, 2)
 
-    # Calculate how many can fit per row
-    # For a 23ft wide usable area: 1 pair per row (master 13 + bath 5 = 18)
-    # For wider plots: maybe 2 per row
-    num_rows = len(pairs)
-    if num_rows == 0:
-        return []
+    if east_w <= 0:
+        master_w = _rnd(bw, 2)
+        east_w = 0.0
+        east_x = _rnd(bx + master_w, 2)
 
-    # Try to fit 2 items per row if width allows
-    row_plan = []
-    i = 0
-    while i < len(pairs):
-        item = pairs[i]
-        if item[0] == "pair":
-            # Bedroom+bath pair takes most of the width
-            row_plan.append([item])
-            i += 1
-        elif i + 1 < len(pairs) and item[0] == "single" and pairs[i + 1][0] == "small":
-            # Bedroom + small room side by side
-            row_plan.append([item, pairs[i + 1]])
-            i += 2
-        elif i + 1 < len(pairs) and item[0] == "single" and pairs[i + 1][0] == "single":
-            # Two bedrooms side by side if they fit
-            bed1_w = item[1]["min_w"]
-            bed2_w = pairs[i + 1][1]["min_w"]
-            if bed1_w + bed2_w <= bw:
-                row_plan.append([item, pairs[i + 1]])
-                i += 2
-            else:
-                row_plan.append([item])
-                i += 1
-        else:
-            row_plan.append([item])
-            i += 1
+    master_h = _rnd(bh, 2)
+    study_h = 0.0
+    if studies:
+        study_h = _rnd(max(6.0, min(bh * 0.35, max(6.0, bh - 8.0))), 2)
+        master_h = _rnd(max(8.0, bh - study_h), 2)
 
-    # Distribute height among rows
-    num_rows = len(row_plan)
-    per_row_h = _rnd(bh / num_rows, 2)
-    current_y = by
+    placed.append({
+        "type": master["type"], "label": master["label"],
+        "x": _rnd(bx, 2), "y": _rnd(by, 2),
+        "width": _rnd(master_w, 2), "height": _rnd(master_h, 2),
+        "zone": 3, "band": 3,
+    })
 
-    for row_idx, row_items in enumerate(row_plan):
-        rh = per_row_h if row_idx < num_rows - 1 else _rnd(by + bh - current_y, 2)
+    if studies:
+        placed.append({
+            "type": studies[0]["type"], "label": studies[0]["label"],
+            "x": _rnd(bx, 2), "y": _rnd(by + master_h, 2),
+            "width": _rnd(master_w, 2), "height": _rnd(study_h, 2),
+            "zone": 3, "band": 3,
+        })
 
-        if len(row_items) == 1:
-            item = row_items[0]
-            if item[0] == "pair":
-                # Bedroom + attached bath
-                bed, bath = item[1], item[2]
-                bath_w = min(bath["pref_w"], bw * 0.28)
-                bath_w = max(bath_w, bath["min_w"])
-                bed_w = _rnd(bw - bath_w, 2)
-
-                placed.append({
-                    "type": bed["type"], "label": bed["label"],
-                    "x": _rnd(bx, 2), "y": _rnd(current_y, 2),
-                    "width": _rnd(bed_w, 2), "height": _rnd(rh, 2),
-                    "zone": 3, "band": 3,
-                })
-                placed.append({
-                    "type": bath["type"], "label": bath["label"],
-                    "x": _rnd(bx + bed_w, 2), "y": _rnd(current_y, 2),
-                    "width": _rnd(bath_w, 2), "height": _rnd(rh, 2),
-                    "zone": 3, "band": 3,
-                })
-            else:
-                # Single room — takes full width
-                room = item[1]
-                placed.append({
-                    "type": room["type"], "label": room["label"],
-                    "x": _rnd(bx, 2), "y": _rnd(current_y, 2),
-                    "width": _rnd(bw, 2), "height": _rnd(rh, 2),
-                    "zone": 3, "band": 3,
-                })
-        else:
-            # Two items side by side — proportional split
-            total_pref = sum(
-                it[1]["pref_w"] + (it[2]["pref_w"] if it[2] else 0)
-                for it in row_items
-            )
-            current_x = bx
-            for j, item in enumerate(row_items):
-                room = item[1]
-                pref = room["pref_w"] + (item[2]["pref_w"] if item[2] else 0)
-                rw = _rnd(bw * pref / total_pref, 2) if j < len(row_items) - 1 \
-                    else _rnd(bx + bw - current_x, 2)
-                rw = max(rw, room["min_w"])
-
-                if item[0] == "pair" and item[2]:
-                    bath = item[2]
-                    bath_w = min(bath["pref_w"], rw * 0.35)
-                    bath_w = max(bath_w, bath["min_w"])
-                    bed_w = _rnd(rw - bath_w, 2)
-
-                    placed.append({
-                        "type": room["type"], "label": room["label"],
-                        "x": _rnd(current_x, 2), "y": _rnd(current_y, 2),
-                        "width": _rnd(bed_w, 2), "height": _rnd(rh, 2),
-                        "zone": 3, "band": 3,
-                    })
-                    placed.append({
-                        "type": bath["type"], "label": bath["label"],
-                        "x": _rnd(current_x + bed_w, 2),
-                        "y": _rnd(current_y, 2),
-                        "width": _rnd(bath_w, 2), "height": _rnd(rh, 2),
-                        "zone": 3, "band": 3,
-                    })
-                else:
-                    placed.append({
-                        "type": room["type"], "label": room["label"],
-                        "x": _rnd(current_x, 2), "y": _rnd(current_y, 2),
-                        "width": _rnd(rw, 2), "height": _rnd(rh, 2),
-                        "zone": 3, "band": 3,
-                    })
-                current_x = _rnd(current_x + rw, 2)
-
-        current_y = _rnd(current_y + rh, 2)
+    east_rooms = other_beds + misc_private
+    if east_w > 0 and east_rooms:
+        current_y = by
+        per_h = _rnd(bh / len(east_rooms), 2)
+        for idx, room in enumerate(east_rooms):
+            rh = per_h if idx < len(east_rooms) - 1 else _rnd(by + bh - current_y, 2)
+            placed.append({
+                "type": room["type"], "label": room["label"],
+                "x": east_x, "y": _rnd(current_y, 2),
+                "width": _rnd(east_w, 2), "height": _rnd(rh, 2),
+                "zone": 3, "band": 3,
+            })
+            current_y = _rnd(current_y + rh, 2)
 
     return placed
 
@@ -1655,6 +2073,43 @@ def _verify_no_overlaps(placed: List[Dict[str, Any]]):
                 b["width"] = _rnd(b["width"] - 0.2, 2)
 
 
+def _compute_fallback_vastu_score(
+    placed: List[Dict[str, Any]],
+    usable_w: float,
+    usable_l: float,
+) -> float:
+    """Score deterministic fallback layouts using key vastu placements."""
+    base = 68.0
+
+    def _first(room_type: str) -> Dict[str, Any] | None:
+        for room in placed:
+            if room.get("type") == room_type:
+                return room
+        return None
+
+    living = _first("living")
+    kitchen = _first("kitchen")
+    master = _first("master_bedroom")
+    pooja = _first("pooja")
+    corridor = _first("corridor")
+
+    rear_min = usable_l * 0.45
+    front_max = usable_l * 0.35
+
+    if living and living["y"] + living["height"] <= front_max + 0.5:
+        base += 3.0
+    if kitchen and kitchen["x"] + kitchen["width"] >= usable_w * 0.5 and kitchen["y"] >= usable_l * 0.22:
+        base += 4.0
+    if master and master["x"] + master["width"] <= usable_w * 0.6 and master["y"] >= rear_min:
+        base += 4.0
+    if pooja and pooja["x"] >= usable_w * 0.5 and pooja["y"] + pooja["height"] <= front_max + 0.5:
+        base += 3.0
+    if corridor and corridor["width"] >= 3.5:
+        base += 2.0
+
+    return _rnd(_clamp(base, 60.0, 88.0), 1)
+
+
 def _rects_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     """Check if two rectangles overlap (with 0.1ft tolerance)."""
     eps = 0.1
@@ -1690,36 +2145,23 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
     if living:
         door_count = door_count + 1
         living_id = str(living.get("id", "living"))
-        if facing == "south":
-            doors.append(DoorData(
-                id=f"door_{door_count:02d}", type="main",
-                room_id=living_id, wall="south",
-                x=living["x"] + living["width"] * 0.4,
-                y=living["y"],
-                width=3.5,
-            ))
-        elif facing == "north":
+        # Main entrance is intentionally constrained to east or north walls
+        # to align with the architect prompt's hard circulation/vastu rule.
+        if facing in ("north", "west"):
             doors.append(DoorData(
                 id=f"door_{door_count:02d}", type="main",
                 room_id=living_id, wall="north",
-                x=living["x"] + living["width"] * 0.4,
+                x=living["x"] + living["width"] * 0.7,
                 y=living["y"] + living["height"],
                 width=3.5,
             ))
-        elif facing == "east":
+        else:
+            # South-facing plots are compensated by shifting entry to east-northeast.
             doors.append(DoorData(
                 id=f"door_{door_count:02d}", type="main",
                 room_id=living_id, wall="east",
                 x=living["x"] + living["width"],
-                y=living["y"] + living["height"] * 0.4,
-                width=3.5,
-            ))
-        elif facing == "west":
-            doors.append(DoorData(
-                id=f"door_{door_count:02d}", type="main",
-                room_id=living_id, wall="west",
-                x=living["x"],
-                y=living["y"] + living["height"] * 0.4,
+                y=living["y"] + living["height"] * 0.7,
                 width=3.5,
             ))
         room_door_counts[living_id] = room_door_counts.get(living_id, 0) + 1

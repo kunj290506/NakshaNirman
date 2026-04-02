@@ -8,7 +8,7 @@ import os
 import re
 import uuid
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 from collections import defaultdict
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,7 @@ from config import EXPORTS_DIR
 from models import PlanRequest, PlanResponse
 from layout_engine import generate_plan
 from dxf_export import plan_to_dxf
+from plan_validator import validate_llm_plan
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("main")
@@ -89,8 +90,15 @@ async def health():
 
 # ── Generate ─────────────────────────────────────────────────
 @app.post("/api/generate", response_model=PlanResponse)
-async def generate(req: PlanRequest):
+async def generate(req: PlanRequest | dict[str, Any]):
     """Generate a floor plan using LLM-first engine with BSP fallback."""
+    # Support a known frontend/client alias without changing PlanResponse shape.
+    if isinstance(req, dict):
+        payload = dict(req)
+        if str(payload.get("family_type", "")).strip().lower() == "working_couple":
+            payload["family_type"] = "couple"
+        req = PlanRequest(**payload)
+
     log.info(
         "Generate request: %sx%s %dBHK %s extras=%s",
         req.plot_width, req.plot_length, req.bedrooms, req.facing, req.extras,
@@ -137,34 +145,35 @@ async def download(filename: str):
 # ── Validate ─────────────────────────────────────────────────
 @app.post("/api/validate")
 async def validate(plan: PlanResponse):
-    """Validate an existing plan for overlaps and bounds."""
-    issues = []
-    uw = plan.plot.usable_width
-    ul = plan.plot.usable_length
+    """Validate an existing plan using the same rules as the generation pipeline."""
+    # Earlier this endpoint used stricter ad-hoc checks than plan generation,
+    # which created contradictory pass/fail results. Reuse the shared validator.
+    plan_dict = {
+        "rooms": [
+            {
+                "id": room.id,
+                "type": room.type,
+                "label": room.label,
+                "x": room.x,
+                "y": room.y,
+                "width": room.width,
+                "height": room.height,
+                "area": room.area,
+                "polygon": [{"x": p.x, "y": p.y} for p in (room.polygon or [])],
+            }
+            for room in plan.rooms
+        ]
+    }
 
-    for room in plan.rooms:
-        if room.x + room.width > uw + 0.5:
-            issues.append(f"{room.label} exceeds usable width")
-        if room.y + room.height > ul + 0.5:
-            issues.append(f"{room.label} exceeds usable length")
-        if room.x < -0.5 or room.y < -0.5:
-            issues.append(f"{room.label} has negative coordinates")
-
-    for i, a in enumerate(plan.rooms):
-        for b in plan.rooms[i + 1:]:
-            if (
-                a.x < b.x + b.width
-                and a.x + a.width > b.x
-                and a.y < b.y + b.height
-                and a.y + a.height > b.y
-            ):
-                overlap_w = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
-                overlap_h = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
-                if overlap_w > 0.5 and overlap_h > 0.5:
-                    issues.append(f"{a.label} overlaps with {b.label}")
+    is_valid, issues = validate_llm_plan(
+        plan_dict,
+        plan.plot.usable_width,
+        plan.plot.usable_length,
+        None,
+    )
 
     return {
-        "valid": len(issues) == 0,
+        "valid": is_valid,
         "issues": issues,
         "room_count": len(plan.rooms),
     }

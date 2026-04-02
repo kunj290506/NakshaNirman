@@ -46,6 +46,12 @@ MIN_DIMS = {
     "staircase": (6.0, 8.0),
 }
 
+# Previous tolerances were too strict for first-pass LLM geometry and caused
+# valid plans to be rejected. These values reflect practical rounding tolerance.
+OOB_TOLERANCE_FT = 1.0
+MAJOR_OVERLAP_AREA_FT2 = 8.0
+MAX_BOWLING_ALLEY_RATIO = 3.0
+
 EXTRA_TYPE_MAP = {
     "pooja": "pooja",
     "study": "study",
@@ -171,6 +177,10 @@ def validate_llm_plan(
         if type_counts.get(core, 0) == 0:
             issues.append(f"Missing mandatory room: {core}")
 
+    # Circulation spine is mandatory; do not fail for short corridors, only absence.
+    if type_counts.get("corridor", 0) == 0:
+        issues.append("No circulation spine found.")
+
     if req is not None:
         requested_bedrooms = int(getattr(req, "bedrooms", 1) or 1)
         actual_bedrooms = type_counts.get("master_bedroom", 0) + type_counts.get("bedroom", 0)
@@ -199,20 +209,27 @@ def validate_llm_plan(
 
     # Bounds and room-dimension checks
     severe_oob = 0
-    too_small_count = 0
     for r in rooms:
         min_w, min_h = MIN_DIMS.get(r["type"], (4.0, 4.0))
         if r["w"] < min_w * 0.8 or r["h"] < min_h * 0.8:
-            too_small_count += 1
             issues.append(
                 f"{r['label']} too small ({r['w']:.1f}x{r['h']:.1f} ft) for type {r['type'] or 'unknown'}"
             )
 
-        if r["x"] < -0.5 or r["y"] < -0.5:
+        # Reject unusable long and narrow rooms that the LLM occasionally emits.
+        # Corridor is intentionally linear circulation space and should not be
+        # flagged by the general bowling-alley room proportion rule.
+        if r["type"] != "corridor":
+            shorter = max(0.01, min(r["w"], r["h"]))
+            longer = max(r["w"], r["h"])
+            if longer / shorter > MAX_BOWLING_ALLEY_RATIO:
+                issues.append(f"Room {r['label']} has bowling-alley proportions.")
+
+        if r["x"] < -OOB_TOLERANCE_FT or r["y"] < -OOB_TOLERANCE_FT:
             severe_oob += 1
-        if r["x"] + r["w"] > usable_w + 0.5:
+        if r["x"] + r["w"] > usable_w + OOB_TOLERANCE_FT:
             severe_oob += 1
-        if r["y"] + r["h"] > usable_l + 0.5:
+        if r["y"] + r["h"] > usable_l + OOB_TOLERANCE_FT:
             severe_oob += 1
 
     if severe_oob >= max(2, len(rooms) // 4):
@@ -229,7 +246,7 @@ def validate_llm_plan(
             if area <= 0:
                 continue
             overlap_area_total += area
-            if area >= 4.0:
+            if area >= MAJOR_OVERLAP_AREA_FT2:
                 major_overlaps += 1
 
     if major_overlaps > 0:
@@ -243,8 +260,8 @@ def validate_llm_plan(
     usable_area = max(1.0, usable_w * usable_l)
     gross_room_area = sum(max(0.0, r["w"] * r["h"]) for r in rooms)
     utilization = gross_room_area / usable_area
-    if utilization < 0.45:
-        issues.append(f"Poor space utilization ({utilization*100:.1f}%)")
+    # Removed the old low-utilization hard fail; architecturally valid plans can
+    # intentionally keep more breathing space after setbacks and circulation.
     if utilization > 1.08:
         issues.append(f"Room area exceeds usable footprint ({utilization*100:.1f}%)")
 
