@@ -25,6 +25,19 @@ export default function CadCanvas() {
 
     const { zoom, panX, panY, layout, rooms, previewMode, boundaryData, loading, error } = state
 
+    const renderRooms = (rooms || []).map((room) => ({
+        id: room.id,
+        type: room.room_type,
+        label: room.name,
+        x: room.position?.x ?? 0,
+        y: room.position?.y ?? 0,
+        width: room.width,
+        height: room.length,
+        zone: room.zone,
+        band: room.band,
+        color: room.color,
+    }))
+
     // Wheel zoom
     const handleWheel = useCallback((e) => {
         e.preventDefault()
@@ -122,7 +135,7 @@ export default function CadCanvas() {
                 {previewMode === '2d' && layout ? (
                     <div onMouseDown={handleRoomMouseDown}>
                         <PlanPreview
-                            plan={{ ...layout, rooms }}
+                            plan={{ ...layout, rooms: renderRooms }}
                             selectedRoomId={state.selectedRoomId}
                             showGrid={state.showGrid}
                             showDimensions={state.showDimensions}

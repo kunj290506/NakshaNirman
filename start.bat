@@ -41,7 +41,7 @@ if not exist "backend\.venv\Scripts\python.exe" (
 )
 
 echo [2/4] Installing backend dependencies...
-backend\.venv\Scripts\pip.exe install -r backend\requirements.txt -q >nul 2>&1
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt -q >nul 2>&1
 
 :: Copy .env to backend
 if exist ".env" copy ".env" "backend\.env" >nul

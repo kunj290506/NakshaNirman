@@ -63,10 +63,9 @@ if (-not (Test-Path "$venvDir\Scripts\python.exe")) {
 
 # Activate and install deps
 $venvPython = "$venvDir\Scripts\python.exe"
-$venvPip = "$venvDir\Scripts\pip.exe"
 
 Write-Host "  Installing Python dependencies..." -ForegroundColor DarkGray
-& $venvPip install -r "$backendDir\requirements.txt" --quiet 2>&1 | Out-Null
+& $venvPython -m pip install -r "$backendDir\requirements.txt" --quiet 2>&1 | Out-Null
 Write-Host "  Backend dependencies ready" -ForegroundColor Green
 
 # ── 4. Frontend setup ───────────────────────────────────────────

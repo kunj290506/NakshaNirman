@@ -171,6 +171,8 @@ def build_master_prompt(req: PlanRequest) -> tuple[str, str]:
     uw = round(req.plot_width - 7.0, 2)
     ul = round(req.plot_length - 11.5, 2)
     area = round(uw * ul, 1)
+    front_end = round(ul * 0.30, 1)
+    middle_end = round(ul * 0.60, 1)
 
     city = (req.city or "").lower().strip()
     climate = CLIMATE_MAP.get(city, "composite")
@@ -188,11 +190,18 @@ def build_master_prompt(req: PlanRequest) -> tuple[str, str]:
     if req.bedrooms >= 4:
         required_rooms.extend(["bedroom", "bathroom"])
 
+    if req.floors >= 2 and "staircase" not in required_rooms:
+        required_rooms.append("staircase")
+
     required_rooms_text = ", ".join(required_rooms)
 
     msg = f"""REQUEST_NONCE: {design_nonce}
 BRIEF: {req.plot_width}×{req.plot_length}ft plot, {req.facing}-facing, {req.bedrooms}BHK
 Usable: {uw}×{ul}ft = {area}sqft
+  Usable area corners: (0,0), ({uw},0), ({uw},{ul}), (0,{ul})
+  Front/public band: Y = 0 to {front_end} ft
+  Service/middle band: Y = {front_end} to {middle_end} ft
+  Private/rear band: Y = {middle_end} to {ul} ft
 Extras: {extras}
 Family: {req.family_type or 'nuclear'}
 City: {req.city or 'general'} ({climate} climate)

@@ -36,5 +36,10 @@ FAST_FALLBACK_MODE = os.getenv(
     "FAST_FALLBACK_MODE", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
+# Force deterministic local planning (skip external LLM variability).
+FORCE_LOCAL_PLANNER = os.getenv(
+    "FORCE_LOCAL_PLANNER", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 EXPORTS_DIR = os.path.join(os.path.dirname(__file__), "exports")
 os.makedirs(EXPORTS_DIR, exist_ok=True)

@@ -26,11 +26,8 @@ function toRooms(payload) {
 }
 
 export default function FormInterface({ onGenerate, loading }) {
-  const [mode, setMode] = useState('dimensions')
-
   const [plotWidth, setPlotWidth] = useState(30)
   const [plotLength, setPlotLength] = useState(40)
-  const [totalSqft, setTotalSqft] = useState(1200)
 
   const [bedrooms, setBedrooms] = useState(2)
   const [bathrooms, setBathrooms] = useState(2)
@@ -41,22 +38,15 @@ export default function FormInterface({ onGenerate, loading }) {
   const [stateName, setStateName] = useState('')
   const [familyType, setFamilyType] = useState('nuclear')
 
-  const area = useMemo(() => {
-    if (mode === 'dimensions') return Number(plotWidth || 0) * Number(plotLength || 0)
-    return Number(totalSqft || 0)
-  }, [mode, plotWidth, plotLength, totalSqft])
+  const area = useMemo(() => Number(plotWidth || 0) * Number(plotLength || 0), [plotWidth, plotLength])
 
-  const dimensions = useMemo(() => {
-    if (mode === 'dimensions') {
-      return {
-        width: Number(plotWidth || 0),
-        length: Number(plotLength || 0),
-      }
-    }
-    const w = Math.sqrt(area * 0.75)
-    const l = area / Math.max(w, 1)
-    return { width: Math.round(w * 10) / 10, length: Math.round(l * 10) / 10 }
-  }, [mode, plotWidth, plotLength, area])
+  const dimensions = useMemo(
+    () => ({
+      width: Number(plotWidth || 0),
+      length: Number(plotLength || 0),
+    }),
+    [plotWidth, plotLength],
+  )
 
   const canProceed = dimensions.width > 15 && dimensions.length > 15 && bedrooms >= 1 && bedrooms <= 4
 
@@ -91,35 +81,20 @@ export default function FormInterface({ onGenerate, loading }) {
       <div className="form-section form-section-dense">
         <h3>Basic Inputs</h3>
 
-        <div className="form-group">
-          <label className="form-label">Plot Input</label>
-          <div className="form-compact-grid-2">
-            <button className={`btn btn-secondary ${mode === 'dimensions' ? 'active' : ''}`} type='button' onClick={() => setMode('dimensions')}>
-              Width x Length
-            </button>
-            <button className={`btn btn-secondary ${mode === 'sqft' ? 'active' : ''}`} type='button' onClick={() => setMode('sqft')}>
-              Total Sqft
-            </button>
-          </div>
-        </div>
-
-        <div className="form-compact-grid-4">
+        <div className="form-compact-grid-2">
           <div className="form-group">
             <label className="form-label">Width (ft)</label>
-            <input className="form-input" type="number" min={16} value={plotWidth} disabled={mode !== 'dimensions'} onChange={(e) => setPlotWidth(Number(e.target.value || 0))} />
+            <input className="form-input" type="number" min={16} value={plotWidth} onChange={(e) => setPlotWidth(Number(e.target.value || 0))} />
           </div>
           <div className="form-group">
             <label className="form-label">Length (ft)</label>
-            <input className="form-input" type="number" min={16} value={plotLength} disabled={mode !== 'dimensions'} onChange={(e) => setPlotLength(Number(e.target.value || 0))} />
+            <input className="form-input" type="number" min={16} value={plotLength} onChange={(e) => setPlotLength(Number(e.target.value || 0))} />
           </div>
-          <div className="form-group">
-            <label className="form-label">Total Sqft</label>
-            <input className="form-input" type="number" min={300} value={totalSqft} disabled={mode !== 'sqft'} onChange={(e) => setTotalSqft(Number(e.target.value || 0))} />
-          </div>
-          <div className="form-group form-summary-chip">
-            <label className="form-label">Summary</label>
-            <div>{dimensions.width}x{dimensions.length} • {Math.round(area)} sqft</div>
-          </div>
+        </div>
+
+        <div className="form-group form-summary-chip">
+          <label className="form-label">Summary</label>
+          <div>{dimensions.width}x{dimensions.length} • {Math.round(area)} sqft</div>
         </div>
 
         <div className="form-compact-grid-4">
@@ -175,10 +150,8 @@ export default function FormInterface({ onGenerate, loading }) {
               <label className="form-label">Family</label>
               <select className="form-input" value={familyType} onChange={(e) => setFamilyType(e.target.value)}>
                 <option value="nuclear">Nuclear</option>
-                <option value="joint-family">Joint</option>
-                <option value="working-couple">Working Couple</option>
-                <option value="elderly">Elderly</option>
-                <option value="rental">Rental</option>
+                <option value="joint">Joint</option>
+                <option value="couple">Working Couple</option>
               </select>
             </div>
           </div>

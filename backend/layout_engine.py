@@ -23,7 +23,7 @@ from models import (
 from llm import call_openrouter_plan, call_openrouter_plan_backup
 from prompt_builder import build_master_prompt
 from plan_validator import validate_llm_plan
-from config import FAST_FALLBACK_MODE
+from config import FAST_FALLBACK_MODE, FORCE_LOCAL_PLANNER
 
 log = logging.getLogger("layout_engine")
 
@@ -34,8 +34,8 @@ SETBACKS = {"front": 6.5, "rear": 5.0, "left": 3.5, "right": 3.5}
 # Fast-fallback mode prefers deterministic completion speed for demo/runtime
 # reliability when external providers are slow or unstable.
 if FAST_FALLBACK_MODE:
-    FAST_LLM_TIMEOUT_SEC = 45
-    FAST_RETRY_TIMEOUT_SEC = 30
+    FAST_LLM_TIMEOUT_SEC = 60
+    FAST_RETRY_TIMEOUT_SEC = 35
     FAST_BACKUP_TIMEOUT_SEC = 45
     FINAL_QUALITY_TIMEOUT_SEC = 0
 else:
@@ -69,6 +69,7 @@ ROOM_COLORS: Dict[str, str] = {
     "utility": "#F3E5F5",
     "foyer": "#FAFAFA",
     "staircase": "#ECEFF1",
+    "open_area": "#F8FAFC",
 }
 
 ROOM_TYPE_ALIASES: Dict[str, str] = {
@@ -126,6 +127,7 @@ ROOM_MIN_DIMS: Dict[str, tuple[float, float]] = {
     "utility": (4.0, 5.0),
     "foyer": (4.0, 4.0),
     "staircase": (6.0, 8.0),
+    "open_area": (6.0, 6.0),
 }
 
 ROOM_DEFAULT_ZONES: Dict[str, str] = {
@@ -135,6 +137,7 @@ ROOM_DEFAULT_ZONES: Dict[str, str] = {
     "balcony": "public",
     "foyer": "public",
     "garage": "public",
+    "open_area": "public",
     "kitchen": "service",
     "corridor": "service",
     "master_bath": "service",
@@ -166,6 +169,7 @@ DEFAULT_ROOM_LABELS: Dict[str, str] = {
     "utility": "Utility",
     "foyer": "Foyer",
     "staircase": "Staircase",
+    "open_area": "Open Area",
 }
 
 def _requested_extra_room_types(extras: list[str]) -> set[str]:
@@ -239,6 +243,8 @@ def _sanitize_room_type(raw_type: str, raw_label: str = "") -> str:
         return "store"
     if "utility" in label:
         return "utility"
+    if "open" in label or "sit-out" in label or "terrace" in label:
+        return "open_area"
 
     return t
 
@@ -396,6 +402,19 @@ async def generate_plan(req: PlanRequest) -> PlanResponse:
     """
     uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
     ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
+
+    if FORCE_LOCAL_PLANNER:
+        local_plan = await _generate_via_bsp(req, uw, ul)
+        local_plan.generation_method = "deterministic_demo"
+        local_plan.reasoning_trace = [
+            f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
+            "Presentation-safe mode enabled: deterministic planner selected.",
+            "Returned stable adjacency-first layout without external model variance.",
+        ]
+        local_plan.architect_note = (
+            "Deterministic demo mode is enabled for consistent architectural output."
+        )
+        return local_plan
 
     # ── Attempt 1: LLM-generated plan (time-capped) ─────────
     try:
@@ -921,9 +940,11 @@ def _normalize_rooms_from_program(
         if not isinstance(raw, dict):
             continue
 
+        type_or_name = raw.get("type", raw.get("name", ""))
+        label_or_name = raw.get("label", raw.get("name", ""))
         room_type = _sanitize_room_type(
-            str(raw.get("type", "")),
-            str(raw.get("label", "")),
+            str(type_or_name),
+            str(label_or_name),
         )
         if room_type not in allowed_types:
             continue
@@ -974,7 +995,7 @@ def _normalize_rooms_from_program(
             room_id = f"{room_id}_{type_serial[room_type]}"
         used_ids.add(room_id)
 
-        label = str(raw.get("label", "")).strip()
+        label = str(raw.get("label", raw.get("name", ""))).strip()
         if not label:
             label = _default_room_label(room_type, type_serial[room_type])
 
@@ -1128,6 +1149,18 @@ def _logical_layout_issues(rooms: list[RoomData], uw: float, ul: float) -> list[
     if not _adjacent("master_bedroom", "master_bath", 1.5):
         issues.append("Master bath is not attached to master bedroom.")
 
+    if bedrooms and not corridors:
+        issues.append("Corridor is missing; circulation spine must connect entry to bedrooms.")
+
+    if corridors and living:
+        if not any(_shared_wall_length(liv, cor) >= 1.5 for liv in living for cor in corridors):
+            issues.append("Living room is not connected to corridor spine.")
+
+    wet_rooms = by_type.get("bathroom", []) + by_type.get("master_bath", []) + by_type.get("toilet", [])
+    if corridors and wet_rooms:
+        if not any(_shared_wall_length(wet, cor) >= 1.0 for wet in wet_rooms for cor in corridors):
+            issues.append("Bathrooms are not connected to corridor spine.")
+
     if corridors and bedrooms:
         for bed in bedrooms:
             if not any(_shared_wall_length(bed, c) >= 1.5 for c in corridors):
@@ -1278,7 +1311,7 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
         _clamp_in_bounds(room)
 
     # Pass 2: overlap repulsion
-    for _ in range(12):
+    for _ in range(40):
         moved = False
         for i in range(len(rooms)):
             for j in range(i + 1, len(rooms)):
@@ -1328,6 +1361,23 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
     # Final cleanup
     for room in rooms:
         _clamp_in_bounds(room)
+
+    hard_overlaps: list[str] = []
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            a = rooms[i]
+            b = rooms[j]
+            overlap_x = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
+            overlap_y = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
+            if overlap_x > 0.1 and overlap_y > 0.1:
+                hard_overlaps.append(
+                    f"{a.label} overlaps {b.label} by {overlap_x:.2f}ft x {overlap_y:.2f}ft"
+                )
+
+    if hard_overlaps:
+        for msg in hard_overlaps[:12]:
+            log.error("layout hard-overlap: %s", msg)
+        raise ValueError(f"Residual overlaps remain after repair ({len(hard_overlaps)} pairs > 0.1ft)")
 
 
 def _postprocess_llm_layout(rooms: list[RoomData], uw: float, ul: float):
@@ -1432,7 +1482,7 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
     )
 
     # Build room specs
-    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul, req.facing)
+    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul, req.facing, req.floors)
     requested_baths = max(0, int(getattr(req, "bathrooms_target", 0) or 0))
     existing_baths = sum(
         1 for spec in room_specs if spec.get("type") in ("master_bath", "bathroom", "toilet")
@@ -1449,6 +1499,13 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
     placed = pack_rooms_bsp(room_specs, uw, ul)
     vastu_score = _compute_fallback_vastu_score(placed, uw, ul)
 
+    # Ensure all BSP rooms carry deterministic unique IDs before opening generation.
+    type_counts: Dict[str, int] = {}
+    for room in placed:
+        room_type = str(room.get("type", "room"))
+        type_counts[room_type] = type_counts.get(room_type, 0) + 1
+        room["id"] = f"{room_type}_{type_counts[room_type]:02d}"
+
     # Add doors and windows
     doors, windows = add_doors_and_windows(placed, uw, ul, req.facing)
 
@@ -1456,7 +1513,7 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
     rooms = []
     for i, p in enumerate(placed):
         rooms.append(RoomData(
-            id=f"{p['type']}_{i+1:02d}",
+            id=str(p.get("id", f"{p['type']}_{i+1:02d}")),
             type=p["type"],
             label=p["label"],
             x=p["x"],
@@ -1508,9 +1565,19 @@ def build_room_list(
     usable_w: float,
     usable_l: float,
     facing: str = "south",
+    floors: int = 1,
 ) -> List[Dict[str, Any]]:
     """Build room specifications based on BHK count and extras."""
     rooms = []
+
+    extras_norm = {
+        str(extra or "").strip().lower().replace(" ", "_")
+        for extra in (extras or [])
+        if str(extra or "").strip()
+    }
+
+    if floors >= 2 and "staircase" not in extras_norm:
+        extras_norm.add("staircase")
 
     # --- Always present ---
     rooms.append({
@@ -1588,7 +1655,7 @@ def build_room_list(
         })
 
     # --- Extras ---
-    if "pooja" in extras:
+    if "pooja" in extras_norm:
         rooms.append({
             "type": "pooja", "label": "Pooja Room",
             "min_w": 5, "min_h": 5, "pref_w": 6, "pref_h": 6,
@@ -1601,47 +1668,62 @@ def build_room_list(
             "min_w": 4.5, "min_h": 5, "pref_w": 5, "pref_h": 6,
             "zone": 1, "priority": 2,
         })
-    if "study" in extras:
+    if "study" in extras_norm:
         rooms.append({
             "type": "study", "label": "Study Room",
             "min_w": 8, "min_h": 9, "pref_w": 9, "pref_h": 10,
             "zone": 3, "priority": 8,
         })
-    if "store" in extras:
+    if "store" in extras_norm:
         rooms.append({
             "type": "store", "label": "Store Room",
             "min_w": 5, "min_h": 5, "pref_w": 6, "pref_h": 6,
             "zone": 2, "priority": 9,
         })
-    if "balcony" in extras:
+    if "balcony" in extras_norm:
         rooms.append({
             "type": "balcony", "label": "Balcony",
             "min_w": 4, "min_h": 8, "pref_w": 5, "pref_h": 10,
             "zone": 1, "priority": 3,
         })
-    if "garage" in extras:
+    if "garage" in extras_norm:
         rooms.append({
             "type": "garage", "label": "Garage",
             "min_w": 10, "min_h": 18, "pref_w": 11, "pref_h": 20,
             "zone": 1, "priority": 10,
         })
-    if "utility" in extras:
+    if "utility" in extras_norm:
         rooms.append({
             "type": "utility", "label": "Utility",
             "min_w": 4, "min_h": 5, "pref_w": 5, "pref_h": 6,
             "zone": 2, "priority": 9,
         })
-    if "foyer" in extras:
+    if "foyer" in extras_norm:
         rooms.append({
             "type": "foyer", "label": "Foyer",
             "min_w": 4, "min_h": 4, "pref_w": 5, "pref_h": 5,
             "zone": 1, "priority": 2,
         })
-    if "staircase" in extras:
+    if "staircase" in extras_norm:
         rooms.append({
             "type": "staircase", "label": "Staircase",
             "min_w": 6, "min_h": 8, "pref_w": 6.5, "pref_h": 9,
             "zone": 2, "priority": 9,
+        })
+
+    usable_area = max(1.0, usable_w * usable_l)
+    planned_area = sum(
+        max(0.0, _to_float(r.get("pref_w"), 0.0) * _to_float(r.get("pref_h"), 0.0))
+        for r in rooms
+    )
+    residual_area = max(0.0, usable_area - planned_area)
+    if residual_area >= usable_area * 0.20:
+        open_side = _clamp(usable_w * 0.30, 6.0, max(6.0, usable_w * 0.45))
+        open_depth = _clamp(residual_area / max(1.0, open_side), 6.0, max(6.0, usable_l * 0.35))
+        rooms.append({
+            "type": "open_area", "label": "Open Area",
+            "min_w": 6, "min_h": 6, "pref_w": _rnd(open_side, 2), "pref_h": _rnd(open_depth, 2),
+            "zone": 1, "priority": 12,
         })
 
     return rooms
@@ -1650,6 +1732,118 @@ def build_room_list(
 # ─────────────────────────────────────────────────────────────
 # BSP Packing v2 — smart grid, zero-overlap, proper proportions
 # ─────────────────────────────────────────────────────────────
+def _spec_min_h(spec: Dict[str, Any], fallback: float = 6.0) -> float:
+    return max(3.0, _to_float(spec.get("min_h"), fallback))
+
+
+def _compute_program_band_heights(
+    zone_rooms: Dict[int, List[Dict[str, Any]]],
+    usable_l: float,
+) -> tuple[float, float, float]:
+    living_specs = [r for r in zone_rooms.get(1, []) if r.get("type") == "living"]
+    living_min_h = _spec_min_h(living_specs[0], 12.0) if living_specs else 12.0
+
+    private_specs = list(zone_rooms.get(3, [])) + [
+        r for r in zone_rooms.get(2, []) if r.get("type") == "master_bath"
+    ]
+    service_specs = [
+        r for r in zone_rooms.get(2, [])
+        if r.get("type") not in ("corridor", "master_bath")
+    ]
+
+    private_sum_h = sum(_spec_min_h(r, 8.0) for r in private_specs)
+    service_sum_h = sum(_spec_min_h(r, 7.0) for r in service_specs)
+
+    remaining_h = usable_l - private_sum_h - service_sum_h
+    front_target_h = max(remaining_h, living_min_h + 2.0)
+    total_h = front_target_h + service_sum_h + private_sum_h
+
+    if total_h <= usable_l + 0.05:
+        band1_h = front_target_h
+        band2_h = max(7.0, service_sum_h)
+        band3_h = max(8.0, private_sum_h)
+    else:
+        log.warning(
+            "Program-derived band heights exceed usable length (front=%.2f, service=%.2f, private=%.2f, usable=%.2f). "
+            "Compressing service/private bands while preserving living minimum.",
+            front_target_h,
+            service_sum_h,
+            private_sum_h,
+            usable_l,
+        )
+        min_front_h = max(8.0, living_min_h)
+        alloc_h = max(15.0, usable_l - min_front_h)
+        ratio_den = max(1.0, service_sum_h + private_sum_h)
+        band2_h = max(7.0, alloc_h * (service_sum_h / ratio_den))
+        band3_h = max(8.0, alloc_h * (private_sum_h / ratio_den))
+        scale = alloc_h / max(1.0, band2_h + band3_h)
+        band2_h *= scale
+        band3_h *= scale
+        band1_h = min_front_h
+
+    # Final validation: enforce total <= usable length before packing bands.
+    band1_h = max(8.0, band1_h)
+    band2_h = max(7.0, band2_h)
+    if band1_h + band2_h > usable_l - 8.0:
+        overflow = (band1_h + band2_h) - (usable_l - 8.0)
+        if band1_h >= band2_h:
+            band1_h = max(max(8.0, living_min_h), band1_h - overflow)
+        else:
+            band2_h = max(7.0, band2_h - overflow)
+
+    band3_h = max(8.0, usable_l - band1_h - band2_h)
+    if band1_h + band2_h + band3_h > usable_l:
+        band3_h = max(8.0, band3_h - ((band1_h + band2_h + band3_h) - usable_l))
+
+    band1_h = _rnd(band1_h, 2)
+    band2_h = _rnd(band2_h, 2)
+    band3_h = _rnd(max(8.0, usable_l - band1_h - band2_h), 2)
+    drift = _rnd(usable_l - (band1_h + band2_h + band3_h), 2)
+    if abs(drift) > 0.01:
+        band1_h = _rnd(max(8.0, band1_h + drift), 2)
+        band3_h = _rnd(max(8.0, usable_l - band1_h - band2_h), 2)
+
+    if band1_h + band2_h + band3_h > usable_l + 0.05:
+        raise ValueError("Program-derived band heights exceed usable plot length")
+
+    return band1_h, band2_h, band3_h
+
+
+def _assign_bsp_room_ids(placed: List[Dict[str, Any]]):
+    counts: Dict[str, int] = {}
+    for room in placed:
+        room_type = str(room.get("type", "room"))
+        counts[room_type] = counts.get(room_type, 0) + 1
+        room["id"] = f"{room_type}_{counts[room_type]:02d}"
+
+
+def _enforce_vastu_clamps(placed: List[Dict[str, Any]], usable_w: float, band1_h: float):
+    half_w = usable_w * 0.5
+    for room in placed:
+        room_type = str(room.get("type", ""))
+        width = _to_float(room.get("width"), 0.0)
+        height = _to_float(room.get("height"), 0.0)
+
+        if room_type == "kitchen":
+            min_x = max(0.0, half_w)
+            max_x = max(0.0, usable_w - width)
+            room["x"] = _rnd(_clamp(_to_float(room.get("x"), 0.0), min_x, max_x), 2)
+
+        elif room_type == "master_bedroom":
+            if width > half_w:
+                width = _rnd(max(7.0, half_w), 2)
+                room["width"] = width
+            max_x = max(0.0, half_w - width)
+            room["x"] = _rnd(_clamp(_to_float(room.get("x"), 0.0), 0.0, max_x), 2)
+
+        elif room_type == "pooja":
+            min_x = max(0.0, half_w)
+            max_x = max(0.0, usable_w - width)
+            max_y = max(0.0, band1_h - height)
+            room["x"] = _rnd(_clamp(_to_float(room.get("x"), 0.0), min_x, max_x), 2)
+            room["y"] = _rnd(_clamp(_to_float(room.get("y"), 0.0), 0.0, max_y), 2)
+
+
 def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
                    usable_w: float, usable_l: float) -> List[Dict[str, Any]]:
     """
@@ -1659,11 +1853,6 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
     Band 2 (service): ~25% depth — corridor spine, kitchen, bathrooms
     Band 3 (private): ~47% depth — bedrooms with attached baths, study
     """
-    # Rebalanced bands to give service core enough depth for clustered wet rooms.
-    band1_h = _rnd(usable_l * 0.30, 2)
-    band2_h = _rnd(usable_l * 0.30, 2)
-    band3_h = _rnd(usable_l - band1_h - band2_h, 2)
-
     # Separate rooms by zone
     zone_rooms: Dict[int, List[Dict[str, Any]]] = {1: [], 2: [], 3: []}
     for spec in room_specs:
@@ -1675,19 +1864,35 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
     for z in zone_rooms:
         zone_rooms[z].sort(key=lambda r: r["priority"])
 
+    band1_h, band2_h, band3_h = _compute_program_band_heights(zone_rooms, usable_l)
+    # Keep front band continuous so dining and kitchen can stay physically connected.
+    entry_stub_h = 0.0
+    front_room_h = _rnd(max(8.0, band1_h), 2)
+
+    # Master bath is intentionally packed in private band, not service band.
+    master_bath_spec = next(
+        (r for r in zone_rooms[2] if r.get("type") == "master_bath"),
+        None,
+    )
+    service_zone_rooms = [
+        r for r in zone_rooms[2]
+        if r.get("type") != "master_bath"
+    ]
+
     placed: List[Dict[str, Any]] = []
 
     # ── Band 1: Public (living, dining, pooja, balcony) ──────
-    placed.extend(_pack_band1(zone_rooms[1], 0, 0, usable_w, band1_h))
+    placed.extend(_pack_band1(zone_rooms[1], 0, 0, usable_w, front_room_h))
 
     # ── Band 2: Service (corridor + kitchen + bathrooms) ─────
     band2_rooms = _pack_band2(
-        zone_rooms[2],
+        service_zone_rooms,
         0,
         band1_h,
         usable_w,
         band2_h,
-        corridor_extend_h=band3_h,
+        corridor_extend_h=0.0,
+        entry_stub_h=entry_stub_h,
     )
     placed.extend(band2_rooms)
 
@@ -1699,8 +1904,20 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
 
     # ── Band 3: Private (bedrooms + attached baths + study) ──
     placed.extend(
-        _pack_band3(zone_rooms[3], 0, band1_h + band2_h, usable_w, band3_h, corridor_hint)
+        _pack_band3(
+            zone_rooms[3],
+            0,
+            band1_h + band2_h,
+            usable_w,
+            band3_h,
+            corridor_hint,
+            master_bath_spec=master_bath_spec,
+        )
     )
+
+    _enforce_vastu_clamps(placed, usable_w, band1_h)
+
+    _assign_bsp_room_ids(placed)
 
     # Final overlap check
     _verify_no_overlaps(placed)
@@ -1807,10 +2024,12 @@ def _pack_band1(rooms: List[Dict[str, Any]], bx: float, by: float,
 
 
 def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
-                bw: float, bh: float, corridor_extend_h: float = 0.0) -> List[Dict[str, Any]]:
+                bw: float, bh: float,
+                corridor_extend_h: float = 0.0,
+                entry_stub_h: float = 0.0) -> List[Dict[str, Any]]:
     """
     Band 2: Service zone.
-    Layout: Corridor west spine | Wet core center | Kitchen east (southeast preference).
+    Layout: corridor spine + east kitchen + boundary-flush common bathrooms.
     """
     if not rooms:
         return []
@@ -1822,12 +2041,16 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
     service_other: List[Dict[str, Any]] = []
 
     for r in rooms:
-        if r["type"] == "corridor":
+        room_type = r.get("type")
+        if room_type == "corridor":
             corridor_spec = r
-        elif r["type"] == "kitchen":
+        elif room_type == "kitchen":
             kitchen = r
-        elif r["type"] in ("bathroom", "master_bath", "toilet"):
+        elif room_type in ("bathroom", "toilet"):
             wet_rooms.append(r)
+        elif room_type == "master_bath":
+            # Master bath is placed in private band next to master bedroom.
+            continue
         else:
             service_other.append(r)
 
@@ -1835,31 +2058,28 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
     corridor_w = _rnd(min(corridor_w, max(0.0, bw - 12.0)), 2)
 
     if corridor_spec and corridor_w >= 3.0:
-        # Keep corridor central so both private bedrooms can connect through it.
         left_w = _rnd(max(5.0, (bw - corridor_w) * 0.42), 2)
-        right_w = _rnd(bw - corridor_w - left_w, 2)
-        if right_w < 6.0:
-            right_w = 6.0
-            left_w = _rnd(max(5.0, bw - corridor_w - right_w), 2)
-
+        right_w = _rnd(max(6.0, bw - corridor_w - left_w), 2)
         corridor_x = _rnd(bx + left_w, 2)
         wet_x = _rnd(bx, 2)
         wet_w = _rnd(max(5.0, corridor_x - wet_x), 2)
-        kitchen_x = _rnd(corridor_x + corridor_w, 2)
-        kitchen_w = _rnd(max(6.0, bx + bw - kitchen_x), 2)
+        kitchen_w = _rnd(max(6.0, right_w), 2)
+        kitchen_x = _rnd(bx + bw - kitchen_w, 2)
     else:
         corridor_w = 0.0
         wet_x = _rnd(bx, 2)
-        wet_w = _rnd(min(max(5.0, bw * 0.38), max(5.0, bw - 8.0)), 2)
-        kitchen_x = _rnd(wet_x + wet_w, 2)
-        kitchen_w = _rnd(max(6.0, bx + bw - kitchen_x), 2)
-        corridor_x = _rnd(bx + wet_w, 2)
+        wet_w = _rnd(min(max(5.0, bw * 0.36), max(5.0, bw - 8.0)), 2)
+        kitchen_w = _rnd(max(6.0, bw - wet_w), 2)
+        kitchen_x = _rnd(bx + bw - kitchen_w, 2)
+        corridor_x = _rnd(kitchen_x - 3.5, 2)
 
     if corridor_spec and corridor_w >= 3.0:
-        corridor_h = _rnd(max(bh, bh + max(0.0, corridor_extend_h)), 2)
+        corridor_y = _rnd(max(0.0, by - max(0.0, entry_stub_h)), 2)
+        # Keep corridor depth within service band + optional front stub only.
+        corridor_h = _rnd(max(bh, bh + max(0.0, entry_stub_h)), 2)
         placed.append({
             "type": "corridor", "label": "Corridor",
-            "x": corridor_x, "y": _rnd(by, 2),
+            "x": corridor_x, "y": corridor_y,
             "width": _rnd(corridor_w, 2), "height": corridor_h,
             "zone": 2, "band": 2,
         })
@@ -1875,7 +2095,7 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
     if kitchen:
         reserve_h = 0.0
         if east_stack:
-            reserve_h = _rnd(min(max(3.5, bh * 0.30), max(3.5, bh - 4.0)), 2)
+            reserve_h = _rnd(min(max(3.5, bh * 0.28), max(3.5, bh - 4.0)), 2)
         kitchen_h = _rnd(max(4.0, bh - reserve_h), 2)
 
         placed.append({
@@ -1893,39 +2113,89 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
                 placed.append({
                     "type": room["type"], "label": room["label"],
                     "x": kitchen_x, "y": _rnd(y, 2),
-                    "width": _rnd(kitchen_w, 2), "height": _rnd(rh, 2),
+                    "width": _rnd(kitchen_w, 2), "height": _rnd(max(3.5, rh), 2),
                     "zone": 2, "band": 2,
                 })
                 y = _rnd(y + rh, 2)
 
-    # Place master bath at top of service stack so it attaches to rear private band.
-    wet_rooms.sort(key=lambda r: 1 if r.get("type") == "master_bath" else 0)
-    stack_rooms = wet_rooms + central_stack
+    # Common bathrooms are anchored at the band2/band3 boundary for bedroom access.
+    boundary_baths = [r for r in wet_rooms if r.get("type") in ("bathroom", "toilet")]
+    stack_rooms = boundary_baths + central_stack
     if stack_rooms and wet_w > 0:
-        current_y = by
+        current_top = _rnd(by + bh, 2)
         per_h = _rnd(bh / len(stack_rooms), 2)
         for idx, room in enumerate(stack_rooms):
-            rh = per_h if idx < len(stack_rooms) - 1 else _rnd(by + bh - current_y, 2)
+            available_h = _rnd(max(0.0, current_top - by), 2)
+            if available_h <= 0.1:
+                break
+
+            if idx < len(stack_rooms) - 1:
+                min_h = _spec_min_h(room, 5.0)
+                rh = _rnd(max(min_h, per_h), 2)
+                reserve_h = max(0.0, (len(stack_rooms) - idx - 1) * 3.2)
+                max_h = _rnd(max(3.0, available_h - reserve_h), 2)
+                rh = _rnd(min(rh, max_h), 2)
+            else:
+                rh = _rnd(max(2.5, available_h), 2)
+
+            if rh > available_h:
+                rh = available_h
+
+            y = _rnd(max(by, current_top - rh), 2)
             placed.append({
                 "type": room["type"], "label": room["label"],
-                "x": wet_x, "y": _rnd(current_y, 2),
+                "x": wet_x, "y": y,
                 "width": _rnd(wet_w, 2), "height": _rnd(rh, 2),
                 "zone": 2, "band": 2,
             })
-            current_y = _rnd(current_y + rh, 2)
+            current_top = y
+
+    return placed
+
+
+def _pack_private_single_column(
+    rooms: List[Dict[str, Any]],
+    bx: float,
+    by: float,
+    bw: float,
+    bh: float,
+    master_bath_spec: Dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    stack = list(rooms)
+    if master_bath_spec is not None:
+        stack = [master_bath_spec] + stack
+    if not stack:
+        return []
+
+    placed: List[Dict[str, Any]] = []
+    current_y = by
+    per_h = _rnd(bh / len(stack), 2)
+    for idx, room in enumerate(stack):
+        if idx < len(stack) - 1:
+            rh = _rnd(max(4.0, min(per_h, by + bh - current_y - (len(stack) - idx - 1) * 4.0)), 2)
+        else:
+            rh = _rnd(max(4.0, by + bh - current_y), 2)
+
+        placed.append({
+            "type": room["type"], "label": room["label"],
+            "x": _rnd(bx, 2), "y": _rnd(current_y, 2),
+            "width": _rnd(bw, 2), "height": _rnd(rh, 2),
+            "zone": 3, "band": 3,
+        })
+        current_y = _rnd(current_y + rh, 2)
 
     return placed
 
 
 def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
                 bw: float, bh: float,
-                corridor_hint: tuple[float, float] | None = None) -> List[Dict[str, Any]]:
+                corridor_hint: tuple[float, float] | None = None,
+                master_bath_spec: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     """
     Band 3: Private zone.
-    Layout intent: master bedroom anchored southwest, other bedrooms east,
-    study adjacent to master where requested.
+    Master bedroom stays southwest with attached master bath on its south wall.
     """
-    if not rooms:
+    if not rooms and master_bath_spec is None:
         return []
 
     placed: List[Dict[str, Any]] = []
@@ -1954,7 +2224,7 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
             other_beds = [r for r in other_beds if r is not master]
 
     if master is None:
-        return _pack_strip_safe(rooms, bx, by, bw, bh, 3)
+        return _pack_private_single_column(rooms, bx, by, bw, bh, master_bath_spec)
 
     use_corridor_channel = False
     corridor_x = 0.0
@@ -1965,56 +2235,139 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
         if corridor_w >= 3.0 and corridor_x > bx + 6.0 and corridor_x + corridor_w < bx + bw - 6.0:
             use_corridor_channel = True
 
+    master_min_w = max(8.0, min(_to_float(master.get("min_w"), 10.0), bw * 0.62))
+    other_bed_min_w = max([
+        max(7.0, min(_to_float(r.get("min_w"), 9.0), bw * 0.48))
+        for r in other_beds
+    ], default=0.0)
+
+    compact_split = False
+
     if use_corridor_channel:
-        master_w = _rnd(max(8.5, corridor_x - bx), 2)
-        east_x = _rnd(corridor_x + corridor_w, 2)
-        east_w = _rnd(max(6.0, bx + bw - east_x), 2)
+        target_master_w = corridor_x - bx
+        max_master_w = bw - other_bed_min_w - corridor_w
     else:
-        master_w = _rnd(min(max(9.5, bw * 0.55), max(9.5, bw * 0.60)), 2)
-        if master_w > bw - 6.0:
-            master_w = _rnd(max(8.5, bw - 6.0), 2)
-        east_w = _rnd(max(6.0, bw - master_w), 2)
+        target_master_w = bw * 0.55
+        max_master_w = bw - other_bed_min_w
+
+    if other_beds and max_master_w < master_min_w:
+        if use_corridor_channel:
+            # On narrow plots, relax bedroom width targets before dropping the
+            # corridor channel. This keeps private rooms corridor-connected.
+            relaxed_master_min = max(8.5, min(master_min_w, bw * 0.42))
+            relaxed_other_min = max(8.0, min(other_bed_min_w or 8.0, bw * 0.36))
+            relaxed_max_master = bw - relaxed_other_min - corridor_w
+            if relaxed_max_master >= relaxed_master_min:
+                master_min_w = _rnd(relaxed_master_min, 2)
+                other_bed_min_w = _rnd(relaxed_other_min, 2)
+                max_master_w = _rnd(relaxed_max_master, 2)
+
+    if other_beds and max_master_w < master_min_w:
+        if bw >= 14.0:
+            log.warning(
+                "Private-band width is tight for standard bedroom mins. "
+                "Using compact two-column private split.",
+            )
+            compact_split = True
+            use_corridor_channel = False
+            target_master_w = bw * 0.5
+            master_min_w = max(7.5, min(master_min_w, bw * 0.5))
+            max_master_w = bw - max(6.5, bw * 0.35)
+        else:
+            log.warning(
+                "Private-band width is too narrow for master+secondary bedrooms. "
+                "Switching to full-width single-column stacking.",
+            )
+            fallback_rooms = [master] + other_beds + studies + misc_private
+            return _pack_private_single_column(fallback_rooms, bx, by, bw, bh, master_bath_spec)
+
+    if other_beds:
+        master_w = _rnd(_clamp(target_master_w, master_min_w, max_master_w), 2)
+    else:
+        master_w = _rnd(_clamp(target_master_w, master_min_w, bw), 2)
+
+    if use_corridor_channel:
+        corridor_x = _rnd(bx + master_w, 2)
+        east_x = _rnd(corridor_x + corridor_w, 2)
+        east_w = _rnd(max(0.0, bx + bw - east_x), 2)
+    else:
+        east_x = _rnd(bx + master_w, 2)
+        east_w = _rnd(max(0.0, bw - master_w), 2)
+
+    if compact_split:
+        east_w = _rnd(max(6.5, east_w), 2)
+        master_w = _rnd(max(7.5, bw - east_w), 2)
         east_x = _rnd(bx + master_w, 2)
 
-    if east_w <= 0:
-        master_w = _rnd(bw, 2)
-        east_w = 0.0
-        east_x = _rnd(bx + master_w, 2)
-
-    master_h = _rnd(bh, 2)
+    master_min_h = max(10.0, _to_float(master.get("min_h"), 11.0))
     study_h = 0.0
     if studies:
-        study_h = _rnd(max(6.0, min(bh * 0.35, max(6.0, bh - 8.0))), 2)
-        master_h = _rnd(max(8.0, bh - study_h), 2)
+        study_h = _rnd(max(6.0, min(bh * 0.30, max(6.0, bh - master_min_h - 4.0))), 2)
 
+    bath_h = 0.0
+    if master_bath_spec is not None:
+        bath_h = _rnd(max(5.0, min(_spec_min_h(master_bath_spec, 7.0), max(5.0, bh * 0.32))), 2)
+
+    master_h = _rnd(max(8.0, bh - study_h - bath_h), 2)
+    if master_h < master_min_h:
+        deficit = _rnd(master_min_h - master_h, 2)
+        if study_h > 0:
+            cut = min(deficit, max(0.0, study_h - 4.0))
+            study_h = _rnd(study_h - cut, 2)
+            deficit = _rnd(deficit - cut, 2)
+        if deficit > 0 and bath_h > 0:
+            cut = min(deficit, max(0.0, bath_h - 5.0))
+            bath_h = _rnd(bath_h - cut, 2)
+            deficit = _rnd(deficit - cut, 2)
+        master_h = _rnd(max(master_min_h, bh - study_h - bath_h), 2)
+
+    if master_bath_spec is not None and bath_h > 0:
+        placed.append({
+            "type": master_bath_spec["type"], "label": master_bath_spec["label"],
+            "x": _rnd(bx, 2), "y": _rnd(by, 2),
+            "width": _rnd(master_w, 2), "height": _rnd(bath_h, 2),
+            "zone": 3, "band": 3,
+        })
+
+    master_y = _rnd(by + bath_h, 2)
     placed.append({
         "type": master["type"], "label": master["label"],
-        "x": _rnd(bx, 2), "y": _rnd(by, 2),
+        "x": _rnd(bx, 2), "y": master_y,
         "width": _rnd(master_w, 2), "height": _rnd(master_h, 2),
         "zone": 3, "band": 3,
     })
 
-    if studies:
+    if studies and study_h > 0:
         placed.append({
             "type": studies[0]["type"], "label": studies[0]["label"],
-            "x": _rnd(bx, 2), "y": _rnd(by + master_h, 2),
+            "x": _rnd(bx, 2), "y": _rnd(master_y + master_h, 2),
             "width": _rnd(master_w, 2), "height": _rnd(study_h, 2),
             "zone": 3, "band": 3,
         })
 
     east_rooms = other_beds + misc_private
     if east_w > 0 and east_rooms:
-        current_y = by
-        per_h = _rnd(bh / len(east_rooms), 2)
+        current_y = _rnd(by, 2)
+        east_h = _rnd(max(8.0, bh), 2)
+        per_h = _rnd(east_h / len(east_rooms), 2)
         for idx, room in enumerate(east_rooms):
             rh = per_h if idx < len(east_rooms) - 1 else _rnd(by + bh - current_y, 2)
             placed.append({
                 "type": room["type"], "label": room["label"],
                 "x": east_x, "y": _rnd(current_y, 2),
-                "width": _rnd(east_w, 2), "height": _rnd(rh, 2),
+                "width": _rnd(max(4.0, east_w), 2), "height": _rnd(max(4.0, rh), 2),
                 "zone": 3, "band": 3,
             })
             current_y = _rnd(current_y + rh, 2)
+
+    if use_corridor_channel and corridor_w >= 2.8:
+        placed.append({
+            "type": "corridor", "label": "Corridor",
+            "x": _rnd(corridor_x, 2), "y": _rnd(by, 2),
+            "width": _rnd(corridor_w, 2),
+            "height": _rnd(bh, 2),
+            "zone": 2, "band": 3,
+        })
 
     return placed
 
@@ -2124,6 +2477,96 @@ def _rects_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
 # ─────────────────────────────────────────────────────────────
 # Door & Window placement
 # ─────────────────────────────────────────────────────────────
+def _door_limit_for_room(room_type: str) -> int:
+    if room_type in ("corridor", "living"):
+        return 12 if room_type == "corridor" else 7
+    if room_type in ("dining", "kitchen"):
+        return 4
+    if room_type in ("master_bedroom", "bedroom", "study", "staircase"):
+        return 3
+    if room_type in ("master_bath", "bathroom", "toilet"):
+        return 2
+    return 2
+
+
+def _door_priority_for_pair(type_a: str, type_b: str) -> int:
+    pair = tuple(sorted((str(type_a), str(type_b))))
+
+    # Skip low-value or architecturally incorrect direct links.
+    wet = {"master_bath", "bathroom", "toilet"}
+    if pair[0] in wet and pair[1] in wet:
+        return -1
+
+    weights: Dict[tuple[str, str], int] = {
+        ("corridor", "living"): 140,
+        ("corridor", "dining"): 132,
+        ("corridor", "kitchen"): 130,
+        ("corridor", "master_bedroom"): 128,
+        ("corridor", "bedroom"): 126,
+        ("corridor", "study"): 124,
+        ("corridor", "staircase"): 122,
+        ("corridor", "bathroom"): 120,
+        ("corridor", "toilet"): 118,
+        ("corridor", "master_bath"): 118,
+        ("living", "dining"): 116,
+        ("living", "kitchen"): 112,
+        ("living", "foyer"): 108,
+        ("living", "balcony"): 106,
+        ("living", "open_area"): 104,
+        ("living", "garage"): 102,
+        ("kitchen", "utility"): 100,
+        ("kitchen", "store"): 96,
+        ("master_bath", "master_bedroom"): 112,
+        ("bathroom", "bedroom"): 102,
+        ("bedroom", "toilet"): 98,
+    }
+    if pair in weights:
+        return weights[pair]
+
+    # Keep generic pairs possible but lower priority.
+    if "open_area" in pair and pair != ("living", "open_area"):
+        return -1
+    return 72
+
+
+def _choose_living_entry_wall(
+    living: Dict[str, Any],
+    facing: str,
+    usable_w: float,
+    usable_l: float,
+) -> tuple[str, float, float]:
+    eps = 0.25
+
+    def _touches(wall: str) -> bool:
+        if wall == "north":
+            return abs(living["y"] + living["height"] - usable_l) <= eps
+        if wall == "south":
+            return living["y"] <= eps
+        if wall == "east":
+            return abs(living["x"] + living["width"] - usable_w) <= eps
+        return living["x"] <= eps
+
+    preferred = str(facing or "south").lower()
+    wall_order = [preferred, "east", "north", "south", "west"]
+    seen: set[str] = set()
+    ordered_walls: list[str] = []
+    for wall in wall_order:
+        if wall in ("north", "south", "east", "west") and wall not in seen:
+            ordered_walls.append(wall)
+            seen.add(wall)
+
+    selected = next((wall for wall in ordered_walls if _touches(wall)), "east")
+
+    if selected in ("north", "south"):
+        x = living["x"] + living["width"] * 0.5
+        y = living["y"] + (living["height"] if selected == "north" else 0.0)
+    else:
+        x = living["x"] + (living["width"] if selected == "east" else 0.0)
+        y = living["y"] + living["height"] * 0.5
+
+    return selected, _rnd(x, 2), _rnd(y, 2)
+
+
 def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
                           usable_w: float, usable_l: float,
                           facing: str) -> tuple[list[DoorData], list[WindowData]]:
@@ -2145,66 +2588,153 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
     if living:
         door_count = door_count + 1
         living_id = str(living.get("id", "living"))
-        # Main entrance is intentionally constrained to east or north walls
-        # to align with the architect prompt's hard circulation/vastu rule.
-        if facing in ("north", "west"):
-            doors.append(DoorData(
-                id=f"door_{door_count:02d}", type="main",
-                room_id=living_id, wall="north",
-                x=living["x"] + living["width"] * 0.7,
-                y=living["y"] + living["height"],
-                width=3.5,
-            ))
-        else:
-            # South-facing plots are compensated by shifting entry to east-northeast.
-            doors.append(DoorData(
-                id=f"door_{door_count:02d}", type="main",
-                room_id=living_id, wall="east",
-                x=living["x"] + living["width"],
-                y=living["y"] + living["height"] * 0.7,
-                width=3.5,
-            ))
+        main_wall, main_x, main_y = _choose_living_entry_wall(living, facing, usable_w, usable_l)
+        main_width = _rnd(_clamp(min(4.0, living["width"] * 0.28), 3.2, 4.0), 2)
+        doors.append(DoorData(
+            id=f"door_{door_count:02d}", type="main",
+            room_id=living_id, wall=main_wall,
+            x=main_x,
+            y=main_y,
+            width=main_width,
+        ))
         room_door_counts[living_id] = room_door_counts.get(living_id, 0) + 1
 
-    # Interior doors between adjacent rooms
+    # Interior doors between adjacent rooms.
+    # Candidate selection is deterministic and scored by architectural connectivity.
+    candidates: List[Dict[str, Any]] = []
     for i, a in enumerate(placed_rooms):
         for j in range(i + 1, len(placed_rooms)):
             b = placed_rooms[j]
             shared = _shared_wall(a, b)
-            if shared:
-                room_a = str(a.get("id", a.get("type", f"room_{i}")))
-                room_b = str(b.get("id", b.get("type", f"room_{j}")))
+            if not shared:
+                continue
 
-                limit_a = 5 if a.get("type") in ("corridor", "living", "dining") else 2
-                limit_b = 5 if b.get("type") in ("corridor", "living", "dining") else 2
-                if room_door_counts.get(room_a, 0) >= limit_a:
-                    continue
-                if room_door_counts.get(room_b, 0) >= limit_b:
-                    continue
+            room_a = str(a.get("id", f"{a.get('type', 'room')}_{i+1:02d}"))
+            room_b = str(b.get("id", f"{b.get('type', 'room')}_{j+1:02d}"))
+            type_a = str(a.get("type", "room"))
+            type_b = str(b.get("type", "room"))
+            priority = _door_priority_for_pair(type_a, type_b)
+            if priority < 0:
+                continue
 
-                wall_side, sx, sy = shared
-                door_count = door_count + 1
-                doors.append(DoorData(
-                    id=f"door_{door_count:02d}", type="interior",
-                    room_id=room_a,
-                    wall=wall_side,
-                    x=_rnd(sx, 2), y=_rnd(sy, 2),
-                    width=3.0,
-                ))
-                room_door_counts[room_a] = room_door_counts.get(room_a, 0) + 1
-                room_door_counts[room_b] = room_door_counts.get(room_b, 0) + 1
+            wall_side, sx, sy, shared_len = shared
+            if shared_len < 2.7:
+                continue
+
+            candidates.append({
+                "room_a": room_a,
+                "room_b": room_b,
+                "type_a": type_a,
+                "type_b": type_b,
+                "wall": wall_side,
+                "x": _rnd(sx, 2),
+                "y": _rnd(sy, 2),
+                "shared_len": _rnd(shared_len, 2),
+                "priority": priority,
+            })
+
+    candidates.sort(
+        key=lambda c: (
+            -c["priority"],
+            -c["shared_len"],
+            c["room_a"],
+            c["room_b"],
+        )
+    )
+
+    added_pairs: set[tuple[str, str]] = set()
+
+    def _try_add_candidate(cand: Dict[str, Any], force: bool = False) -> bool:
+        nonlocal door_count
+
+        room_a = str(cand["room_a"])
+        room_b = str(cand["room_b"])
+        pair_key = tuple(sorted((room_a, room_b)))
+        if pair_key in added_pairs:
+            return False
+
+        limit_a = _door_limit_for_room(str(cand["type_a"]))
+        limit_b = _door_limit_for_room(str(cand["type_b"]))
+        count_a = room_door_counts.get(room_a, 0)
+        count_b = room_door_counts.get(room_b, 0)
+        if force:
+            # Force pass is only for disconnected rooms; allow mild overrun.
+            if count_a >= limit_a + 2:
+                return False
+            if count_b >= limit_b + 2:
+                return False
+        else:
+            if count_a >= limit_a:
+                return False
+            if count_b >= limit_b:
+                return False
+
+        door_width = _rnd(_clamp(min(3.4, cand["shared_len"] - 0.6), 2.4, 3.2), 2)
+        if door_width < 2.4:
+            return False
+
+        door_count = door_count + 1
+        doors.append(DoorData(
+            id=f"door_{door_count:02d}", type="interior",
+            room_id=room_a,
+            wall=str(cand["wall"]),
+            x=_rnd(_to_float(cand["x"], 0.0), 2),
+            y=_rnd(_to_float(cand["y"], 0.0), 2),
+            width=door_width,
+        ))
+
+        room_door_counts[room_a] = room_door_counts.get(room_a, 0) + 1
+        room_door_counts[room_b] = room_door_counts.get(room_b, 0) + 1
+        added_pairs.add(pair_key)
+        return True
+
+    # First pass: add best architectural connections.
+    for cand in candidates:
+        _try_add_candidate(cand)
+
+    # Second pass: guarantee each important room gets at least one access door.
+    must_connect = {
+        str(r.get("id", f"room_{idx+1:02d}"))
+        for idx, r in enumerate(placed_rooms)
+        if str(r.get("type", "")) not in ("open_area",)
+    }
+    for _ in range(2):
+        unconnected_set = {
+            rid for rid in must_connect
+            if room_door_counts.get(rid, 0) <= 0
+        }
+        if not unconnected_set:
+            break
+
+        progress = False
+        for cand in candidates:
+            room_a = str(cand["room_a"])
+            room_b = str(cand["room_b"])
+            if room_a not in unconnected_set and room_b not in unconnected_set:
+                continue
+            if _try_add_candidate(cand, force=True):
+                progress = True
+
+        if not progress:
+            break
+
+    unconnected = [rid for rid in must_connect if room_door_counts.get(rid, 0) <= 0]
+    if unconnected:
+        log.warning("rooms without interior access door: %s", ", ".join(sorted(unconnected)))
 
     # Windows on exterior walls
-    for r in placed_rooms:
+    for idx, r in enumerate(placed_rooms):
         if r["type"] in ("corridor", "store"):
             continue  # No windows for corridor or store
+
+        room_id = str(r.get("id", f"{r.get('type', 'room')}_{idx+1:02d}"))
 
         eps = 0.3
         # South wall (y == 0 means touching front setback boundary)
         if r["y"] <= eps:
             win_count = win_count + 1
             windows.append(WindowData(
-                id=f"win_{win_count:02d}", room_id=str(r.get("id", r["type"])),
+                id=f"win_{win_count:02d}", room_id=room_id,
                 wall="south",
                 x=r["x"] + r["width"] * 0.3,
                 y=r["y"],
@@ -2214,7 +2744,7 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
         if abs(r["y"] + r["height"] - usable_l) <= eps:
             win_count = win_count + 1
             windows.append(WindowData(
-                id=f"win_{win_count:02d}", room_id=str(r.get("id", r["type"])),
+                id=f"win_{win_count:02d}", room_id=room_id,
                 wall="north",
                 x=r["x"] + r["width"] * 0.3,
                 y=r["y"] + r["height"],
@@ -2224,7 +2754,7 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
         if r["x"] <= eps:
             win_count = win_count + 1
             windows.append(WindowData(
-                id=f"win_{win_count:02d}", room_id=str(r.get("id", r["type"])),
+                id=f"win_{win_count:02d}", room_id=room_id,
                 wall="west",
                 x=r["x"],
                 y=r["y"] + r["height"] * 0.3,
@@ -2234,17 +2764,51 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
         if abs(r["x"] + r["width"] - usable_w) <= eps:
             win_count = win_count + 1
             windows.append(WindowData(
-                id=f"win_{win_count:02d}", room_id=str(r.get("id", r["type"])),
+                id=f"win_{win_count:02d}", room_id=room_id,
                 wall="east",
                 x=r["x"] + r["width"],
                 y=r["y"] + r["height"] * 0.3,
                 width=min(4.0, r["height"] * 0.35),
             ))
 
+    # Kitchen must have east-wall ventilation.
+    for idx, r in enumerate(placed_rooms):
+        if r.get("type") != "kitchen":
+            continue
+        room_id = str(r.get("id", f"kitchen_{idx+1:02d}"))
+        has_east = any(w.room_id == room_id and w.wall == "east" for w in windows)
+        if has_east:
+            continue
+        win_count = win_count + 1
+        windows.append(WindowData(
+            id=f"win_{win_count:02d}", room_id=room_id,
+            wall="east",
+            x=r["x"] + r["width"],
+            y=r["y"] + r["height"] * 0.5,
+            width=min(4.0, r["height"] * 0.35),
+        ))
+
+    # Garage requires front ventilation window when missing.
+    for idx, r in enumerate(placed_rooms):
+        if r.get("type") != "garage":
+            continue
+        room_id = str(r.get("id", f"garage_{idx+1:02d}"))
+        has_south = any(w.room_id == room_id and w.wall == "south" for w in windows)
+        if has_south:
+            continue
+        win_count = win_count + 1
+        windows.append(WindowData(
+            id=f"win_{win_count:02d}", room_id=room_id,
+            wall="south",
+            x=r["x"] + r["width"] * 0.5,
+            y=r["y"],
+            width=min(4.0, r["width"] * 0.4),
+        ))
+
     return doors, windows
 
 
-def _shared_wall(a: Dict[str, Any], b: Dict[str, Any]) -> tuple[str, float, float] | None:
+def _shared_wall(a: Dict[str, Any], b: Dict[str, Any]) -> tuple[str, float, float, float] | None:
     """
     Check if rooms a and b share a wall segment.
     Returns (wall_side, door_x, door_y) or None.
@@ -2254,35 +2818,60 @@ def _shared_wall(a: Dict[str, Any], b: Dict[str, Any]) -> tuple[str, float, floa
     if abs(a["x"] + a["width"] - b["x"]) < eps:
         oy = max(a["y"], b["y"])
         ey = min(a["y"] + a["height"], b["y"] + b["height"])
-        if ey - oy > 3.0:
-            mid_y = (oy + ey) / 2 - 1.5
-            return "east", a["x"] + a["width"], mid_y
+        if ey - oy >= 2.6:
+            span = ey - oy
+            mid_y = oy + span * 0.5
+            return "east", a["x"] + a["width"], mid_y, span
 
     # b's right edge == a's left edge
     if abs(b["x"] + b["width"] - a["x"]) < eps:
         oy = max(a["y"], b["y"])
         ey = min(a["y"] + a["height"], b["y"] + b["height"])
-        if ey - oy > 3.0:
-            mid_y = (oy + ey) / 2 - 1.5
-            return "west", a["x"], mid_y
+        if ey - oy >= 2.6:
+            span = ey - oy
+            mid_y = oy + span * 0.5
+            return "west", a["x"], mid_y, span
 
     # a's top edge == b's bottom edge (horizontal wall)
     if abs(a["y"] + a["height"] - b["y"]) < eps:
         ox = max(a["x"], b["x"])
         ex = min(a["x"] + a["width"], b["x"] + b["width"])
-        if ex - ox > 3.0:
-            mid_x = (ox + ex) / 2 - 1.5
-            return "north", mid_x, a["y"] + a["height"]
+        if ex - ox >= 2.6:
+            span = ex - ox
+            mid_x = ox + span * 0.5
+            return "north", mid_x, a["y"] + a["height"], span
 
     # b's top edge == a's bottom edge
     if abs(b["y"] + b["height"] - a["y"]) < eps:
         ox = max(a["x"], b["x"])
         ex = min(a["x"] + a["width"], b["x"] + b["width"])
-        if ex - ox > 3.0:
-            mid_x = (ox + ex) / 2 - 1.5
-            return "south", mid_x, a["y"]
+        if ex - ox >= 2.6:
+            span = ex - ox
+            mid_x = ox + span * 0.5
+            return "south", mid_x, a["y"], span
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────
+# Emergency local-only fallback
+# ─────────────────────────────────────────────────────────────
+async def generate_plan_emergency_local(req: PlanRequest) -> PlanResponse:
+    """Always generate a local deterministic plan without LLM calls."""
+    uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
+    ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
+
+    plan = await _generate_via_bsp(req, uw, ul)
+    plan.generation_method = "emergency_local"
+    plan.reasoning_trace = [
+        f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
+        "Emergency reliability mode used local deterministic planner.",
+        "Returned a stable layout to avoid runtime dependency failures.",
+    ]
+    plan.architect_note = (
+        "Emergency local planner was used to ensure uninterrupted generation."
+    )
+    return plan
 
 
 # ─────────────────────────────────────────────────────────────

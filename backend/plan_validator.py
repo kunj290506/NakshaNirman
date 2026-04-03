@@ -13,7 +13,7 @@ log = logging.getLogger("plan_validator")
 ALLOWED_ROOM_TYPES = {
     "living", "dining", "kitchen", "corridor", "master_bedroom", "bedroom",
     "master_bath", "bathroom", "toilet", "pooja", "study", "store", "balcony",
-    "garage", "utility", "foyer", "staircase",
+    "garage", "utility", "foyer", "staircase", "open_area",
 }
 
 ROOM_TYPE_ALIASES = {
@@ -44,6 +44,7 @@ MIN_DIMS = {
     "utility": (4.0, 5.0),
     "foyer": (4.0, 4.0),
     "staircase": (6.0, 8.0),
+    "open_area": (6.0, 6.0),
 }
 
 # Previous tolerances were too strict for first-pass LLM geometry and caused

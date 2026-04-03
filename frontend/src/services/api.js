@@ -1,6 +1,7 @@
 const API_BASE = '';  // Use Vite proxy — requests go through /api
-const REQUEST_TIMEOUT_MS = 90000; // 90 seconds
-const MAX_ATTEMPTS = 1;
+const REQUEST_TIMEOUT_MS = 150000; // Base timeout for first attempt
+const RETRY_TIMEOUT_INCREMENT_MS = 60000; // Give retries substantial extra warm-up time
+const MAX_ATTEMPTS = 2;
 const RETRYABLE_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function delay(ms) {
@@ -9,12 +10,16 @@ function delay(ms) {
 
 async function generatePlanAttempt(data, attempt, maxAttempts) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutMs = REQUEST_TIMEOUT_MS + ((attempt - 1) * RETRY_TIMEOUT_INCREMENT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const resp = await fetch(`${API_BASE}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Attempt': String(attempt),
+      },
       body: JSON.stringify(data),
       cache: 'no-store',
       signal: controller.signal,
@@ -44,7 +49,7 @@ async function generatePlanAttempt(data, attempt, maxAttempts) {
 
     if (isTimeout) {
       throw new Error(
-        'Generation is taking too long due to model load. Please try again; fast fallback mode is enabled.'
+        'Generation timed out after automatic retries. Please try again; fast fallback mode remains enabled.'
       );
     }
     throw e;
@@ -53,6 +58,48 @@ async function generatePlanAttempt(data, attempt, maxAttempts) {
 
 export async function generatePlan(data) {
   return generatePlanAttempt(data, 1, MAX_ATTEMPTS);
+}
+
+async function readAuthResponse(resp, fallbackMessage) {
+  const body = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    throw new Error(body.detail || fallbackMessage)
+  }
+  return body
+}
+
+export async function loginUser(userId, password) {
+  const resp = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, password }),
+    cache: 'no-store',
+  })
+
+  return readAuthResponse(resp, 'Login failed')
+}
+
+export async function signupUser({ email = '', userId, password, fullName = '' }) {
+  const resp = await fetch(`${API_BASE}/api/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, password, email, full_name: fullName }),
+    cache: 'no-store',
+  })
+
+  return readAuthResponse(resp, 'Signup failed')
+}
+
+// Backward compatibility for older callers.
+export async function saveAndLoginUser(userId, password) {
+  const resp = await fetch(`${API_BASE}/api/auth/save-and-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, password }),
+    cache: 'no-store',
+  })
+
+  return readAuthResponse(resp, 'Login failed')
 }
 
 export function getDownloadUrl(dxfUrl) {

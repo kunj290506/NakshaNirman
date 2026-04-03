@@ -1,0 +1,449 @@
+:root {
+  --mono-bg: #f7f7f7;
+  --mono-surface: #ffffff;
+  --mono-surface-alt: #f1f1f1;
+  --mono-border: #111111;
+  --mono-border-soft: #d6d6d6;
+  --mono-text: #121212;
+  --mono-muted: #565656;
+}
+
+.lp-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0) 32%),
+    linear-gradient(165deg, #ffffff 0%, #f2f2f2 100%);
+  color: var(--mono-text);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.lp-topbar {
+  width: min(1180px, 100% - 36px);
+  margin: 18px auto 0;
+  border: 1px solid var(--mono-border);
+  border-radius: 12px;
+  background: var(--mono-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.lp-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lp-brand-mark {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--mono-border);
+  background: #0f0f0f;
+  color: #ffffff;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.lp-brand-copy h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
+.lp-brand-copy p {
+  margin: 3px 0 0;
+  color: var(--mono-muted);
+  font-size: 0.72rem;
+}
+
+.lp-nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lp-nav a {
+  text-decoration: none;
+  color: var(--mono-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.lp-nav a:hover {
+  color: #000000;
+}
+
+.lp-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--mono-border);
+  text-decoration: none;
+  color: #111111;
+  background: #ffffff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.lp-link-button:hover {
+  background: #efefef;
+}
+
+.lp-link-button-solid {
+  background: #111111;
+  color: #ffffff;
+}
+
+.lp-link-button-solid:hover {
+  background: #000000;
+  color: #ffffff;
+}
+
+.lp-main {
+  width: min(1180px, 100% - 36px);
+  margin: 18px auto 22px;
+  display: grid;
+  gap: 12px;
+}
+
+.lp-hero,
+.lp-section {
+  border-radius: 14px;
+  border: 1px solid var(--mono-border);
+  background: var(--mono-surface);
+}
+
+.lp-hero {
+  padding: 26px;
+}
+
+.lp-kicker {
+  margin: 0;
+  color: #363636;
+  font-size: 0.76rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.lp-hero h2 {
+  margin: 10px 0 12px;
+  font-size: clamp(2rem, 5vw, 4rem);
+  line-height: 1.03;
+  letter-spacing: -0.03em;
+}
+
+.lp-subtitle {
+  margin: 0;
+  max-width: 64ch;
+  color: var(--mono-muted);
+  line-height: 1.6;
+}
+
+.lp-hero-actions {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lp-section {
+  padding: 18px;
+}
+
+.lp-section h3 {
+  margin: 0 0 12px;
+  font-size: 0.92rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.lp-card-grid,
+.lp-step-grid,
+.lp-feature-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.lp-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.lp-step-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.lp-feature-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lp-card,
+.lp-step,
+.lp-feature {
+  border: 1px solid var(--mono-border-soft);
+  border-radius: 12px;
+  background: var(--mono-surface-alt);
+  padding: 12px;
+}
+
+.lp-card h4,
+.lp-step h4,
+.lp-feature h4 {
+  margin: 0 0 6px;
+  font-size: 0.86rem;
+}
+
+.lp-card p,
+.lp-step p,
+.lp-feature p {
+  margin: 0;
+  color: #494949;
+  font-size: 0.79rem;
+  line-height: 1.5;
+}
+
+.lp-step span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--mono-border);
+  background: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.lp-footer {
+  width: min(1180px, 100% - 36px);
+  margin: 0 auto 16px;
+  border-top: 1px solid #d0d0d0;
+  padding-top: 8px;
+  color: #666666;
+  font-size: 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Auth card style inspired by Uiverse template. */
+.auth-uiverse-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0) 34%),
+    linear-gradient(155deg, #ffffff 0%, #efefef 100%);
+}
+
+.auth-uiverse-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 350px;
+  width: min(300px, 100%);
+  flex-direction: column;
+  gap: 35px;
+  border-radius: 8px;
+  background: #e3e3e3;
+  box-shadow: 16px 16px 32px #c8c8c8, -16px -16px 32px #fefefe;
+  padding: 14px 14px 20px;
+}
+
+.auth-uiverse-title {
+  color: #000000;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  display: block;
+  font-weight: 700;
+  font-size: 1.32rem;
+  margin-top: 1.5em;
+}
+
+.auth-uiverse-input {
+  position: relative;
+  width: min(250px, 100%);
+}
+
+.auth-uiverse-input input {
+  width: 100%;
+  padding: 10px;
+  outline: none;
+  border: none;
+  color: #000000;
+  font-size: 1em;
+  background: transparent;
+  border-left: 2px solid #000000;
+  border-bottom: 2px solid #000000;
+  transition: 0.1s;
+  border-bottom-left-radius: 8px;
+}
+
+.auth-uiverse-input span {
+  margin-top: 5px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateY(-4px);
+  margin-left: 10px;
+  padding: 10px;
+  pointer-events: none;
+  font-size: 12px;
+  color: #000000;
+  text-transform: uppercase;
+  transition: 0.5s;
+  letter-spacing: 3px;
+  border-radius: 8px;
+}
+
+.auth-uiverse-input input:valid ~ span,
+.auth-uiverse-input input:focus ~ span {
+  transform: translateX(113px) translateY(-15px);
+  font-size: 0.8em;
+  padding: 5px 10px;
+  background: #000000;
+  letter-spacing: 0.2em;
+  border: 2px;
+  color: #ffffff;
+}
+
+.auth-uiverse-input-email input:valid ~ span,
+.auth-uiverse-input-email input:focus ~ span {
+  transform: translateX(156px) translateY(-15px);
+  font-size: 0.8em;
+  padding: 5px 10px;
+  background: #000000;
+  letter-spacing: 0.2em;
+  border: 2px;
+  color: #ffffff;
+}
+
+.auth-uiverse-input input:valid,
+.auth-uiverse-input input:focus {
+  border: 2px solid #000000;
+  border-radius: 8px;
+}
+
+.auth-uiverse-error {
+  width: min(260px, 100%);
+  border: 1px solid #000000;
+  background: #f6f6f6;
+  color: #111111;
+  border-radius: 8px;
+  padding: 7px 9px;
+  text-align: center;
+  font-size: 0.74rem;
+}
+
+.auth-uiverse-enter {
+  height: 45px;
+  width: 120px;
+  border-radius: 5px;
+  border: 2px solid #000000;
+  cursor: pointer;
+  background-color: transparent;
+  transition: 0.5s;
+  text-transform: uppercase;
+  font-size: 0.64rem;
+  letter-spacing: 2px;
+}
+
+.auth-uiverse-enter:hover:not(:disabled) {
+  background-color: #000000;
+  color: #ffffff;
+}
+
+.auth-uiverse-enter:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.auth-uiverse-switch {
+  background: transparent;
+  border: none;
+  color: #1b1b1b;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.auth-uiverse-switch:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.auth-uiverse-switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.auth-uiverse-back {
+  color: #000000;
+  text-decoration: none;
+  font-size: 0.72rem;
+  margin-bottom: 0.9em;
+}
+
+.auth-uiverse-back:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 980px) {
+  .lp-card-grid,
+  .lp-step-grid,
+  .lp-feature-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .lp-topbar,
+  .lp-main,
+  .lp-footer {
+    width: min(1180px, 100% - 20px);
+  }
+
+  .lp-topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .lp-nav {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .lp-hero,
+  .lp-section {
+    padding: 14px;
+  }
+
+  .lp-card-grid,
+  .lp-step-grid,
+  .lp-feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-uiverse-shell {
+    padding: 12px;
+  }
+}

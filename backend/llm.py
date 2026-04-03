@@ -50,6 +50,13 @@ BACKUP_PLAN_MODELS = [
 _MODEL_COOLDOWN_SEC = 90
 _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 
+REASONING_GUARD = (
+    "Think step by step before writing any JSON. "
+    "Verify your coordinate math explicitly. "
+    "Do not output JSON until you are certain no two rooms overlap "
+    "and all adjacency requirements are met."
+)
+
 
 def _build_openrouter_headers(api_key: str, request_id: str) -> dict[str, str]:
     return {
@@ -72,11 +79,13 @@ def _build_json_repair_messages(raw_text: str) -> list[dict[str, str]]:
         "You are a strict JSON repair formatter for architectural floor plans. "
         "Return only valid JSON object with these top-level keys: "
         "plot_boundary, rooms, doors, windows, metadata. "
-        "Do not include markdown or explanation."
+        "Do not include markdown or explanation. "
+        "Each room object must include: id,type,label,x,y,width,height,area,zone,band,color,polygon."
     )
     user = (
         "Convert the following model output into strict JSON only. "
-        "If some optional fields are missing, keep arrays empty but preserve structure.\n\n"
+        "If geometry is missing, infer practical rectangular values within bounds and fill required fields. "
+        "Never return partial room objects with only names.\n\n"
         "MODEL OUTPUT:\n"
         f"{snippet}"
     )
@@ -84,6 +93,120 @@ def _build_json_repair_messages(raw_text: str) -> list[dict[str, str]]:
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def _build_compact_plan_messages(user_message: str) -> list[dict[str, str]]:
+    """Build a shorter, schema-focused prompt for public fallback providers."""
+    msg = str(user_message or "")
+
+    m_dims = re.search(r"Usable:\s*([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)ft", msg, flags=re.IGNORECASE)
+    usable_w = m_dims.group(1) if m_dims else "33"
+    usable_l = m_dims.group(2) if m_dims else "28.5"
+
+    m_bhk = re.search(r"BRIEF:.*?(\d+)BHK", msg, flags=re.IGNORECASE | re.DOTALL)
+    bhk = m_bhk.group(1) if m_bhk else "2"
+
+    m_facing = re.search(r"BRIEF:.*?(north|south|east|west)-facing", msg, flags=re.IGNORECASE | re.DOTALL)
+    facing = (m_facing.group(1).lower() if m_facing else "south")
+
+    m_extras = re.search(r"Extras:\s*(.+)", msg, flags=re.IGNORECASE)
+    extras = (m_extras.group(1).strip() if m_extras else "none")
+
+    system = (
+        "Return ONLY a valid JSON object. "
+        "Do not include analysis, markdown, or extra text."
+    )
+
+    user = (
+        f"Create a {bhk}BHK floor plan for usable {usable_w}x{usable_l} ft ({facing}-facing). Extras: {extras}. "
+        "Output schema exactly: "
+        "{"
+        "\"plot_boundary\":[{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0}],"
+        "\"rooms\":{\"living\":{\"x\":0,\"y\":0,\"width\":0,\"height\":0}},"
+        "\"metadata\":{\"bhk\":2,\"adjacency_score\":80},"
+        "\"doors\":[],\"windows\":[]"
+        "}. "
+        "rooms must include: living,dining,kitchen,corridor,master_bedroom,master_bath,bedroom,bathroom. "
+        "Use numeric x,y,width,height. Keep all rectangles in bounds and non-overlapping."
+    )
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _extract_outer_json_block(text: str) -> str:
+    raw = str(text or "").strip()
+    start = raw.find("{")
+    if start < 0:
+        return raw
+
+    depth = 0
+    in_string = False
+    escape = False
+    quote = '"'
+
+    for idx in range(start, len(raw)):
+        ch = raw[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                in_string = False
+            continue
+
+        if ch in ('"', "'"):
+            in_string = True
+            quote = ch
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start: idx + 1]
+
+    return raw[start:]
+
+
+def _python_repair_json(raw_text: str) -> dict | None:
+    snippet = _extract_outer_json_block(raw_text)
+    if not snippet:
+        return None
+
+    candidates: list[str] = [snippet]
+
+    no_trailing_commas = re.sub(r",\s*([}\]])", r"\1", snippet)
+    candidates.append(no_trailing_commas)
+
+    single_quoted = re.sub(r"([\{,]\s*)'([^'\n\r]+?)'\s*:", r'\1"\2":', no_trailing_commas)
+    single_quoted = re.sub(r":\s*'([^'\n\r]*?)'(\s*[,}\]])", r': "\1"\2', single_quoted)
+    single_quoted = re.sub(r"\bTrue\b", "true", single_quoted)
+    single_quoted = re.sub(r"\bFalse\b", "false", single_quoted)
+    single_quoted = re.sub(r"\bNone\b", "null", single_quoted)
+    candidates.append(single_quoted)
+
+    broad_quote_swap = single_quoted.replace("'", '"')
+    candidates.append(broad_quote_swap)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            parsed = json.loads(normalized)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+
+    return None
 
 
 async def _repair_json_via_openai_compatible(
@@ -172,6 +295,61 @@ def _extract_openai_compatible_content(data: dict) -> str:
     raise ValueError(f"Public fallback response missing content fields: keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
 
 
+def _normalize_plan_shape(plan: dict, user_message: str) -> dict:
+    """Normalize compact or irregular JSON into the plan schema expected downstream."""
+    if not isinstance(plan, dict):
+        return {}
+
+    out = dict(plan)
+
+    dims = re.search(
+        r"Usable:\s*([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)ft",
+        str(user_message or ""),
+        flags=re.IGNORECASE,
+    )
+    uw = float(dims.group(1)) if dims else 33.0
+    ul = float(dims.group(2)) if dims else 28.5
+
+    plot_boundary = out.get("plot_boundary")
+    if not isinstance(plot_boundary, list) or len(plot_boundary) < 4:
+        out["plot_boundary"] = [
+            {"x": 0.0, "y": 0.0},
+            {"x": uw, "y": 0.0},
+            {"x": uw, "y": ul},
+            {"x": 0.0, "y": ul},
+        ]
+
+    rooms = out.get("rooms", [])
+    if isinstance(rooms, dict):
+        converted: list[dict] = []
+        for room_name, room_data in rooms.items():
+            if not isinstance(room_data, dict):
+                continue
+            room = dict(room_data)
+            room_type = str(room.get("type") or room_name or "room")
+            room["type"] = room_type
+            room.setdefault("label", room_type.replace("_", " ").title())
+            converted.append(room)
+        rooms = converted
+    elif not isinstance(rooms, list):
+        rooms = []
+
+    out["rooms"] = rooms
+    if not isinstance(out.get("doors"), list):
+        out["doors"] = []
+    if not isinstance(out.get("windows"), list):
+        out["windows"] = []
+
+    metadata = out.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if "bhk" not in metadata:
+        m_bhk = re.search(r"BRIEF:.*?(\d+)BHK", str(user_message or ""), flags=re.IGNORECASE | re.DOTALL)
+        metadata["bhk"] = int(m_bhk.group(1)) if m_bhk else 2
+    out["metadata"] = metadata
+    return out
+
+
 async def _call_public_fallback_openai_compatible(
     system_prompt: str,
     user_message: str,
@@ -185,14 +363,14 @@ async def _call_public_fallback_openai_compatible(
     Use a free public OpenAI-compatible endpoint as last-resort fallback.
     This path intentionally does not require API keys.
     """
+    compact_messages = _build_compact_plan_messages(user_message)
+
     payload = {
         "model": PUBLIC_LLM_FALLBACK_MODEL,
         "temperature": min(temperature, 0.15),
         "max_tokens": min(max_tokens, 4500),
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
+        "messages": compact_messages,
+        "response_format": {"type": "json_object"},
     }
 
     log.warning(
@@ -218,6 +396,10 @@ async def _call_public_fallback_openai_compatible(
                 log.info("%s: public fallback ✓ (%d chars) on attempt %d", label, len(content), attempt)
                 return parsed
             except Exception:
+                python_repaired = _python_repair_json(content)
+                if python_repaired is not None:
+                    log.info("%s: public fallback repaired via python parser", label)
+                    return python_repaired
                 repaired = await _repair_json_via_openai_compatible(
                     url=PUBLIC_LLM_FALLBACK_URL,
                     headers=None,
@@ -230,6 +412,32 @@ async def _call_public_fallback_openai_compatible(
                 if repaired is not None:
                     log.info("%s: public fallback repaired on attempt %d", label, attempt)
                     return repaired
+
+                # If repair still fails, re-ask with a compact JSON-focused prompt.
+                compact_payload = {
+                    "model": PUBLIC_LLM_FALLBACK_MODEL,
+                    "temperature": 0,
+                    "max_tokens": min(max_tokens, 2600),
+                    "messages": _build_compact_plan_messages(user_message),
+                    "response_format": {"type": "json_object"},
+                }
+                try:
+                    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
+                        compact_resp = await client.post(PUBLIC_LLM_FALLBACK_URL, json=compact_payload)
+                    if compact_resp.status_code < 400:
+                        compact_data = compact_resp.json()
+                        compact_content = _extract_openai_compatible_content(compact_data)
+                        try:
+                            compact_parsed = _extract_json(compact_content)
+                            log.info("%s: compact public fallback ✓ on attempt %d", label, attempt)
+                            return compact_parsed
+                        except Exception:
+                            compact_python = _python_repair_json(compact_content)
+                            if compact_python is not None:
+                                log.info("%s: compact public fallback repaired via python parser", label)
+                                return compact_python
+                except Exception:
+                    pass
                 raise
         except Exception as e:
             last_error = e
@@ -319,6 +527,10 @@ async def _call_with_fallback(
                     log.info("%s: ✓ %s (%d chars)", label, model.split("/")[-1], len(content))
                     return parsed
                 except Exception as parse_error:
+                    python_repaired = _python_repair_json(content)
+                    if python_repaired is not None:
+                        log.info("%s: python repaired %s", label, model.split("/")[-1])
+                        return python_repaired
                     repaired = await _repair_json_via_openai_compatible(
                         url=url,
                         headers=headers,
@@ -423,16 +635,8 @@ async def call_openrouter_plan(
     Call LLM for full floor plan generation.
     Uses configured primary model first, then fallback chain.
     """
-    # Previous requests relied on implicit expectations and produced random geometry.
-    # Add explicit reasoning and geometry-verification instruction for planner stability.
-    reasoning_guard = (
-        "Think step by step before writing any JSON. "
-        "Verify your coordinate math explicitly. "
-        "Do not output JSON until you are certain no two rooms overlap "
-        "and all adjacency requirements are met."
-    )
-    if reasoning_guard not in user_message:
-        user_message = f"{user_message.strip()}\n\n{reasoning_guard}"
+    if REASONING_GUARD not in user_message:
+        user_message = f"{user_message.strip()}\n\n{REASONING_GUARD}"
 
     primary = (OPENROUTER_PLAN_MODEL or OPENROUTER_MODEL or "").strip()
     # Keep deepseek first unless caller explicitly sets a different planner.
@@ -524,5 +728,9 @@ def _extract_json(text: str) -> dict:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
             pass
+
+    python_repaired = _python_repair_json(text)
+    if python_repaired is not None:
+        return python_repaired
 
     raise ValueError(f"No valid JSON in LLM response:\n{text[:300]}")
