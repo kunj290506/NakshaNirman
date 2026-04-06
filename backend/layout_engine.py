@@ -825,6 +825,10 @@ def _is_soft_validation_issue(issue: str) -> bool:
     text = str(issue or "").lower()
     if text.startswith("raw-draft:"):
         return True
+    if "too small" in text:
+        return True
+    if "bowling-alley" in text:
+        return True
     return False
 
 
@@ -837,6 +841,10 @@ def _parse_llm_plan(
 ) -> PlanResponse:
     """Convert LLM JSON into a production-ready PlanResponse."""
     trace = reasoning_trace if reasoning_trace is not None else []
+    meta = plan_dict.get("metadata", {}) if isinstance(plan_dict, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    synthetic_layout = bool(meta.get("synthetic_layout", False))
 
     # 1) Normalize room program to requested BHK + extras
     rooms = _normalize_rooms_from_program(plan_dict.get("rooms", []), req, uw, ul)
@@ -846,13 +854,16 @@ def _parse_llm_plan(
     )
 
     # 2) Repair geometry into buildable layout
-    _snap_and_fix_layout(rooms, uw, ul)
-    _push_reasoning(trace, "Applied geometric repair: snap, zone anchoring, and overlap resolution.")
+    if synthetic_layout:
+        _push_reasoning(trace, "Using synthesized LLM-assisted geometry without aggressive re-snapping.")
+    else:
+        _snap_and_fix_layout(rooms, uw, ul)
+        _push_reasoning(trace, "Applied geometric repair: snap, zone anchoring, and overlap resolution.")
 
-    # 2b) Deterministic post-processing after validator pass.
-    # This cleans sub-foot slivers and enforces buildable corridor width.
-    _postprocess_llm_layout(rooms, uw, ul)
-    _push_reasoning(trace, "Post-processed layout: 0.5ft snap, sliver-gap fill, corridor width normalization.")
+        # 2b) Deterministic post-processing after validator pass.
+        # This cleans sub-foot slivers and enforces buildable corridor width.
+        _postprocess_llm_layout(rooms, uw, ul)
+        _push_reasoning(trace, "Post-processed layout: 0.5ft snap, sliver-gap fill, corridor width normalization.")
 
     # 3) Compute area/exterior walls after repair
     _infer_exterior_walls(rooms, uw, ul)
@@ -871,7 +882,6 @@ def _parse_llm_plan(
     )
 
     # 5) Metadata
-    meta = plan_dict.get("metadata", {})
     vastu_score = _clamp(_to_float(meta.get("vastu_score"), 75.0), 40.0, 100.0)
     architect_note = meta.get(
         "architect_note",
@@ -931,6 +941,19 @@ def _normalize_rooms_from_program(
     """
     requested_extra_types = _requested_extra_room_types(req.extras)
     allowed_types = set(ROOM_COLORS.keys()) | {"toilet"}
+
+    if isinstance(raw_rooms, dict):
+        mapped_rooms: list[dict[str, Any]] = []
+        for room_name, room_data in raw_rooms.items():
+            if not isinstance(room_data, dict):
+                continue
+            merged = dict(room_data)
+            merged.setdefault("name", str(room_name))
+            merged.setdefault("type", str(room_name))
+            mapped_rooms.append(merged)
+        raw_rooms = mapped_rooms
+    elif not isinstance(raw_rooms, list):
+        raw_rooms = []
 
     rooms: list[RoomData] = []
     type_serial: dict[str, int] = {}

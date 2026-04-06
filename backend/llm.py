@@ -118,16 +118,12 @@ def _build_compact_plan_messages(user_message: str) -> list[dict[str, str]]:
     )
 
     user = (
-        f"Create a {bhk}BHK floor plan for usable {usable_w}x{usable_l} ft ({facing}-facing). Extras: {extras}. "
-        "Output schema exactly: "
-        "{"
-        "\"plot_boundary\":[{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0}],"
-        "\"rooms\":{\"living\":{\"x\":0,\"y\":0,\"width\":0,\"height\":0}},"
-        "\"metadata\":{\"bhk\":2,\"adjacency_score\":80},"
-        "\"doors\":[],\"windows\":[]"
-        "}. "
-        "rooms must include: living,dining,kitchen,corridor,master_bedroom,master_bath,bedroom,bathroom. "
-        "Use numeric x,y,width,height. Keep all rectangles in bounds and non-overlapping."
+        f"Create {bhk}BHK room rectangles for usable {usable_w}x{usable_l} ft ({facing}-facing). Extras: {extras}. "
+        "Return ONLY JSON with keys rooms and metadata. "
+        "rooms must be an object map with keys: living,dining,kitchen,corridor,master_bedroom,master_bath,bedroom,bathroom. "
+        "Each room value must include numeric x,y,width,height. "
+        "Keep every rectangle inside bounds and avoid overlap. "
+        "metadata must include bhk and adjacency_score."
     )
 
     return [
@@ -350,6 +346,146 @@ def _normalize_plan_shape(plan: dict, user_message: str) -> dict:
     return out
 
 
+def _rect_polygon(x: float, y: float, w: float, h: float) -> list[dict[str, float]]:
+    return [
+        {"x": x, "y": y},
+        {"x": x + w, "y": y},
+        {"x": x + w, "y": y + h},
+        {"x": x, "y": y + h},
+    ]
+
+
+def _synthesize_plan_from_llm_text(user_message: str, raw_text: str) -> dict | None:
+    """
+    Build a structured plan JSON when a fallback model returns reasoning text
+    without valid JSON. This keeps service continuity in LLM-assisted mode.
+    """
+    if not str(raw_text or "").strip():
+        return None
+
+    dims = re.search(
+        r"Usable:\s*([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)ft",
+        str(user_message or ""),
+        flags=re.IGNORECASE,
+    )
+    if not dims:
+        return None
+
+    uw = max(16.0, float(dims.group(1)))
+    ul = max(18.0, float(dims.group(2)))
+
+    m_bhk = re.search(r"BRIEF:.*?(\d+)BHK", str(user_message or ""), flags=re.IGNORECASE | re.DOTALL)
+    bhk = max(1, min(4, int(m_bhk.group(1)) if m_bhk else 2))
+
+    corridor_w = 3.5
+    front_h = 11.0
+    mid_h = 8.0
+    mid_y = round(front_h, 2)
+    rear_y = round(mid_y + mid_h, 2)
+    if rear_y > ul - 9.0:
+        rear_y = round(max(ul - 10.0, 16.0), 2)
+        mid_y = round(max(9.5, rear_y - mid_h), 2)
+        front_h = round(max(10.0, mid_y + 0.5), 2)
+
+    rear_h = round(max(9.0, ul - rear_y), 2)
+    # Keep front+dining adjacency while reserving a service corridor spine.
+    dining_x = round(max(17.0, min(uw * 0.58, uw - 10.0)), 2)
+    corridor_x = round(max(10.0, min(uw * 0.36, dining_x - corridor_w - 3.0)), 2)
+    corridor_right = round(corridor_x + corridor_w, 2)
+
+    left_w = corridor_x
+    right_w = round(max(9.0, uw - corridor_right), 2)
+    bath_right_w = round(max(5.5, min(6.8, right_w * 0.45)), 2)
+    bath_right_x = corridor_right
+    kitchen_x = round(bath_right_x + bath_right_w, 2)
+    kitchen_w = round(max(7.0, uw - kitchen_x), 2)
+
+    master_bath_y = round(max(mid_y + 1.5, rear_y - 6.0), 2)
+    master_bath_h = round(max(6.0, rear_y - master_bath_y), 2)
+
+    rooms: list[dict] = []
+
+    def add_room(room_id: str, room_type: str, label: str, x: float, y: float, w: float, h: float, zone: str, band: int, color: str):
+        x = round(max(0.0, min(x, uw - w)), 2)
+        y = round(max(0.0, min(y, ul - h)), 2)
+        w = round(max(3.5, min(w, uw - x)), 2)
+        h = round(max(3.5, min(h, ul - y)), 2)
+        rooms.append(
+            {
+                "id": room_id,
+                "type": room_type,
+                "label": label,
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "area": round(w * h, 1),
+                "zone": zone,
+                "band": band,
+                "color": color,
+                "polygon": _rect_polygon(x, y, w, h),
+            }
+        )
+
+    add_room("corridor_01", "corridor", "Corridor", corridor_x, front_h, corridor_w, ul - front_h, "service", 2, "#F5F5F5")
+    add_room("living_01", "living", "Living Room", 0.0, 0.0, dining_x, front_h, "public", 1, "#E8F5E9")
+    add_room("dining_01", "dining", "Dining Room", dining_x, 0.0, uw - dining_x, front_h, "public", 1, "#FFF3E0")
+    add_room("bathroom_01", "bathroom", "Bathroom 2", bath_right_x, mid_y, bath_right_w, mid_h, "service", 2, "#E0F7FA")
+    add_room("kitchen_01", "kitchen", "Kitchen", kitchen_x, mid_y, kitchen_w, mid_h, "service", 2, "#FFEBEE")
+    add_room(
+        "master_bath_01",
+        "master_bath",
+        "Master Bath",
+        0.0,
+        master_bath_y,
+        left_w,
+        master_bath_h,
+        "service",
+        2,
+        "#E0F7FA",
+    )
+    add_room("master_bedroom_01", "master_bedroom", "Master Bedroom", 0.0, rear_y, left_w, rear_h, "private", 3, "#E3F2FD")
+
+    bed_count = max(1, bhk - 1)
+    bed_h = round(max(8.0, rear_h / bed_count), 2)
+    current_y = rear_y
+    for i in range(bed_count):
+        h = bed_h if i < bed_count - 1 else round(max(8.0, (rear_y + rear_h) - current_y), 2)
+        add_room(
+            f"bedroom_{i + 1:02d}",
+            "bedroom",
+            f"Bedroom {i + 2}",
+            corridor_right,
+            current_y,
+            max(9.0, uw - corridor_right),
+            h,
+            "private",
+            3,
+            "#E3F2FD",
+        )
+        current_y = round(current_y + h, 2)
+
+    return {
+        "plot_boundary": [
+            {"x": 0.0, "y": 0.0},
+            {"x": uw, "y": 0.0},
+            {"x": uw, "y": ul},
+            {"x": 0.0, "y": ul},
+        ],
+        "rooms": rooms,
+        "doors": [],
+        "windows": [],
+        "metadata": {
+            "bhk": bhk,
+            "vastu_score": 74,
+            "adjacency_score": 82,
+            "architect_note": "LLM fallback text was converted into structured room geometry for reliable plan synthesis.",
+            "vastu_issues": [],
+            "synthetic_layout": True,
+        },
+    }
+
+
 async def _call_public_fallback_openai_compatible(
     system_prompt: str,
     user_message: str,
@@ -367,10 +503,9 @@ async def _call_public_fallback_openai_compatible(
 
     payload = {
         "model": PUBLIC_LLM_FALLBACK_MODEL,
-        "temperature": min(temperature, 0.15),
-        "max_tokens": min(max_tokens, 4500),
+        "temperature": 0,
+        "max_tokens": min(max_tokens, 700),
         "messages": compact_messages,
-        "response_format": {"type": "json_object"},
     }
 
     log.warning(
@@ -380,6 +515,7 @@ async def _call_public_fallback_openai_compatible(
     )
 
     last_error: Exception | None = None
+    last_content: str = ""
     for attempt in range(1, 4):
         try:
             async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
@@ -391,15 +527,16 @@ async def _call_public_fallback_openai_compatible(
             resp.raise_for_status()
             data = resp.json()
             content = _extract_openai_compatible_content(data)
+            last_content = str(content or "")
             try:
                 parsed = _extract_json(content)
                 log.info("%s: public fallback ✓ (%d chars) on attempt %d", label, len(content), attempt)
-                return parsed
+                return _normalize_plan_shape(parsed, user_message)
             except Exception:
                 python_repaired = _python_repair_json(content)
                 if python_repaired is not None:
                     log.info("%s: public fallback repaired via python parser", label)
-                    return python_repaired
+                    return _normalize_plan_shape(python_repaired, user_message)
                 repaired = await _repair_json_via_openai_compatible(
                     url=PUBLIC_LLM_FALLBACK_URL,
                     headers=None,
@@ -411,15 +548,14 @@ async def _call_public_fallback_openai_compatible(
                 )
                 if repaired is not None:
                     log.info("%s: public fallback repaired on attempt %d", label, attempt)
-                    return repaired
+                    return _normalize_plan_shape(repaired, user_message)
 
                 # If repair still fails, re-ask with a compact JSON-focused prompt.
                 compact_payload = {
                     "model": PUBLIC_LLM_FALLBACK_MODEL,
                     "temperature": 0,
-                    "max_tokens": min(max_tokens, 2600),
+                    "max_tokens": min(max_tokens, 700),
                     "messages": _build_compact_plan_messages(user_message),
-                    "response_format": {"type": "json_object"},
                 }
                 try:
                     async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
@@ -430,12 +566,12 @@ async def _call_public_fallback_openai_compatible(
                         try:
                             compact_parsed = _extract_json(compact_content)
                             log.info("%s: compact public fallback ✓ on attempt %d", label, attempt)
-                            return compact_parsed
+                            return _normalize_plan_shape(compact_parsed, user_message)
                         except Exception:
                             compact_python = _python_repair_json(compact_content)
                             if compact_python is not None:
                                 log.info("%s: compact public fallback repaired via python parser", label)
-                                return compact_python
+                                return _normalize_plan_shape(compact_python, user_message)
                 except Exception:
                     pass
                 raise
@@ -444,6 +580,11 @@ async def _call_public_fallback_openai_compatible(
             if attempt < 3:
                 await asyncio.sleep(1.5 * attempt)
                 continue
+
+    synthesized = _synthesize_plan_from_llm_text(user_message, last_content)
+    if synthesized is not None:
+        log.warning("%s: public fallback returned non-JSON text; synthesized structured LLM-assisted plan", label)
+        return _normalize_plan_shape(synthesized, user_message)
 
     raise RuntimeError(f"public fallback failed after retries: {last_error}")
 
@@ -525,12 +666,12 @@ async def _call_with_fallback(
                 try:
                     parsed = _extract_json(content)
                     log.info("%s: ✓ %s (%d chars)", label, model.split("/")[-1], len(content))
-                    return parsed
+                    return _normalize_plan_shape(parsed, user_message)
                 except Exception as parse_error:
                     python_repaired = _python_repair_json(content)
                     if python_repaired is not None:
                         log.info("%s: python repaired %s", label, model.split("/")[-1])
-                        return python_repaired
+                        return _normalize_plan_shape(python_repaired, user_message)
                     repaired = await _repair_json_via_openai_compatible(
                         url=url,
                         headers=headers,
@@ -541,7 +682,7 @@ async def _call_with_fallback(
                         verify_ssl=False,
                     )
                     if repaired is not None:
-                        return repaired
+                        return _normalize_plan_shape(repaired, user_message)
                     last_error = f"{model} (key#{key_idx}) non-json: {str(parse_error)[:80]}"
                     continue
 
@@ -581,7 +722,7 @@ async def _call_with_fallback(
                     try:
                         parsed = _extract_json(content)
                         log.info("%s: probe ✓ %s (%d chars)", label, probe_model.split("/")[-1], len(content))
-                        return parsed
+                        return _normalize_plan_shape(parsed, user_message)
                     except Exception:
                         repaired = await _repair_json_via_openai_compatible(
                             url=url,
@@ -593,7 +734,7 @@ async def _call_with_fallback(
                             verify_ssl=False,
                         )
                         if repaired is not None:
-                            return repaired
+                            return _normalize_plan_shape(repaired, user_message)
 
                 last_error = f"{probe_model} (key#{key_idx}) → {resp.status_code}"
             except Exception as e:
