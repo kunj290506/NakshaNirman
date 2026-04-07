@@ -10,6 +10,7 @@
 
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
+$BackendPort = 8010
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
@@ -91,12 +92,12 @@ Write-Host "[4/5] Starting servers..." -ForegroundColor Yellow
 
 # Start backend in background
 $backendJob = Start-Job -ScriptBlock {
-    param($venvPython, $backendDir)
+    param($venvPython, $backendDir, $backendPort)
     Set-Location $backendDir
-    & $venvPython -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-} -ArgumentList $venvPython, $backendDir
+    & $venvPython -m uvicorn main:app --host 0.0.0.0 --port $backendPort --reload
+} -ArgumentList $venvPython, $backendDir, $BackendPort
 
-Write-Host "  Backend  -> http://localhost:8000  (API + docs at /docs)" -ForegroundColor Green
+Write-Host "  Backend  -> http://localhost:$BackendPort  (API + docs at /api/docs)" -ForegroundColor Green
 
 # Start frontend in background
 $frontendJob = Start-Job -ScriptBlock {
@@ -113,7 +114,7 @@ Write-Host "[5/5] Ready!" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  App running at: http://localhost:5173     " -ForegroundColor White
-Write-Host "  API docs at:    http://localhost:8000/docs " -ForegroundColor White
+Write-Host "  API docs at:    http://localhost:$BackendPort/api/docs " -ForegroundColor White
 Write-Host "  Press Ctrl+C to stop all servers          " -ForegroundColor DarkGray
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""

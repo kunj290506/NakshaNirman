@@ -53,6 +53,9 @@ OOB_TOLERANCE_FT = 1.0
 MAJOR_OVERLAP_AREA_FT2 = 8.0
 MAX_BOWLING_ALLEY_RATIO = 3.0
 
+DRAFT_OOB_TOLERANCE_FT = 2.0
+DRAFT_MAX_OVERLAP_AREA_FT2 = 12.0
+
 EXTRA_TYPE_MAP = {
     "pooja": "pooja",
     "study": "study",
@@ -63,6 +66,19 @@ EXTRA_TYPE_MAP = {
     "foyer": "foyer",
     "staircase": "staircase",
 }
+
+
+def _feasible_bedroom_target(usable_w: float, usable_l: float) -> int:
+    """Conservative bedroom feasibility to avoid impossible compact-plot penalties."""
+    area = max(1.0, usable_w * usable_l)
+    max_beds = 1
+    if area >= 470 and usable_w >= 16.5 and usable_l >= 22.0:
+        max_beds = 2
+    if area >= 700 and usable_w >= 20.5 and usable_l >= 31.5:
+        max_beds = 3
+    if area >= 930 and usable_w >= 23.0 and usable_l >= 34.0:
+        max_beds = 4
+    return max_beds
 
 
 def _to_float(v: Any, fallback: float = 0.0) -> float:
@@ -123,24 +139,9 @@ def _polygon_bbox(points: list[Any]) -> tuple[float, float, float, float] | None
     return x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0)
 
 
-def validate_llm_plan(
-    plan_dict: dict[str, Any],
-    usable_w: float,
-    usable_l: float,
-    req: Any | None = None,
-) -> tuple[bool, list[str]]:
-    """
-    Validate an LLM-generated plan dict.
-    Returns (is_valid, issues). Issues are actionable and used for retry prompts.
-    """
-    issues: list[str] = []
-    warnings: list[str] = []
-
-    rooms_raw = plan_dict.get("rooms", [])
-    if not isinstance(rooms_raw, list) or not rooms_raw:
-        return False, ["No rooms found in plan"]
-
+def _collect_rooms(rooms_raw: list[Any]) -> tuple[list[dict[str, Any]], list[str]]:
     rooms: list[dict[str, Any]] = []
+    warnings: list[str] = []
     for idx, room in enumerate(rooms_raw):
         if not isinstance(room, dict):
             continue
@@ -158,13 +159,90 @@ def validate_llm_plan(
             bbox = _polygon_bbox(poly)
             if bbox is not None:
                 x, y, w, h = bbox
-            else:
-                issues.append(f"{label} has invalid polygon geometry")
 
         if room_type not in ALLOWED_ROOM_TYPES:
             warnings.append(f"Unknown room type: {room_type or 'missing'} ({label})")
 
         rooms.append({"type": room_type, "label": label, "x": x, "y": y, "w": w, "h": h})
+    return rooms, warnings
+
+
+def validate_draft(
+    plan_dict: dict[str, Any],
+    usable_w: float,
+    usable_l: float,
+) -> tuple[bool, list[str]]:
+    """
+    Lightweight gate for first-pass LLM output.
+    Only fails fatal structural issues before retrying another strategy.
+    """
+    rooms_raw = plan_dict.get("rooms", [])
+    if not isinstance(rooms_raw, list) or not rooms_raw:
+        return False, ["No rooms found in plan"]
+
+    rooms, _ = _collect_rooms(rooms_raw)
+    issues: list[str] = []
+
+    if len(rooms) < 4:
+        issues.append(f"Only {len(rooms)} rooms generated (need at least 4)")
+
+    type_counts: dict[str, int] = {}
+    for r in rooms:
+        type_counts[r["type"]] = type_counts.get(r["type"], 0) + 1
+
+    for core in ("living", "kitchen", "master_bedroom"):
+        if type_counts.get(core, 0) == 0:
+            issues.append(f"Missing mandatory room: {core}")
+
+    for r in rooms:
+        if r["x"] < -DRAFT_OOB_TOLERANCE_FT or r["y"] < -DRAFT_OOB_TOLERANCE_FT:
+            issues.append(f"{r['label']} extends more than 2 ft outside usable boundary")
+        if r["x"] + r["w"] > usable_w + DRAFT_OOB_TOLERANCE_FT:
+            issues.append(f"{r['label']} extends more than 2 ft outside usable boundary")
+        if r["y"] + r["h"] > usable_l + DRAFT_OOB_TOLERANCE_FT:
+            issues.append(f"{r['label']} extends more than 2 ft outside usable boundary")
+
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            area = _rect_overlap_area(rooms[i], rooms[j])
+            if area > DRAFT_MAX_OVERLAP_AREA_FT2:
+                issues.append(
+                    f"Overlap between {rooms[i]['label']} and {rooms[j]['label']} exceeds 12 sq.ft"
+                )
+
+    # Keep draft feedback concise.
+    compact: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue in seen:
+            continue
+        seen.add(issue)
+        compact.append(issue)
+        if len(compact) >= 18:
+            break
+
+    return len(compact) == 0, compact
+
+
+def validate_final(
+    plan_dict: dict[str, Any],
+    usable_w: float,
+    usable_l: float,
+    req: Any | None = None,
+) -> tuple[bool, list[str]]:
+    """
+    Full production validator for accepting a plan as final output.
+    Returns (is_valid, issues). Issues are actionable and used for retries.
+    """
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    rooms_raw = plan_dict.get("rooms", [])
+    if not isinstance(rooms_raw, list) or not rooms_raw:
+        return False, ["No rooms found in plan"]
+
+    rooms, type_warnings = _collect_rooms(rooms_raw)
+    warnings.extend(type_warnings)
 
     if len(rooms) < 4:
         issues.append(f"Only {len(rooms)} rooms generated (need at least 4)")
@@ -185,9 +263,16 @@ def validate_llm_plan(
     if req is not None:
         requested_bedrooms = int(getattr(req, "bedrooms", 1) or 1)
         actual_bedrooms = type_counts.get("master_bedroom", 0) + type_counts.get("bedroom", 0)
-        if actual_bedrooms < requested_bedrooms:
+        feasible_target = min(requested_bedrooms, _feasible_bedroom_target(usable_w, usable_l))
+        if actual_bedrooms < feasible_target:
             issues.append(
-                f"Only {actual_bedrooms} bedrooms generated for {requested_bedrooms}BHK request"
+                f"Only {actual_bedrooms} bedrooms generated for requested {requested_bedrooms}BHK "
+                f"(usable footprint target: {feasible_target} bedrooms)"
+            )
+        elif feasible_target < requested_bedrooms:
+            warnings.append(
+                f"Requested {requested_bedrooms}BHK exceeds compact footprint; "
+                f"validated against feasible {feasible_target}BHK target"
             )
 
         requested_bathrooms = int(getattr(req, "bathrooms_target", 0) or 0)
@@ -217,9 +302,7 @@ def validate_llm_plan(
                 f"{r['label']} too small ({r['w']:.1f}x{r['h']:.1f} ft) for type {r['type'] or 'unknown'}"
             )
 
-        # Reject unusable long and narrow rooms that the LLM occasionally emits.
-        # Corridor is intentionally linear circulation space and should not be
-        # flagged by the general bowling-alley room proportion rule.
+        # Corridor is intentionally linear and excluded from shape ratio rule.
         if r["type"] != "corridor":
             shorter = max(0.01, min(r["w"], r["h"]))
             longer = max(r["w"], r["h"])
@@ -261,8 +344,6 @@ def validate_llm_plan(
     usable_area = max(1.0, usable_w * usable_l)
     gross_room_area = sum(max(0.0, r["w"] * r["h"]) for r in rooms)
     utilization = gross_room_area / usable_area
-    # Removed the old low-utilization hard fail; architecturally valid plans can
-    # intentionally keep more breathing space after setbacks and circulation.
     if utilization > 1.08:
         issues.append(f"Room area exceeds usable footprint ({utilization*100:.1f}%)")
 
@@ -287,11 +368,21 @@ def validate_llm_plan(
 
     if is_valid:
         log.info(
-            "Plan validation PASSED | rooms=%d utilization=%.2f",
+            "Plan final validation PASSED | rooms=%d utilization=%.2f",
             len(rooms),
             utilization,
         )
     else:
-        log.warning("Plan validation FAILED (%d issues): %s", len(issues), issues[:5])
+        log.warning("Plan final validation FAILED (%d issues): %s", len(issues), issues[:5])
 
     return is_valid, issues
+
+
+def validate_llm_plan(
+    plan_dict: dict[str, Any],
+    usable_w: float,
+    usable_l: float,
+    req: Any | None = None,
+) -> tuple[bool, list[str]]:
+    """Backward-compatible alias for existing callers."""
+    return validate_final(plan_dict, usable_w, usable_l, req)

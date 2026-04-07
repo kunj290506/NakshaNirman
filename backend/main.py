@@ -23,7 +23,7 @@ from pymongo.errors import PyMongoError
 
 from config import EXPORTS_DIR
 from models import PlanRequest, PlanResponse
-from layout_engine import generate_plan, generate_plan_emergency_local
+from layout_engine import generate_architect_reasoning, generate_plan, generate_plan_emergency_local
 from dxf_export import plan_to_dxf
 from plan_validator import validate_llm_plan
 
@@ -237,22 +237,51 @@ async def security_headers(request: Request, call_next):
 
 # ── Simple rate limiter (per IP) ─────────────────────────────
 _rate_store: Dict[str, List[float]] = defaultdict(list)
-RATE_LIMIT = 20
-RATE_WINDOW = 60
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default)).strip()))
+    except Exception:
+        return default
+
+
+RATE_LIMIT = _env_int("RATE_LIMIT_GENERATE_PER_MINUTE", 120)
+RATE_WINDOW = _env_int("RATE_LIMIT_WINDOW_SECONDS", 60)
+RATE_LIMIT_BYPASS_LOCAL = os.getenv(
+    "RATE_LIMIT_BYPASS_LOCAL", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_local_client(ip: str) -> bool:
+    ip_norm = str(ip or "").strip().lower()
+    return ip_norm in {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
 
 
 @app.middleware("http")
 async def rate_limit_generate(request: Request, call_next):
     if request.url.path == "/api/generate" and request.method == "POST":
         ip = request.client.host if request.client else "unknown"
+
+        if RATE_LIMIT_BYPASS_LOCAL and _is_local_client(ip):
+            return await call_next(request)
+
         now = time.time()
         _rate_store[ip] = [t for t in _rate_store[ip] if now - t < RATE_WINDOW]
         if len(_rate_store[ip]) >= RATE_LIMIT:
             return JSONResponse(
                 status_code=429,
-                content={"detail": "Too many requests. Please wait a minute."},
+                headers={"Retry-After": str(RATE_WINDOW)},
+                content={"detail": "Too many requests. Please wait and retry."},
             )
         _rate_store[ip].append(now)
+
+        # Opportunistic cleanup to prevent unbounded key growth over time.
+        if len(_rate_store) > 5000:
+            stale_ips = [k for k, times in _rate_store.items() if not times or now - times[-1] > RATE_WINDOW * 2]
+            for stale_ip in stale_ips:
+                _rate_store.pop(stale_ip, None)
+
     return await call_next(request)
 
 
@@ -358,6 +387,26 @@ async def save_and_login(payload: AuthRequest):
 
 
 # ── Generate ─────────────────────────────────────────────────
+@app.post("/api/architect/reason")
+async def architect_reason(req: PlanRequest | dict[str, Any]):
+    """Run architect reasoning stage only (no layout plotting)."""
+    if isinstance(req, dict):
+        payload = dict(req)
+        if str(payload.get("family_type", "")).strip().lower() == "working_couple":
+            payload["family_type"] = "couple"
+        req = PlanRequest(**payload)
+
+    try:
+        reasoning = await generate_architect_reasoning(req)
+        return {
+            "ok": True,
+            "reasoning": reasoning,
+        }
+    except Exception as e:
+        log.exception("Architect reasoning failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/generate", response_model=PlanResponse)
 async def generate(req: PlanRequest | dict[str, Any]):
     """Generate a floor plan using LLM-first engine with BSP fallback."""

@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 from __future__ import annotations
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -125,3 +125,4 @@ class PlanResponse(BaseModel):
     vastu_issues: List[str] = Field(default_factory=list)
     adjacency_score: float = 0
     reasoning_trace: List[str] = Field(default_factory=list)
+    architect_reasoning: Dict[str, Any] = Field(default_factory=dict)

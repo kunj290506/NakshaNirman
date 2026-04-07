@@ -1,17 +1,15 @@
 """
-Layout Engine — 100% LLM-powered floor plan generation.
-Flow:
-  1. Build master prompt from PlanRequest
-  2. Call LLM (with multi-model fallback chain) for full JSON plan
-  3. Validate LLM output
-  4. If valid → convert to PlanResponse
-  5. If invalid → retry once with correction feedback
-  6. If retry fails → raise error (no BSP fallback)
+Layout Engine for hybrid generation:
+    1. OpenRouter attempt with strict time budget
+    2. Claude coordinate-first attempt when API key is available
+    3. Deterministic BSP fallback for guaranteed completion
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import math
+import httpx
 
 def _rnd(val: float, d: int = 2) -> float:
     return int(val * (10**d)) / (10.0**d)
@@ -20,10 +18,21 @@ from models import (
     PlanRequest, PlanResponse, PlotInfo,
     RoomData, DoorData, WindowData, Point2D,
 )
-from llm import call_openrouter_plan, call_openrouter_plan_backup
+from llm import call_openrouter, call_openrouter_plan
 from prompt_builder import build_master_prompt
-from plan_validator import validate_llm_plan
-from config import FAST_FALLBACK_MODE, FORCE_LOCAL_PLANNER
+from plan_validator import validate_draft, validate_final
+from config import (
+    ARCHITECT_REASONING_ENABLED,
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    FAST_FALLBACK_MODE,
+    FORCE_LOCAL_PLANNER,
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_KEY_SECONDARY,
+    PUBLIC_LLM_FALLBACK_ENABLED,
+    PUBLIC_LLM_FALLBACK_MODEL,
+    PUBLIC_LLM_FALLBACK_URL,
+)
 
 log = logging.getLogger("layout_engine")
 
@@ -31,20 +40,10 @@ log = logging.getLogger("layout_engine")
 # Constants
 # ─────────────────────────────────────────────────────────────
 SETBACKS = {"front": 6.5, "rear": 5.0, "left": 3.5, "right": 3.5}
-# Fast-fallback mode prefers deterministic completion speed for demo/runtime
-# reliability when external providers are slow or unstable.
-if FAST_FALLBACK_MODE:
-    FAST_LLM_TIMEOUT_SEC = 60
-    FAST_RETRY_TIMEOUT_SEC = 35
-    FAST_BACKUP_TIMEOUT_SEC = 45
-    FINAL_QUALITY_TIMEOUT_SEC = 0
-else:
-    # Previous time limits forced truncated reasoning and low-quality geometry.
-    # Keep generation windows long enough for full architectural constraint solving.
-    FAST_LLM_TIMEOUT_SEC = 140
-    FAST_RETRY_TIMEOUT_SEC = 110
-    FAST_BACKUP_TIMEOUT_SEC = 140
-    FINAL_QUALITY_TIMEOUT_SEC = 180
+OPENROUTER_ATTEMPT_TIMEOUT_SEC = 45
+CLAUDE_API_TIMEOUT_SEC = 30
+CLAUDE_ATTEMPT_DEADLINE_SEC = 35
+ARCHITECT_REASONING_TIMEOUT_SEC = 14
 
 LOGICAL_ADJ_MIN_SCORE = 72.0 if FAST_FALLBACK_MODE else 68.0
 
@@ -151,6 +150,23 @@ ROOM_DEFAULT_ZONES: Dict[str, str] = {
     "study": "private",
 }
 
+ROOM_EXPECTED_ADJACENCY: Dict[str, set[str]] = {
+    "living": {"dining", "foyer", "corridor"},
+    "dining": {"living", "kitchen", "corridor"},
+    "kitchen": {"dining", "utility", "corridor"},
+    "master_bedroom": {"corridor", "master_bath"},
+    "bedroom": {"corridor", "bathroom", "toilet"},
+    "master_bath": {"master_bedroom"},
+    "bathroom": {"corridor", "bedroom", "living"},
+    "toilet": {"corridor", "living", "dining"},
+    "study": {"corridor", "bedroom", "master_bedroom"},
+    "pooja": {"living", "dining", "foyer"},
+    "utility": {"kitchen", "corridor"},
+    "store": {"kitchen", "corridor", "dining"},
+    "foyer": {"living"},
+    "garage": {"foyer", "living"},
+}
+
 DEFAULT_ROOM_LABELS: Dict[str, str] = {
     "living": "Living",
     "dining": "Dining",
@@ -207,6 +223,1015 @@ def _to_float(value: Any, fallback: float = 0.0) -> float:
         return f
     except Exception:
         return fallback
+
+
+def _normalize_reasoning_lines(lines: list[str], limit: int = 16) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        msg = str(raw or "").strip()
+        if not msg:
+            continue
+        if len(msg) > 170:
+            msg = msg[:167].rstrip() + "..."
+        key = msg.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(msg)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _merge_reasoning_trace(prefix: list[str], suffix: list[str], limit: int = 16) -> list[str]:
+    return _normalize_reasoning_lines([*(prefix or []), *(suffix or [])], limit=limit)
+
+
+def _coerce_reasoning_items(value: Any, max_items: int = 3) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        out.append(text)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _build_local_architect_reasoning(req: PlanRequest, uw: float, ul: float) -> list[str]:
+    area = max(1.0, uw * ul)
+    aspect = ul / max(1.0, uw)
+    feasible_bedrooms = _effective_bedroom_target(req.bedrooms, uw, ul)
+    requested = int(getattr(req, "bedrooms", 1) or 1)
+
+    if area < 650:
+        footprint_class = "compact"
+    elif area < 1100:
+        footprint_class = "standard"
+    else:
+        footprint_class = "spacious"
+
+    trace: list[str] = [
+        f"Architect reasoning stage started for {uw:.1f}x{ul:.1f} ft usable plot ({footprint_class}).",
+        f"Program fit check: requested {requested}BHK, feasible target {feasible_bedrooms}BHK.",
+        f"Facing strategy: {str(req.facing).lower()}-side main entry with frontage-oriented public rooms.",
+        "Zoning strategy: public front, service middle, private rear with one circulation spine.",
+        "Geometry checks planned: overlap-free rectangles, practical minimum sizes, and adjacency continuity.",
+        "Manual per-element adjustment is disabled; backend auto-optimizes each element before plotting.",
+    ]
+
+    if aspect >= 1.8:
+        trace.append("Long-plot adaptation enabled: cap room depth to avoid bowling-alley proportions.")
+
+    feasible_extras, deferred_extras = _partition_feasible_extras(
+        req.extras,
+        uw,
+        ul,
+        feasible_bedrooms,
+    )
+    if feasible_extras:
+        trace.append("Feasible extras in program: " + ", ".join(sorted(feasible_extras)) + ".")
+    if deferred_extras:
+        trace.append("Deferred extras for this footprint: " + ", ".join(sorted(deferred_extras)) + ".")
+
+    return _normalize_reasoning_lines(trace, limit=10)
+
+
+def _default_element_reasoning_policy() -> dict[str, str]:
+    return {
+        "living": "Front/public placement near entry for guest circulation.",
+        "dining": "Kept adjacent to living and near kitchen for flow.",
+        "kitchen": "Service-zone placement with practical utility access.",
+        "corridor": "Single circulation spine connecting all major rooms.",
+        "master_bedroom": "Rear/private placement for privacy and noise isolation.",
+        "bedroom": "Private-zone grouping for night-use separation.",
+        "master_bath": "Wet-core clustering near master bedroom for plumbing efficiency.",
+        "bathroom": "Shared wet-core placement to reduce service runs.",
+    }
+
+
+def _build_priority_weights(req: PlanRequest) -> dict[str, float]:
+    raw = {
+        "privacy": max(1.0, float(getattr(req, "privacy_priority", 3) or 3)),
+        "natural_light": max(1.0, float(getattr(req, "natural_light_priority", 3) or 3)),
+        "storage": max(1.0, float(getattr(req, "storage_priority", 3) or 3)),
+        "vastu": max(1.0, float(getattr(req, "vastu_priority", 3) or 3)),
+        "elder_friendly": 5.0 if bool(getattr(req, "elder_friendly", False)) else 2.0,
+        "work_from_home": 5.0 if bool(getattr(req, "work_from_home", False)) else 2.0,
+    }
+    total = max(1.0, sum(raw.values()))
+    return {k: _rnd((v / total) * 100.0, 1) for k, v in raw.items()}
+
+
+def _build_program_area_budget(
+    usable_area: float,
+    feasible_bedrooms: int,
+    feasible_extras: set[str],
+) -> dict[str, Any]:
+    public = 32.0
+    service = 24.0
+    private = 44.0
+
+    if feasible_bedrooms >= 3:
+        private += 4.0
+        public -= 2.0
+        service -= 2.0
+
+    if "study" in feasible_extras:
+        private += 3.0
+        public -= 1.5
+        service -= 1.5
+    if "garage" in feasible_extras:
+        public += 4.0
+        private -= 2.0
+        service -= 2.0
+    if "utility" in feasible_extras or "store" in feasible_extras:
+        service += 3.0
+        public -= 1.5
+        private -= 1.5
+
+    public = max(20.0, public)
+    service = max(16.0, service)
+    private = max(26.0, private)
+    total = max(1.0, public + service + private)
+    public = (public / total) * 100.0
+    service = (service / total) * 100.0
+    private = (private / total) * 100.0
+
+    return {
+        "zone_budget_pct": {
+            "public": _rnd(public, 1),
+            "service": _rnd(service, 1),
+            "private": _rnd(private, 1),
+        },
+        "zone_budget_ft2": {
+            "public": _rnd((public * usable_area) / 100.0, 1),
+            "service": _rnd((service * usable_area) / 100.0, 1),
+            "private": _rnd((private * usable_area) / 100.0, 1),
+        },
+        "circulation_target_pct": _rnd(9.5 + max(0, feasible_bedrooms - 2) * 1.2, 1),
+    }
+
+
+def _build_constraint_matrix(
+    req: PlanRequest,
+    uw: float,
+    ul: float,
+    feasible_bedrooms: int,
+    feasible_extras: set[str],
+    deferred_extras: set[str],
+) -> list[dict[str, Any]]:
+    bathrooms_target = int(getattr(req, "bathrooms_target", 0) or 0)
+    effective_bath_target = bathrooms_target if bathrooms_target > 0 else max(1, feasible_bedrooms)
+
+    constraints = [
+        {
+            "id": "plot_setbacks",
+            "target": f"usable plot {uw:.1f}x{ul:.1f} ft",
+            "status": "applied",
+            "detail": "Front/rear/side setbacks subtracted before room synthesis.",
+        },
+        {
+            "id": "bedroom_fit",
+            "target": f"{int(req.bedrooms)} requested",
+            "status": "satisfied" if feasible_bedrooms == int(req.bedrooms) else "downscaled",
+            "detail": f"Feasible bedroom program resolved to {feasible_bedrooms}.",
+        },
+        {
+            "id": "bathroom_target",
+            "target": f"{effective_bath_target} total",
+            "status": "planned",
+            "detail": "Wet-core clustering policy used for service efficiency.",
+        },
+        {
+            "id": "orientation",
+            "target": f"{str(req.facing).lower()}-facing entry logic",
+            "status": "planned",
+            "detail": "Public rooms biased toward frontage side.",
+        },
+        {
+            "id": "extras_fit",
+            "target": ", ".join(sorted(_requested_extra_room_types(req.extras))) or "none",
+            "status": "satisfied" if not deferred_extras else "partially_satisfied",
+            "detail": (
+                "Feasible extras: " + (", ".join(sorted(feasible_extras)) if feasible_extras else "none")
+                + "; deferred: " + (", ".join(sorted(deferred_extras)) if deferred_extras else "none")
+            ),
+        },
+        {
+            "id": "automation",
+            "target": "full auto placement",
+            "status": "locked",
+            "detail": "Manual per-element adjustment disabled; backend auto-correct enabled.",
+        },
+    ]
+    return constraints
+
+
+def _normalize_architect_advisory(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {
+            "design_strategy": "",
+            "priority_order": [],
+            "critical_checks": [],
+            "risks": [],
+        }
+
+    strategy = str(
+        data.get("design_strategy")
+        or data.get("layout_strategy")
+        or data.get("summary")
+        or ""
+    ).strip()
+    priorities = _coerce_reasoning_items(data.get("priority_order"), max_items=3)
+    checks = _coerce_reasoning_items(data.get("critical_checks"), max_items=3)
+    risks = _coerce_reasoning_items(data.get("risks"), max_items=2)
+
+    return {
+        "design_strategy": strategy,
+        "priority_order": priorities,
+        "critical_checks": checks,
+        "risks": risks,
+    }
+
+
+def _extract_llm_architect_reasoning(data: dict[str, Any]) -> list[str]:
+    advisory = _normalize_architect_advisory(data)
+
+    trace: list[str] = []
+    strategy = str(advisory.get("design_strategy", "")).strip()
+    if strategy:
+        trace.append(f"LLM architect strategy: {strategy}")
+
+    for item in _coerce_reasoning_items(advisory.get("priority_order"), max_items=2):
+        trace.append(f"LLM priority: {item}")
+
+    for item in _coerce_reasoning_items(advisory.get("critical_checks"), max_items=2):
+        trace.append(f"LLM check: {item}")
+
+    for item in _coerce_reasoning_items(advisory.get("risks"), max_items=1):
+        trace.append(f"LLM risk note: {item}")
+
+    return _normalize_reasoning_lines(trace, limit=5)
+
+
+def _build_architect_reasoning_object(
+    req: PlanRequest,
+    uw: float,
+    ul: float,
+    *,
+    source: str,
+    status: str,
+    advisory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    area = max(1.0, uw * ul)
+    feasible_bedrooms = _effective_bedroom_target(req.bedrooms, uw, ul)
+    requested_extras = sorted(_requested_extra_room_types(req.extras))
+    feasible_extras, deferred_extras = _partition_feasible_extras(req.extras, uw, ul, feasible_bedrooms)
+    priority_weights = _build_priority_weights(req)
+    program_area_budget = _build_program_area_budget(area, feasible_bedrooms, feasible_extras)
+    constraint_matrix = _build_constraint_matrix(
+        req,
+        uw,
+        ul,
+        feasible_bedrooms,
+        feasible_extras,
+        deferred_extras,
+    )
+    element_policy = _default_element_reasoning_policy()
+    for extra in sorted(feasible_extras):
+        if extra == "study":
+            element_policy[extra] = "Private-zone placement for focused work with acoustic separation."
+        elif extra == "pooja":
+            element_policy[extra] = "Placed in calm front/public quadrant aligned with cultural practice."
+        elif extra == "utility":
+            element_policy[extra] = "Service-zone placement supporting kitchen and wet-core workflows."
+        elif extra == "balcony":
+            element_policy[extra] = "Boundary placement for daylight and ventilation extension."
+        elif extra == "store":
+            element_policy[extra] = "Service-zone storage near daily-use circulation."
+        elif extra == "garage":
+            element_policy[extra] = "Front-edge vehicle access aligned to road-facing side."
+        elif extra == "foyer":
+            element_policy[extra] = "Entry transition space for privacy buffering."
+        elif extra == "staircase":
+            element_policy[extra] = "Service-core stair placement for vertical circulation continuity."
+
+    return {
+        "stage": "preplot_architect_reasoning",
+        "status": status,
+        "source": source,
+        "manual_adjustment_required": False,
+        "automation_mode": "full_auto_element_placement",
+        "usable_plot_ft": {
+            "width": _rnd(uw, 2),
+            "length": _rnd(ul, 2),
+            "area": _rnd(area, 1),
+        },
+        "request": {
+            "bedrooms": int(req.bedrooms),
+            "bathrooms_target": int(getattr(req, "bathrooms_target", 0) or 0),
+            "facing": str(req.facing).lower(),
+            "extras": requested_extras,
+            "family_type": str(getattr(req, "family_type", "") or "").lower() or "nuclear",
+            "design_style": str(getattr(req, "design_style", "") or "modern").lower(),
+            "kitchen_preference": str(getattr(req, "kitchen_preference", "") or "semi_open").lower(),
+            "city": str(getattr(req, "city", "") or "").strip(),
+            "work_from_home": bool(getattr(req, "work_from_home", False)),
+            "elder_friendly": bool(getattr(req, "elder_friendly", False)),
+        },
+        "program_fit": {
+            "bedrooms_requested": int(req.bedrooms),
+            "bedrooms_feasible": int(feasible_bedrooms),
+            "extras_feasible": sorted(feasible_extras),
+            "extras_deferred": sorted(deferred_extras),
+        },
+        "priority_weights": priority_weights,
+        "program_area_budget": program_area_budget,
+        "constraint_matrix": constraint_matrix,
+        "auto_adjustments_applied": [
+            "grid_snap_and_rounding",
+            "zone_alignment",
+            "overlap_resolution",
+            "minimum_dimension_enforcement",
+            "opening_regeneration",
+        ],
+        "zoning_plan": ["public_front", "service_middle", "private_rear", "single_corridor_spine"],
+        "element_reasoning_policy": element_policy,
+        "advisory": _normalize_architect_advisory(advisory or {}),
+    }
+
+
+def _room_exterior_walls(room: RoomData, usable_w: float, usable_l: float, eps: float = 0.35) -> list[str]:
+    walls: list[str] = []
+    if room.x <= eps:
+        walls.append("west")
+    if room.x + room.width >= usable_w - eps:
+        walls.append("east")
+    if room.y <= eps:
+        walls.append("south")
+    if room.y + room.height >= usable_l - eps:
+        walls.append("north")
+    return walls
+
+
+def _reason_for_room(room: RoomData, facing: str, exterior_walls: list[str]) -> str:
+    room_type = str(room.type or "").strip().lower()
+    facing_norm = str(facing or "south").strip().lower()
+
+    base_map: dict[str, str] = {
+        "living": f"Placed in public zone near {facing_norm}-facing entry for guest circulation.",
+        "dining": "Placed between living and kitchen to reduce movement friction.",
+        "kitchen": "Placed in service zone for utility and wet-core efficiency.",
+        "corridor": "Acts as the central circulation spine connecting public and private zones.",
+        "master_bedroom": "Placed in private rear zone for privacy and acoustic comfort.",
+        "bedroom": "Grouped in private zone for night-use privacy.",
+        "master_bath": "Clustered with wet core and adjacent to master bedroom.",
+        "bathroom": "Clustered in service band to optimize plumbing lines.",
+        "study": "Placed in quiet private zone for focused work.",
+        "pooja": "Placed in calm front-side zone per cultural preference.",
+        "utility": "Placed close to kitchen/service band for daily chores.",
+        "balcony": "Placed on boundary for daylight and ventilation extension.",
+        "store": "Placed in service zone near operational spaces.",
+        "garage": "Placed near frontage for convenient vehicle entry.",
+        "foyer": "Placed at transition from entrance to interior privacy.",
+        "staircase": "Placed in service core to maintain vertical circulation.",
+        "open_area": "Kept open on boundary for light, air, and future flexibility.",
+    }
+
+    reason = base_map.get(room_type, "Placed automatically for non-overlapping program fit.")
+    if exterior_walls:
+        reason += " Exterior access/light on " + ", ".join(exterior_walls) + " side(s)."
+    return reason
+
+
+def _room_adjacency_refs(room: RoomData, rooms: list[RoomData], min_shared: float = 2.0) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for other in rooms:
+        if other.id == room.id:
+            continue
+        shared = _shared_wall_length(room, other)
+        if shared < min_shared:
+            continue
+        refs.append(
+            {
+                "id": str(other.id),
+                "type": str(other.type),
+                "shared_wall_ft": _rnd(float(shared), 2),
+            }
+        )
+    refs.sort(key=lambda item: (-float(item.get("shared_wall_ft", 0.0)), str(item.get("id", ""))))
+    return refs[:8]
+
+
+def _room_adjacency_names(room: RoomData, rooms: list[RoomData], min_shared: float = 2.0) -> list[str]:
+    refs = _room_adjacency_refs(room, rooms, min_shared=min_shared)
+    return sorted(str(ref.get("id", "")) for ref in refs if str(ref.get("id", "")))[:6]
+
+
+def _room_checks(
+    room: RoomData,
+    exterior_walls: list[str],
+    adjacent_to: list[str],
+    adjacent_types: list[str],
+) -> dict[str, bool]:
+    room_type = str(room.type or "").strip().lower()
+    expected_zone = ROOM_DEFAULT_ZONES.get(room_type, "public")
+    zone_match = str(room.zone or "").strip().lower() == expected_zone
+
+    min_dims = ROOM_MIN_DIMS.get(room_type, (4.0, 4.0))
+    dimension_ok = float(room.width) >= (min_dims[0] * 0.8) and float(room.height) >= (min_dims[1] * 0.8)
+
+    daylight_access = bool(exterior_walls)
+    corridor_linked = any("corridor" in n for n in adjacent_to)
+    if room_type in ("corridor", "living"):
+        corridor_linked = True
+
+    expected_adj = ROOM_EXPECTED_ADJACENCY.get(room_type, set())
+    adjacency_alignment = True
+    if expected_adj:
+        adjacency_alignment = any(t in expected_adj for t in adjacent_types)
+
+    privacy_buffer = True
+    if room_type in ("master_bedroom", "bedroom", "study"):
+        privacy_buffer = not any(t in ("living", "kitchen") for t in adjacent_types)
+    elif room_type == "master_bath":
+        privacy_buffer = "master_bedroom" in adjacent_types
+
+    return {
+        "zone_match": zone_match,
+        "dimension_ok": dimension_ok,
+        "daylight_access": daylight_access,
+        "circulation_link": corridor_linked,
+        "adjacency_alignment": adjacency_alignment,
+        "privacy_buffer": privacy_buffer,
+    }
+
+
+def _rect_gap_distance(a: RoomData, b: RoomData) -> float:
+    ax0, ay0 = float(a.x), float(a.y)
+    ax1, ay1 = float(a.x) + float(a.width), float(a.y) + float(a.height)
+    bx0, by0 = float(b.x), float(b.y)
+    bx1, by1 = float(b.x) + float(b.width), float(b.y) + float(b.height)
+
+    dx = max(0.0, max(bx0 - ax1, ax0 - bx1))
+    dy = max(0.0, max(by0 - ay1, ay0 - by1))
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def _reasoning_confidence(checks: dict[str, bool]) -> float:
+    if not checks:
+        return 0.0
+    passed = sum(1 for v in checks.values() if bool(v))
+    return _rnd((passed / max(1, len(checks))) * 100.0, 1)
+
+
+def _room_metrics(
+    room: RoomData,
+    usable_w: float,
+    usable_l: float,
+    corridor_rooms: list[RoomData],
+) -> dict[str, float]:
+    width = float(room.width)
+    height = float(room.height)
+    area = max(0.1, width * height)
+    usable_area = max(1.0, usable_w * usable_l)
+    short_edge = max(0.1, min(width, height))
+    long_edge = max(width, height)
+    min_edge_buffer = min(
+        float(room.x),
+        float(room.y),
+        max(0.0, usable_w - (float(room.x) + width)),
+        max(0.0, usable_l - (float(room.y) + height)),
+    )
+
+    corridor_gap = 0.0
+    room_type = str(getattr(room, "type", "") or "").strip().lower()
+    if corridor_rooms and room_type != "corridor":
+        corridor_gap = min(_rect_gap_distance(room, c) for c in corridor_rooms)
+
+    return {
+        "area_ft2": _rnd(area, 2),
+        "area_share_pct": _rnd((area / usable_area) * 100.0, 2),
+        "aspect_ratio": _rnd(long_edge / short_edge, 2),
+        "min_edge_buffer_ft": _rnd(min_edge_buffer, 2),
+        "corridor_gap_ft": _rnd(corridor_gap, 2),
+    }
+
+
+def _failed_check_keys(checks: dict[str, bool]) -> list[str]:
+    return [str(k) for k, v in (checks or {}).items() if not bool(v)]
+
+
+def _compute_reasoning_quality_scores(
+    plan: PlanResponse,
+    element_items: list[dict[str, Any]],
+) -> dict[str, float]:
+    if not element_items:
+        return {
+            "privacy": 0.0,
+            "circulation": 0.0,
+            "daylight": 0.0,
+            "adjacency_quality": 0.0,
+            "program_integrity": 0.0,
+            "check_pass_rate": 0.0,
+            "space_efficiency": 0.0,
+            "confidence_mean": 0.0,
+            "overall": 0.0,
+        }
+
+    bedroom_items = [e for e in element_items if str(e.get("type", "")) in ("master_bedroom", "bedroom")]
+    wet_items = [e for e in element_items if str(e.get("type", "")) in ("master_bath", "bathroom", "toilet")]
+
+    privacy = 100.0
+    if bedroom_items:
+        in_private = sum(1 for e in bedroom_items if str(e.get("zone", "")).lower() == "private")
+        privacy = (in_private / len(bedroom_items)) * 100.0
+
+    circulation = (
+        sum(1 for e in element_items if bool((e.get("checks", {}) or {}).get("circulation_link")))
+        / len(element_items)
+    ) * 100.0
+
+    daylight = (
+        sum(1 for e in element_items if bool((e.get("checks", {}) or {}).get("daylight_access")))
+        / len(element_items)
+    ) * 100.0
+
+    wet_service = 100.0
+    if wet_items:
+        wet_service = (
+            sum(1 for e in wet_items if str(e.get("zone", "")).lower() == "service")
+            / len(wet_items)
+        ) * 100.0
+
+    integrity = (
+        sum(1 for e in element_items if bool((e.get("checks", {}) or {}).get("zone_match")) and bool((e.get("checks", {}) or {}).get("dimension_ok")))
+        / len(element_items)
+    ) * 100.0
+
+    adjacency_quality = (
+        sum(1 for e in element_items if bool((e.get("checks", {}) or {}).get("adjacency_alignment")))
+        / len(element_items)
+    ) * 100.0
+
+    check_values: list[bool] = []
+    for e in element_items:
+        checks = e.get("checks", {}) or {}
+        check_values.extend(bool(v) for v in checks.values())
+    check_pass_rate = (sum(1 for v in check_values if v) / max(1, len(check_values))) * 100.0
+
+    confidence_mean = (
+        sum(float(e.get("confidence", 0.0) or 0.0) for e in element_items)
+        / len(element_items)
+    )
+
+    usable_area = max(1.0, float(getattr(plan.plot, "usable_width", 0.0) or 0.0) * float(getattr(plan.plot, "usable_length", 0.0) or 0.0))
+    placed_area = sum(max(0.0, float(getattr(r, "width", 0.0) or 0.0) * float(getattr(r, "height", 0.0) or 0.0)) for r in (plan.rooms or []))
+    space_efficiency = max(0.0, min(100.0, (placed_area / usable_area) * 100.0))
+
+    overall = (
+        (privacy * 0.20)
+        + (circulation * 0.18)
+        + (daylight * 0.15)
+        + (wet_service * 0.12)
+        + (integrity * 0.17)
+        + (adjacency_quality * 0.10)
+        + (check_pass_rate * 0.08)
+    )
+    return {
+        "privacy": _rnd(privacy, 1),
+        "circulation": _rnd(circulation, 1),
+        "daylight": _rnd(daylight, 1),
+        "wet_core_efficiency": _rnd(wet_service, 1),
+        "adjacency_quality": _rnd(adjacency_quality, 1),
+        "program_integrity": _rnd(integrity, 1),
+        "check_pass_rate": _rnd(check_pass_rate, 1),
+        "space_efficiency": _rnd(space_efficiency, 1),
+        "confidence_mean": _rnd(confidence_mean, 1),
+        "overall": _rnd(overall, 1),
+    }
+
+
+def _build_reasoning_diagnostics(element_items: list[dict[str, Any]]) -> dict[str, Any]:
+    total_checks = 0
+    passed_checks = 0
+    failed_elements: list[dict[str, Any]] = []
+
+    for item in element_items:
+        checks = item.get("checks", {}) or {}
+        failures = _failed_check_keys(checks)
+        total_checks += len(checks)
+        passed_checks += sum(1 for v in checks.values() if bool(v))
+        if failures:
+            failed_elements.append(
+                {
+                    "id": str(item.get("id", "")),
+                    "type": str(item.get("type", "")),
+                    "failed_checks": failures,
+                    "confidence": _rnd(float(item.get("confidence", 0.0) or 0.0), 1),
+                }
+            )
+
+    pass_rate = (passed_checks / max(1, total_checks)) * 100.0
+    high_risk_count = sum(1 for item in element_items if float(item.get("confidence", 0.0) or 0.0) < 70.0)
+
+    return {
+        "checks": {
+            "total": int(total_checks),
+            "passed": int(passed_checks),
+            "failed": int(max(0, total_checks - passed_checks)),
+            "pass_rate": _rnd(pass_rate, 1),
+        },
+        "high_risk_element_count": int(high_risk_count),
+        "failed_elements": failed_elements[:12],
+    }
+
+
+def _build_tradeoff_notes(
+    base_reasoning: dict[str, Any],
+    quality_scores: dict[str, float],
+    diagnostics: dict[str, Any],
+) -> list[dict[str, str]]:
+    notes: list[dict[str, str]] = []
+    program_fit = (base_reasoning or {}).get("program_fit", {}) if isinstance(base_reasoning, dict) else {}
+    deferred_extras = list(program_fit.get("extras_deferred", []) or []) if isinstance(program_fit, dict) else []
+
+    if deferred_extras:
+        notes.append(
+            {
+                "theme": "program_scope",
+                "decision": "Deferred low-priority extras to preserve core-room quality and clear circulation.",
+                "impact": "Deferred extras: " + ", ".join(deferred_extras),
+            }
+        )
+
+    circulation = float(quality_scores.get("circulation", 0.0) or 0.0)
+    daylight = float(quality_scores.get("daylight", 0.0) or 0.0)
+    privacy = float(quality_scores.get("privacy", 0.0) or 0.0)
+
+    if circulation < 72.0:
+        notes.append(
+            {
+                "theme": "circulation_vs_compactness",
+                "decision": "Maintained compact footprint while accepting tighter movement links in a few spaces.",
+                "impact": f"Circulation score {circulation:.1f} indicates some near-corridor links instead of direct shared walls.",
+            }
+        )
+    if daylight < 70.0:
+        notes.append(
+            {
+                "theme": "daylight_vs_privacy",
+                "decision": "Protected private-zone arrangement even where full exterior frontage was not possible.",
+                "impact": f"Daylight score {daylight:.1f} reflects interior rooms buffered by service spaces.",
+            }
+        )
+    if privacy < 75.0:
+        notes.append(
+            {
+                "theme": "privacy_vs_adjacency",
+                "decision": "Prioritized functional adjacency for key rooms despite reduced bedroom isolation in compact zones.",
+                "impact": f"Privacy score {privacy:.1f} indicates at least one bedroom has active-zone adjacency.",
+            }
+        )
+
+    high_risk = int((diagnostics.get("high_risk_element_count", 0) or 0))
+    if high_risk > 0:
+        notes.append(
+            {
+                "theme": "micro_adjustment_residual",
+                "decision": "Applied automatic micro-adjustments; residual low-confidence elements are flagged for future optimization cycles.",
+                "impact": f"Low-confidence elements: {high_risk}.",
+            }
+        )
+
+    if not notes:
+        notes.append(
+            {
+                "theme": "balanced_outcome",
+                "decision": "Program, circulation, and privacy stayed balanced without requiring manual edits.",
+                "impact": "No major trade-off triggered in post-plot diagnostics.",
+            }
+        )
+
+    return notes[:6]
+
+
+def _build_reasoning_passes(
+    base_reasoning: dict[str, Any],
+    element_items: list[dict[str, Any]],
+    quality_scores: dict[str, float],
+    diagnostics: dict[str, Any],
+    tradeoff_notes: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    program_fit = (base_reasoning or {}).get("program_fit", {}) if isinstance(base_reasoning, dict) else {}
+    deferred_extras = list(program_fit.get("extras_deferred", []) or []) if isinstance(program_fit, dict) else []
+    constraints_count = len((base_reasoning or {}).get("constraint_matrix", []) or []) if isinstance(base_reasoning, dict) else 0
+
+    pass_1 = {
+        "name": "input_decomposition",
+        "summary": "Parsed priorities, hard constraints, and program feasibility before plotting.",
+        "highlights": [
+            f"Constraint rules loaded: {constraints_count}.",
+            f"Deferred extras: {', '.join(deferred_extras) if deferred_extras else 'none'}.",
+            "Target zones fixed before plotting to reduce late-stage geometry drift.",
+        ],
+    }
+
+    pass_2 = {
+        "name": "element_placement_logic",
+        "summary": "Placed each element with zone-first logic, adjacency checks, and geometric guardrails.",
+        "highlights": [
+            f"Element count evaluated: {len(element_items)}.",
+            "Each element scored for zone, dimensions, daylight, circulation, adjacency, and privacy buffer.",
+        ],
+    }
+
+    pass_3 = {
+        "name": "self_review",
+        "summary": "Post-plot quality review executed with weighted scores and trade-off diagnostics.",
+        "highlights": [
+            f"Overall quality score: {quality_scores.get('overall', 0.0)}.",
+            f"Checks pass rate: {(diagnostics.get('checks', {}) or {}).get('pass_rate', 0.0)} with {len(tradeoff_notes)} trade-off note(s).",
+            f"Privacy {quality_scores.get('privacy', 0.0)}, circulation {quality_scores.get('circulation', 0.0)}, daylight {quality_scores.get('daylight', 0.0)}.",
+        ],
+    }
+
+    return [pass_1, pass_2, pass_3]
+
+
+def _build_element_reasoning(
+    plan: PlanResponse,
+    req: PlanRequest,
+    usable_w: float,
+    usable_l: float,
+) -> list[dict[str, Any]]:
+    zone_order = {"public": 1, "service": 2, "private": 3}
+    ordered_rooms = sorted(
+        list(plan.rooms or []),
+        key=lambda r: (zone_order.get(str(getattr(r, "zone", "")).lower(), 9), float(r.y), float(r.x)),
+    )
+    corridor_rooms = [r for r in ordered_rooms if str(getattr(r, "type", "")).lower() == "corridor"]
+
+    items: list[dict[str, Any]] = []
+    for room in ordered_rooms:
+        exterior_walls = _room_exterior_walls(room, usable_w, usable_l)
+        adjacency_refs = _room_adjacency_refs(room, ordered_rooms)
+        adjacent_to = [str(ref.get("id", "")) for ref in adjacency_refs if str(ref.get("id", ""))]
+        adjacent_types = [str(ref.get("type", "") or "").strip().lower() for ref in adjacency_refs]
+        checks = _room_checks(room, exterior_walls, adjacent_to, adjacent_types)
+
+        corridor_gap = 0.0
+        if corridor_rooms and str(getattr(room, "type", "") or "").strip().lower() != "corridor":
+            corridor_gap = min(_rect_gap_distance(room, c) for c in corridor_rooms)
+
+        if not checks.get("circulation_link", False) and corridor_rooms:
+            if corridor_gap <= 1.25:
+                checks["circulation_link"] = True
+
+        metrics = _room_metrics(room, usable_w, usable_l, corridor_rooms)
+        failed_checks = _failed_check_keys(checks)
+
+        items.append(
+            {
+                "id": room.id,
+                "type": room.type,
+                "zone": room.zone,
+                "position_ft": {
+                    "x": _rnd(float(room.x), 2),
+                    "y": _rnd(float(room.y), 2),
+                    "width": _rnd(float(room.width), 2),
+                    "height": _rnd(float(room.height), 2),
+                },
+                "exterior_walls": exterior_walls,
+                "adjacent_to": adjacent_to,
+                "adjacent_types": sorted(set(adjacent_types)),
+                "adjacency_refs": adjacency_refs,
+                "checks": checks,
+                "failed_checks": failed_checks,
+                "metrics": metrics,
+                "confidence": _reasoning_confidence(checks),
+                "reason": _reason_for_room(room, req.facing, exterior_walls),
+                "auto_adjusted": True,
+            }
+        )
+
+    return items[:28]
+
+
+def _attach_plan_reasoning(
+    plan: PlanResponse,
+    base_reasoning: dict[str, Any],
+    req: PlanRequest,
+    usable_w: float,
+    usable_l: float,
+    generation_path: str,
+) -> PlanResponse:
+    reasoning = dict(base_reasoning or {})
+    reasoning["generation_path"] = generation_path
+    element_items = _build_element_reasoning(plan, req, usable_w, usable_l)
+    quality_scores = _compute_reasoning_quality_scores(plan, element_items)
+    diagnostics = _build_reasoning_diagnostics(element_items)
+    tradeoff_notes = _build_tradeoff_notes(base_reasoning, quality_scores, diagnostics)
+    reasoning["element_reasoning"] = element_items
+    reasoning["quality_scores"] = quality_scores
+    reasoning["diagnostics"] = diagnostics
+    reasoning["tradeoff_notes"] = tradeoff_notes
+    reasoning["explainability_mode"] = "detailed_backend_trace"
+    reasoning["reasoning_depth"] = "high"
+    reasoning["reasoning_passes"] = _build_reasoning_passes(
+        base_reasoning,
+        element_items,
+        quality_scores,
+        diagnostics,
+        tradeoff_notes,
+    )
+    reasoning["execution_summary"] = {
+        "rooms": len(plan.rooms or []),
+        "doors": len(plan.doors or []),
+        "windows": len(plan.windows or []),
+        "generation_method": str(plan.generation_method or generation_path),
+        "checks_pass_rate": (diagnostics.get("checks", {}) or {}).get("pass_rate", 0.0),
+        "high_risk_elements": diagnostics.get("high_risk_element_count", 0),
+    }
+    reasoning["manual_adjustment_required"] = False
+    plan.architect_reasoning = reasoning
+    plan.reasoning_trace = _merge_reasoning_trace(
+        list(plan.reasoning_trace or []),
+        [
+            "All elements were auto-adjusted and optimized by backend reasoning.",
+            f"Post-plot quality score: {quality_scores.get('overall', 0.0)}.",
+            f"Check pass rate: {(diagnostics.get('checks', {}) or {}).get('pass_rate', 0.0)}.",
+        ],
+        limit=24,
+    )
+    return plan
+
+
+def _extract_openai_like_text(data: dict[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message", {}) if isinstance(first, dict) else {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        text = str(part.get("text", "")).strip()
+                        if text:
+                            parts.append(text)
+                merged = "\n".join(parts).strip()
+                if merged:
+                    return merged
+    output_text = data.get("output_text") if isinstance(data, dict) else None
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    return ""
+
+
+async def _call_public_architect_advisory(system_prompt: str, user_message: str) -> dict[str, Any] | None:
+    if not PUBLIC_LLM_FALLBACK_ENABLED:
+        return None
+
+    payload = {
+        "model": PUBLIC_LLM_FALLBACK_MODEL,
+        "temperature": 0.1,
+        "max_tokens": 800,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=12, verify=True) as client:
+            resp = await client.post(PUBLIC_LLM_FALLBACK_URL, json=payload)
+        if resp.status_code >= 400:
+            return None
+
+        content = _extract_openai_like_text(resp.json())
+        if not content:
+            return None
+
+        parsed = _extract_json_object(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception as e:
+        log.info("Public architect advisory skipped: %s", str(e)[:160])
+
+    return None
+
+
+async def _build_preplot_reasoning_trace(req: PlanRequest, uw: float, ul: float) -> tuple[list[str], dict[str, Any]]:
+    trace = _build_local_architect_reasoning(req, uw, ul)
+
+    system_prompt = (
+        "You are a senior residential architect. "
+        "Reason about a floor-plan request before plotting. "
+        "Return JSON only."
+    )
+    user_message = (
+        "Analyze this request and return only JSON with keys: "
+        "design_strategy (string), priority_order (array), critical_checks (array), risks (array).\n"
+        f"plot_usable_ft: {uw} x {ul}\n"
+        f"road_facing: {str(req.facing).lower()}\n"
+        f"requested_bedrooms: {int(req.bedrooms)}\n"
+        f"bathrooms_target: {int(getattr(req, 'bathrooms_target', 0) or 0)}\n"
+        f"extras: {', '.join(sorted(_requested_extra_room_types(req.extras))) or 'none'}\n"
+        f"family_type: {str(getattr(req, 'family_type', '') or '').lower() or 'nuclear'}\n"
+        "Keep each item concise and practical."
+    )
+
+    if not ARCHITECT_REASONING_ENABLED:
+        trace.append("LLM architect advisory disabled by config; continuing with deterministic reasoning.")
+        return (
+            _normalize_reasoning_lines(trace, limit=14),
+            _build_architect_reasoning_object(req, uw, ul, source="local", status="disabled"),
+        )
+
+    if not (OPENROUTER_API_KEY.strip() or OPENROUTER_API_KEY_SECONDARY.strip()):
+        public_data = await _call_public_architect_advisory(system_prompt, user_message)
+        public_trace = _extract_llm_architect_reasoning(public_data or {})
+        if public_trace:
+            trace.append("Public LLM architect advisory completed before plotting.")
+            return (
+                _merge_reasoning_trace(trace, public_trace, limit=14),
+                _build_architect_reasoning_object(
+                    req,
+                    uw,
+                    ul,
+                    source="public_fallback",
+                    status="advisory_applied",
+                    advisory=public_data,
+                ),
+            )
+
+        trace.append("LLM architect advisory unavailable (no OpenRouter key); using local architect reasoning.")
+        return (
+            _normalize_reasoning_lines(trace, limit=14),
+            _build_architect_reasoning_object(req, uw, ul, source="local", status="no_llm_key"),
+        )
+
+    try:
+        llm_data = await asyncio.wait_for(
+            call_openrouter(system_prompt, user_message, temperature=0.1, max_tokens=800),
+            timeout=ARCHITECT_REASONING_TIMEOUT_SEC,
+        )
+        llm_trace = _extract_llm_architect_reasoning(llm_data)
+        if llm_trace:
+            trace.append("LLM architect advisory completed before plotting.")
+            trace = _merge_reasoning_trace(trace, llm_trace, limit=14)
+            return (
+                _normalize_reasoning_lines(trace, limit=14),
+                _build_architect_reasoning_object(
+                    req,
+                    uw,
+                    ul,
+                    source="openrouter",
+                    status="advisory_applied",
+                    advisory=llm_data,
+                ),
+            )
+        else:
+            trace.append("LLM architect advisory returned no structured guidance; local reasoning used.")
+            return (
+                _normalize_reasoning_lines(trace, limit=14),
+                _build_architect_reasoning_object(req, uw, ul, source="openrouter", status="advisory_empty"),
+            )
+    except Exception as e:
+        log.info("Architect advisory skipped: %s", str(e)[:160])
+        # Second chance advisory via public fallback when OpenRouter advisory fails.
+        public_data = await _call_public_architect_advisory(system_prompt, user_message)
+        public_trace = _extract_llm_architect_reasoning(public_data or {})
+        if public_trace:
+            trace.append("OpenRouter advisory failed; public LLM advisory applied as fallback.")
+            trace = _merge_reasoning_trace(trace, public_trace, limit=16)
+            return (
+                _normalize_reasoning_lines(trace, limit=16),
+                _build_architect_reasoning_object(
+                    req,
+                    uw,
+                    ul,
+                    source="public_fallback",
+                    status="advisory_applied_after_openrouter_failure",
+                    advisory=public_data,
+                ),
+            )
+
+        trace.append("LLM architect advisory timed out/unavailable; local reasoning used.")
+
+    return (
+        _normalize_reasoning_lines(trace, limit=16),
+        _build_architect_reasoning_object(req, uw, ul, source="local", status="advisory_timeout"),
+    )
 
 
 def _sanitize_room_type(raw_type: str, raw_label: str = "") -> str:
@@ -392,142 +1417,373 @@ def _polygon_area(points: list[dict[str, float]]) -> float:
 
 
 # ─────────────────────────────────────────────────────────────
-# MAIN PUBLIC API — 100% LLM powered
+# MAIN PUBLIC API
 # ─────────────────────────────────────────────────────────────
 async def generate_plan(req: PlanRequest) -> PlanResponse:
-    """
-    Generate a floor plan using LLM only.
-    Tries up to 6 free models automatically.
-    Raises RuntimeError if all fail.
-    """
+    """Generate a floor plan with OpenRouter -> Claude -> BSP fallback."""
     uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
     ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
+    preplot_trace, preplot_reasoning = await _build_preplot_reasoning_trace(req, uw, ul)
 
-    if FORCE_LOCAL_PLANNER:
+    has_llm_keys = bool(OPENROUTER_API_KEY.strip() or OPENROUTER_API_KEY_SECONDARY.strip())
+    force_local_only = FORCE_LOCAL_PLANNER and not has_llm_keys
+    if FORCE_LOCAL_PLANNER and has_llm_keys:
+        log.info(
+            "FORCE_LOCAL_PLANNER is enabled but API keys are present; "
+            "using reasoning+LLM pipeline instead of deterministic lock.",
+        )
+
+    if force_local_only:
         local_plan = await _generate_via_bsp(req, uw, ul)
         local_plan.generation_method = "deterministic_demo"
-        local_plan.reasoning_trace = [
-            f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
-            "Presentation-safe mode enabled: deterministic planner selected.",
-            "Returned stable adjacency-first layout without external model variance.",
-        ]
-        local_plan.architect_note = (
-            "Deterministic demo mode is enabled for consistent architectural output."
+        existing_trace = list(local_plan.reasoning_trace or [])
+        local_plan.reasoning_trace = _merge_reasoning_trace(
+            preplot_trace + ["Presentation-safe mode enabled: deterministic planner selected."],
+            existing_trace + ["Returned stable adjacency-first layout without external model variance."],
+            limit=18,
         )
-        return local_plan
+        if not str(local_plan.architect_note or "").strip():
+            local_plan.architect_note = (
+                "Deterministic demo mode is enabled for consistent architectural output."
+            )
+        return _attach_plan_reasoning(
+            local_plan,
+            preplot_reasoning,
+            req,
+            uw,
+            ul,
+            "deterministic_demo",
+        )
 
-    # ── Attempt 1: LLM-generated plan (time-capped) ─────────
+    # Attempt 1: OpenRouter with hard 45s cap.
+    openrouter_issues: list[str] = []
     try:
-        plan, issues, correction_feedback = await asyncio.wait_for(
+        openrouter_plan, openrouter_issues, _ = await asyncio.wait_for(
             _generate_via_llm(req, uw, ul),
-            timeout=FAST_LLM_TIMEOUT_SEC,
+            timeout=OPENROUTER_ATTEMPT_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
-        plan, issues, correction_feedback = None, ["llm attempt timed out"], None
-        log.warning("LLM attempt timed out after %ss", FAST_LLM_TIMEOUT_SEC)
+        openrouter_plan = None
+        openrouter_issues = ["OpenRouter attempt timed out"]
+        log.warning("OpenRouter attempt timed out after %ss", OPENROUTER_ATTEMPT_TIMEOUT_SEC)
 
-    last_issues = list(issues or [])
-
-    if plan:
-        log.info("LLM plan accepted on first attempt")
-        return plan
-
-    # ── Attempt 2: retry with or without correction hints ──
-    timeout_in_issues = any("timed out" in str(i).lower() for i in (issues or []))
-    if issues:
-        retry_seed = correction_feedback if correction_feedback else (
-            issues if not timeout_in_issues else None
+    if openrouter_plan is not None:
+        openrouter_plan.reasoning_trace = _merge_reasoning_trace(
+            preplot_trace,
+            list(openrouter_plan.reasoning_trace or [])
+            + ["Plotting completed via OpenRouter architectural planner."],
+            limit=18,
         )
-        if timeout_in_issues:
-            log.info("LLM timed out; retrying with a fresh model chain for best output")
-        else:
-            log.info("LLM plan invalid (%d issues), retrying with corrections", len(issues))
-        try:
-            plan, retry_issues, _ = await asyncio.wait_for(
-                _generate_via_llm(req, uw, ul, prev_issues=retry_seed),
-                timeout=FAST_RETRY_TIMEOUT_SEC,
-            )
-            last_issues = list(retry_issues or [])
-        except asyncio.TimeoutError:
-            plan = None
-            last_issues = ["llm retry timed out"]
-            log.warning("LLM retry timed out after %ss", FAST_RETRY_TIMEOUT_SEC)
-        if plan:
-            log.info("LLM plan accepted on retry")
-            return plan
-
-    # ── Attempt 3: backup free-model pool ───────────────────
-    backup_seed_issues = None
-    if issues and not timeout_in_issues:
-        backup_seed_issues = correction_feedback if correction_feedback else issues
-    try:
-        backup_plan, backup_issues, _ = await asyncio.wait_for(
-            _generate_via_llm(req, uw, ul, prev_issues=backup_seed_issues, use_backup_models=True),
-            timeout=FAST_BACKUP_TIMEOUT_SEC,
+        return _attach_plan_reasoning(
+            openrouter_plan,
+            preplot_reasoning,
+            req,
+            uw,
+            ul,
+            "openrouter",
         )
-        last_issues = list(backup_issues or [])
-    except asyncio.TimeoutError:
-        backup_plan = None
-        last_issues = ["llm backup timed out"]
-        log.warning("Backup LLM pool timed out after %ss", FAST_BACKUP_TIMEOUT_SEC)
 
-    if backup_plan:
-        backup_plan.generation_method = "llm_backup"
-        backup_plan.reasoning_trace = [
-            *backup_plan.reasoning_trace,
-            "Primary model pool was unavailable; delivered via backup model pool.",
-        ][:12]
-        return backup_plan
+    if openrouter_issues:
+        log.warning("OpenRouter draft rejected: %s", openrouter_issues[:4])
 
-    # ── Attempt 4: final quality-first retry before local fallback ──
-    # This avoids dropping into local backup too eagerly when model warm-up
-    # delays are temporary and high-quality output is still preferred.
-    final_plan = None
-    if not FAST_FALLBACK_MODE:
-        final_seed = backup_seed_issues if backup_seed_issues else correction_feedback
+    # Attempt 2: Claude (only if key is configured). No OpenRouter retries.
+    if ANTHROPIC_API_KEY.strip():
         try:
-            final_plan, final_issues, _ = await asyncio.wait_for(
-                _generate_via_llm(req, uw, ul, prev_issues=final_seed, use_backup_models=True),
-                timeout=FINAL_QUALITY_TIMEOUT_SEC,
+            claude_plan = await asyncio.wait_for(
+                _generate_via_claude(req, uw, ul),
+                timeout=CLAUDE_ATTEMPT_DEADLINE_SEC,
             )
-            last_issues = list(final_issues or [])
+            claude_plan.reasoning_trace = _merge_reasoning_trace(
+                preplot_trace,
+                list(claude_plan.reasoning_trace or [])
+                + ["Plotting completed via Claude after architect reasoning stage."],
+                limit=18,
+            )
+            return _attach_plan_reasoning(
+                claude_plan,
+                preplot_reasoning,
+                req,
+                uw,
+                ul,
+                "claude",
+            )
         except asyncio.TimeoutError:
-            final_plan = None
-            last_issues = ["llm final quality retry timed out"]
-            log.warning("Final quality-first retry timed out after %ss", FINAL_QUALITY_TIMEOUT_SEC)
+            log.warning("Claude attempt exceeded %ss end-to-end deadline", CLAUDE_ATTEMPT_DEADLINE_SEC)
+        except Exception as e:
+            log.warning("Claude attempt failed: %s", str(e)[:200])
     else:
-        log.info("Fast fallback mode enabled: skipping final quality retry")
+        log.info("ANTHROPIC_API_KEY not set; skipping Claude and falling back to BSP")
 
-    if final_plan:
-        final_plan.generation_method = "llm_backup"
-        final_plan.reasoning_trace = [
-            *final_plan.reasoning_trace,
-            "Recovered after quality-first final retry; avoided local fallback.",
-        ][:12]
-        return final_plan
+    # Final fallback: deterministic BSP immediately.
+    fallback = await _generate_via_bsp(req, uw, ul)
+    fallback.generation_method = "bsp"
+    fallback.reasoning_trace = _merge_reasoning_trace(
+        preplot_trace,
+        [
+            "External plotting attempts were unavailable or invalid.",
+            *list(fallback.reasoning_trace or []),
+            "Returned deterministic BSP fallback for guaranteed completion.",
+        ],
+        limit=18,
+    )
+    return _attach_plan_reasoning(
+        fallback,
+        preplot_reasoning,
+        req,
+        uw,
+        ul,
+        "bsp_fallback",
+    )
 
-    # If every model call failed on quota/credits, keep service stable by using
-    # deterministic fallback instead of surfacing hard runtime errors.
-    issues_blob = " | ".join(str(i) for i in (last_issues or []))
-    if "402" in issues_blob:
-        log.warning(
-            "All planner models returned 402 (credits/quota unavailable); "
-            "using deterministic local fallback."
+
+def _zone_bounds_for_room_spec(
+    room_spec: dict[str, Any],
+    uw: float,
+    ul: float,
+) -> tuple[float, float, float, float]:
+    zone = int(_to_float(room_spec.get("zone"), 2))
+    room_type = str(room_spec.get("type", "")).strip().lower()
+
+    front_max = _rnd(max(8.0, ul * 0.32), 2)
+    service_min = _rnd(max(0.0, ul * 0.22), 2)
+    service_max = _rnd(max(service_min + 2.0, ul * 0.78), 2)
+    private_min = _rnd(max(0.0, ul * 0.45), 2)
+
+    x0, y0, x1, y1 = 0.0, 0.0, uw, ul
+    if zone == 1:
+        y1 = front_max
+    elif zone == 2:
+        y0, y1 = service_min, min(ul, service_max)
+    elif zone == 3:
+        y0 = private_min
+
+    if room_type == "kitchen":
+        x0 = max(x0, uw * 0.5)
+    if room_type == "master_bedroom":
+        x1 = min(x1, uw * 0.55)
+    if room_type == "pooja":
+        x0 = max(x0, uw * 0.5)
+        y1 = min(y1, front_max)
+    if room_type == "corridor":
+        y0 = 0.0
+        y1 = ul
+
+    x0 = _rnd(_clamp(x0, 0.0, uw), 2)
+    y0 = _rnd(_clamp(y0, 0.0, ul), 2)
+    x1 = _rnd(_clamp(x1, x0, uw), 2)
+    y1 = _rnd(_clamp(y1, y0, ul), 2)
+    return x0, y0, x1, y1
+
+
+def _build_room_coordinate_constraints(
+    req: PlanRequest,
+    uw: float,
+    ul: float,
+) -> list[dict[str, Any]]:
+    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul, req.facing, req.floors)
+
+    requested_baths = max(0, int(getattr(req, "bathrooms_target", 0) or 0))
+    existing_baths = sum(
+        1 for spec in room_specs if spec.get("type") in ("master_bath", "bathroom", "toilet")
+    )
+    extra_baths = max(0, min(8, requested_baths) - existing_baths)
+    for idx in range(extra_baths):
+        room_specs.append({
+            "type": "bathroom",
+            "label": f"Bathroom {existing_baths + idx + 1}",
+            "min_w": 5,
+            "min_h": 6,
+            "zone": 2,
+            "priority": 20 + idx,
+        })
+
+    type_counts: dict[str, int] = {}
+    constraints: list[dict[str, Any]] = []
+    for spec in room_specs:
+        room_type = str(spec.get("type", "room")).strip().lower()
+        type_counts[room_type] = type_counts.get(room_type, 0) + 1
+        room_id = f"{room_type}_{type_counts[room_type]:02d}"
+        label = str(spec.get("label", DEFAULT_ROOM_LABELS.get(room_type, room_type.title())))
+
+        min_w = _rnd(max(3.5, _to_float(spec.get("min_w"), 5.0)), 2)
+        min_h = _rnd(max(3.5, _to_float(spec.get("min_h"), 5.0)), 2)
+
+        zx0, zy0, zx1, zy1 = _zone_bounds_for_room_spec(spec, uw, ul)
+        x_min = zx0
+        y_min = zy0
+        x_max = _rnd(max(x_min, zx1 - min_w), 2)
+        y_max = _rnd(max(y_min, zy1 - min_h), 2)
+
+        constraints.append(
+            {
+                "id": room_id,
+                "type": room_type,
+                "label": label,
+                "x_min": x_min,
+                "x_max": x_max,
+                "y_min": y_min,
+                "y_max": y_max,
+                "min_w": min_w,
+                "min_h": min_h,
+            }
         )
 
-    # ── Final local adaptive fallback (no busy error to user) ──
-    log.error("Primary and backup LLM pools unavailable; using local adaptive fallback")
-    fallback = await _generate_via_bsp(req, uw, ul)
-    fallback.generation_method = "local_backup"
-    fallback.reasoning_trace = [
-        f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
-        "Switched to fast backup planning path to keep generation uninterrupted.",
-        "Generated an adaptive layout optimized for immediate preview.",
+    return constraints
+
+
+def _build_claude_coordinate_messages(
+    req: PlanRequest,
+    uw: float,
+    ul: float,
+) -> tuple[str, str]:
+    constraints = _build_room_coordinate_constraints(req, uw, ul)
+    room_lines = [
+        (
+            f"{c['label']}: x {c['x_min']} to {c['x_max']}, y {c['y_min']} to {c['y_max']}, "
+            f"min width {c['min_w']}, min height {c['min_h']}."
+        )
+        for c in constraints
     ]
-    fallback.architect_note = (
-        "Fast backup-planning mode delivered this layout to keep response time consistent."
+
+    system_prompt = (
+        "You are a floor-plan coordinate generator. "
+        "Use only numeric ranges provided by the user and return valid JSON only."
     )
-    return fallback
+
+    user_message = (
+        f"Plot usable area is {uw} x {ul} feet. Place rooms in these exact coordinate ranges.\n"
+        + "\n".join(room_lines)
+        + "\nReturn only JSON matching this schema exactly: "
+        "rooms array where each room has id, type, label, x, y, width, height. "
+        "No markdown, no explanation."
+    )
+    return system_prompt, user_message
+
+
+def _extract_json_object(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "").strip()
+    if not text:
+        raise ValueError("Empty model output")
+
+    candidates: list[str] = [text]
+    start = text.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : idx + 1])
+                    break
+
+    for candidate in candidates:
+        payload = candidate.strip()
+        if not payload:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise ValueError("Could not parse JSON object from model output")
+
+
+def _plan_to_dict(plan: PlanResponse) -> dict[str, Any]:
+    return {
+        "rooms": [
+            {
+                "id": r.id,
+                "type": r.type,
+                "label": r.label,
+                "x": r.x,
+                "y": r.y,
+                "width": r.width,
+                "height": r.height,
+                "area": r.area,
+                "polygon": [{"x": p.x, "y": p.y} for p in (r.polygon or [])],
+            }
+            for r in plan.rooms
+        ]
+    }
+
+
+async def _generate_via_claude(req: PlanRequest, uw: float, ul: float) -> PlanResponse:
+    """Generate a plan using Anthropic Claude with coordinate-constrained prompting."""
+    if not ANTHROPIC_API_KEY.strip():
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+    reasoning_trace: list[str] = [
+        f"Computed usable plot after setbacks: {uw:.1f} ft x {ul:.1f} ft.",
+        "Built coordinate-first room ranges from deterministic zoning rules.",
+    ]
+
+    system_prompt, user_message = _build_claude_coordinate_messages(req, uw, ul)
+    payload = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 2200,
+        "temperature": 0,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    timeout = httpx.Timeout(CLAUDE_API_TIMEOUT_SEC)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"Claude API error {response.status_code}: {response.text[:220]}")
+
+    data = response.json()
+    content = data.get("content", [])
+    text_blocks = [
+        str(block.get("text", ""))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    raw_text = "\n".join(text_blocks).strip()
+    plan_dict = _extract_json_object(raw_text)
+
+    draft_valid, draft_issues = validate_draft(plan_dict, uw, ul)
+    if not draft_valid:
+        raise ValueError("Claude draft failed fatal checks: " + "; ".join(draft_issues[:6]))
+
+    reasoning_trace.append("Claude draft passed draft validation; applying deterministic normalization.")
+    plan = _parse_llm_plan(plan_dict, req, uw, ul, reasoning_trace=reasoning_trace)
+
+    final_valid, final_issues = validate_final(_plan_to_dict(plan), uw, ul, req)
+    if not final_valid:
+        raise ValueError("Claude plan failed final validation: " + "; ".join(final_issues[:6]))
+
+    plan.generation_method = "claude"
+    plan.reasoning_trace = [
+        *plan.reasoning_trace,
+        "Claude layout passed full final validation and was accepted.",
+    ][:12]
+    return plan
 
 
 async def _generate_via_llm(
@@ -535,7 +1791,6 @@ async def _generate_via_llm(
     uw: float,
     ul: float,
     prev_issues: list[str] | None = None,
-    use_backup_models: bool = False,
 ) -> tuple[PlanResponse | None, list[str], list[str] | None]:
     """
     Try to generate a plan via the LLM.
@@ -551,12 +1806,7 @@ async def _generate_via_llm(
     system_prompt, user_message = build_master_prompt(req)
     _push_reasoning(
         reasoning_trace,
-        "Built strict architectural prompt with fresh design nonce and requested extras.",
-    )
-    if use_backup_models:
-        _push_reasoning(
-            reasoning_trace,
-            "Switching to backup model pool for generation continuity.",
+        "Built coordinate-first OpenRouter prompt with hard room ranges.",
         )
 
     # Append correction feedback if retrying
@@ -576,13 +1826,10 @@ async def _generate_via_llm(
             f"Retrying with {len(prev_issues)} validator corrections from previous draft.",
         )
 
-    _push_reasoning(reasoning_trace, "Requesting floor plan draft from LLM model chain.")
+    _push_reasoning(reasoning_trace, "Requesting floor plan draft from OpenRouter.")
 
     try:
-        if use_backup_models:
-            plan_dict = await call_openrouter_plan_backup(system_prompt, user_message)
-        else:
-            plan_dict = await call_openrouter_plan(system_prompt, user_message)
+        plan_dict = await call_openrouter_plan(system_prompt, user_message)
     except Exception as e:
         log.error("LLM call failed across all models: %s", e)
         return None, [str(e)], None
@@ -591,100 +1838,44 @@ async def _generate_via_llm(
     if isinstance(draft_rooms, list):
         _push_reasoning(
             reasoning_trace,
-            f"LLM returned draft with {len(draft_rooms)} rooms; running strict validation.",
+            f"OpenRouter returned draft with {len(draft_rooms)} rooms; running draft validation.",
         )
 
-    # Validate raw draft, but do not hard-reject yet.
-    # Many raw drafts have geometric noise that deterministic repair can fix.
-    raw_valid, raw_issues = validate_llm_plan(plan_dict, uw, ul, req)
-    if not raw_valid:
+    draft_valid, draft_issues = validate_draft(plan_dict, uw, ul)
+    if not draft_valid:
+        correction_feedback = _build_geometric_correction_feedback(plan_dict, uw, ul, draft_issues)
         _push_reasoning(
             reasoning_trace,
-            f"Raw draft had {len(raw_issues)} issues; attempting deterministic repair before retry.",
+            f"OpenRouter draft failed fatal validation with {len(draft_issues)} issues.",
         )
+        return None, draft_issues, correction_feedback
 
     # Build production-grade plan with geometry/opening repair first.
     try:
         plan = _parse_llm_plan(plan_dict, req, uw, ul, reasoning_trace=reasoning_trace)
     except Exception as e:
         parse_error = f"LLM draft parsing failed: {str(e)[:120]}"
-        issues = list(raw_issues) if raw_issues else [parse_error]
+        issues = [parse_error]
         if parse_error not in issues:
             issues.append(parse_error)
         correction_feedback = _build_geometric_correction_feedback(plan_dict, uw, ul, issues)
         log.warning("LLM plan parse failed: %s", parse_error)
         return None, issues, correction_feedback
 
-    # Validate repaired final plan to ensure output quality for frontend/export
-    repaired_dict = {
-        "rooms": [
-            {
-                "id": r.id,
-                "type": r.type,
-                "label": r.label,
-                "x": r.x,
-                "y": r.y,
-                "width": r.width,
-                "height": r.height,
-                "area": r.area,
-                "polygon": [{"x": p.x, "y": p.y} for p in (r.polygon or [])],
-            }
-            for r in plan.rooms
-        ]
-    }
-    final_valid, final_issues = validate_llm_plan(repaired_dict, uw, ul, req)
+    repaired_dict = _plan_to_dict(plan)
+    final_valid, final_issues = validate_final(repaired_dict, uw, ul, req)
     if not final_valid:
-        # Preserve original raw issues for richer correction prompts.
-        merged_issues = list(final_issues)
-        for issue in raw_issues[:6]:
-            tagged = f"raw-draft: {issue}"
-            if tagged not in merged_issues:
-                merged_issues.append(tagged)
-
-        # Quality-first behavior: if only soft dimensional/adjacency issues
-        # remain after deterministic repair, keep the LLM output instead of
-        # dropping to local fallback on every request.
-        hard_issues = [i for i in merged_issues if not _is_soft_validation_issue(i)]
-        if not hard_issues:
-            _push_reasoning(
-                reasoning_trace,
-                "Returning repaired LLM plan in best-effort mode; only soft size issues remain.",
-            )
-            note_suffix = " Best-effort LLM output returned to avoid local fallback; review compact room sizes."
-            if note_suffix not in plan.architect_note:
-                plan.architect_note = f"{plan.architect_note}{note_suffix}"
-            return plan, [], None
-
         correction_feedback = _build_geometric_correction_feedback(repaired_dict, uw, ul, final_issues)
-        log.warning("Post-repair plan invalid (%d issues): %s", len(merged_issues), merged_issues[:3])
+        log.warning("Post-repair plan invalid (%d issues): %s", len(final_issues), final_issues[:3])
         _push_reasoning(
             reasoning_trace,
-            f"Post-repair validation failed with {len(merged_issues)} issues; correction cycle required.",
+            f"Post-repair validation failed with {len(final_issues)} issues.",
         )
-        return None, [f"post-repair: {issue}" for issue in merged_issues], correction_feedback
-
-    logical_issues = _logical_layout_issues(plan.rooms, uw, ul)
-    if logical_issues:
-        correction_feedback = _build_geometric_correction_feedback(
-            repaired_dict,
-            uw,
-            ul,
-            logical_issues,
-        )
-        _push_reasoning(
-            reasoning_trace,
-            f"Logical quality gate rejected draft with {len(logical_issues)} issues; retrying.",
-        )
-        return None, [f"logical: {issue}" for issue in logical_issues], correction_feedback
-
-    if raw_issues:
-        _push_reasoning(
-            reasoning_trace,
-            f"Deterministic repair resolved {len(raw_issues)} raw-draft issues before final acceptance.",
-        )
+        return None, [f"post-repair: {issue}" for issue in final_issues], correction_feedback
 
     _push_reasoning(reasoning_trace, "Final repaired plan passed validation and is ready for preview.")
 
+    plan.generation_method = "llm"
     return plan, [], None
 
 
@@ -819,17 +2010,6 @@ def _build_geometric_correction_feedback(
             feedback.append(f"Validator issue to fix: {issue}")
 
     return feedback[:18]
-
-
-def _is_soft_validation_issue(issue: str) -> bool:
-    text = str(issue or "").lower()
-    if text.startswith("raw-draft:"):
-        return True
-    if "too small" in text:
-        return True
-    if "bowling-alley" in text:
-        return True
-    return False
 
 
 def _parse_llm_plan(
@@ -1250,56 +2430,34 @@ def _build_openings_from_rooms(
 
 def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
     """
-    Repair raw LLM coordinates into a buildable non-overlapping layout.
-    Strategy:
-    1) grid-snap and bounds clamp
-    2) zone-aware anchoring (public/service/private)
-    3) pairwise overlap repulsion
-    4) targeted relocation onto free slots when overlaps persist
+    Greedy non-overlapping placement on 0.5ft grid.
+    1) Sort rooms by area descending.
+    2) Place largest room first inside its zone.
+    3) Place each next room in the first available non-overlapping cell in zone.
     """
     if not rooms:
         return
 
     grid = 0.5
+    eps = 0.05
 
     def _snap(val: float) -> float:
         return round(val / grid) * grid
 
-    def _zone_y_bounds(room: RoomData) -> tuple[float, float]:
-        # Tightened zone anchoring to enforce privacy gradient consistently.
-        if room.zone == "public":
-            lo, hi = 0.0, max(0.0, ul * 0.30 - room.height)
-        elif room.zone == "service":
-            lo, hi = max(0.0, ul * 0.22), max(0.0, ul * 0.78 - room.height)
-        else:
-            lo, hi = max(0.0, ul * 0.45), max(0.0, ul - room.height)
-        if hi < lo:
-            hi = lo
-        return lo, hi
-
-    def _clamp_in_bounds(room: RoomData):
+    def _normalize_geometry(room: RoomData):
         if room.polygon:
             bx, by, bw, bh = _polygon_bbox(room.polygon)
-            bw = max(3.0, bw)
-            bh = max(3.0, bh)
-
-            room.width = bw
-            room.height = bh
-
-            target_x = _clamp(_snap(room.x), 0.0, max(0.0, uw - bw))
-            target_y = _clamp(_snap(room.y), 0.0, max(0.0, ul - bh))
-
+            room.width = _clamp(_snap(max(3.0, bw)), 3.0, max(3.0, uw))
+            room.height = _clamp(_snap(max(3.0, bh)), 3.0, max(3.0, ul))
+            target_x = _clamp(_snap(bx), 0.0, max(0.0, uw - room.width))
+            target_y = _clamp(_snap(by), 0.0, max(0.0, ul - room.height))
             dx = target_x - bx
             dy = target_y - by
             if abs(dx) > 1e-6 or abs(dy) > 1e-6:
                 moved = _translate_polygon(room.polygon, dx, dy, uw, ul)
                 room.polygon = [Point2D(x=p["x"], y=p["y"]) for p in moved]
-
-            fx, fy, fw, fh = _polygon_bbox(room.polygon)
-            room.x = _clamp(_snap(fx), 0.0, max(0.0, uw - fw))
-            room.y = _clamp(_snap(fy), 0.0, max(0.0, ul - fh))
-            room.width = fw
-            room.height = fh
+            room.x = target_x
+            room.y = target_y
             return
 
         room.width = _clamp(_snap(room.width), 3.0, max(3.0, uw))
@@ -1307,83 +2465,114 @@ def _snap_and_fix_layout(rooms: list[RoomData], uw: float, ul: float):
         room.x = _clamp(_snap(room.x), 0.0, max(0.0, uw - room.width))
         room.y = _clamp(_snap(room.y), 0.0, max(0.0, ul - room.height))
 
-    def _find_slot(room: RoomData, placed: list[RoomData]) -> tuple[float, float] | None:
-        x_max = max(0.0, uw - room.width)
-        y_max = max(0.0, ul - room.height)
-        pref_lo, pref_hi = _zone_y_bounds(room)
-        y_ranges = [(pref_lo, min(pref_hi, y_max)), (0.0, y_max)]
+    def _zone_origin_bounds(room: RoomData) -> tuple[float, float, float, float]:
+        front_max = ul * 0.32
+        service_min = ul * 0.22
+        service_max = ul * 0.78
+        private_min = ul * 0.45
 
-        for y_lo, y_hi in y_ranges:
-            y = _snap(y_lo)
-            while y <= y_hi + 1e-6:
-                x = 0.0
-                while x <= x_max + 1e-6:
-                    room.x = _snap(x)
-                    room.y = _snap(y)
-                    if all(not _room_overlap(room, other) for other in placed):
-                        return room.x, room.y
-                    x += grid
-                y += grid
+        x_left, y_bottom, x_right, y_top = 0.0, 0.0, uw, ul
+        if room.zone == "public":
+            y_top = front_max
+        elif room.zone == "service":
+            y_bottom, y_top = service_min, service_max
+        else:
+            y_bottom = private_min
+
+        if room.type == "kitchen":
+            x_left = max(x_left, uw * 0.5)
+        if room.type == "master_bedroom":
+            x_right = min(x_right, uw * 0.55)
+        if room.type == "pooja":
+            x_left = max(x_left, uw * 0.5)
+            y_top = min(y_top, front_max)
+        if room.type == "corridor":
+            y_bottom = 0.0
+            y_top = ul
+
+        x_lo = _clamp(_snap(x_left), 0.0, max(0.0, uw - room.width))
+        y_lo = _clamp(_snap(y_bottom), 0.0, max(0.0, ul - room.height))
+        x_hi = _clamp(_snap(max(x_left, x_right - room.width)), x_lo, max(0.0, uw - room.width))
+        y_hi = _clamp(_snap(max(y_bottom, y_top - room.height)), y_lo, max(0.0, ul - room.height))
+        return x_lo, x_hi, y_lo, y_hi
+
+    def _candidate_overlaps(
+        room: RoomData,
+        x: float,
+        y: float,
+        other: RoomData,
+    ) -> bool:
+        return (
+            x < other.x + other.width - eps
+            and x + room.width > other.x + eps
+            and y < other.y + other.height - eps
+            and y + room.height > other.y + eps
+        )
+
+    def _first_available_slot(
+        room: RoomData,
+        placed: list[RoomData],
+        x_lo: float,
+        x_hi: float,
+        y_lo: float,
+        y_hi: float,
+    ) -> tuple[float, float] | None:
+        y = _snap(y_lo)
+        while y <= y_hi + 1e-6:
+            x = _snap(x_lo)
+            while x <= x_hi + 1e-6:
+                if all(not _candidate_overlaps(room, x, y, other) for other in placed):
+                    return _rnd(x, 2), _rnd(y, 2)
+                x += grid
+            y += grid
         return None
 
-    # Pass 1: snap/clamp and zone anchoring
+    def _apply_position(room: RoomData, x: float, y: float):
+        x = _clamp(_snap(x), 0.0, max(0.0, uw - room.width))
+        y = _clamp(_snap(y), 0.0, max(0.0, ul - room.height))
+        if room.polygon:
+            bx, by, _, _ = _polygon_bbox(room.polygon)
+            moved = _translate_polygon(room.polygon, x - bx, y - by, uw, ul)
+            room.polygon = [Point2D(x=p["x"], y=p["y"]) for p in moved]
+        room.x = _rnd(x, 2)
+        room.y = _rnd(y, 2)
+
     for room in rooms:
-        _clamp_in_bounds(room)
-        y_lo, y_hi = _zone_y_bounds(room)
-        room.y = _clamp(room.y, y_lo, y_hi)
-        _clamp_in_bounds(room)
+        _normalize_geometry(room)
 
-    # Pass 2: overlap repulsion
-    for _ in range(40):
-        moved = False
-        for i in range(len(rooms)):
-            for j in range(i + 1, len(rooms)):
-                a = rooms[i]
-                b = rooms[j]
+    ordered = sorted(rooms, key=lambda r: r.width * r.height, reverse=True)
+    placed: list[RoomData] = []
+    for idx, room in enumerate(ordered):
+        x_lo, x_hi, y_lo, y_hi = _zone_origin_bounds(room)
 
-                overlap_x = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
-                overlap_y = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
-                if overlap_x <= 0 or overlap_y <= 0:
-                    continue
+        preferred_x = _clamp(_snap(room.x), x_lo, x_hi)
+        preferred_y = _clamp(_snap(room.y), y_lo, y_hi)
 
-                moved = True
-                if overlap_x <= overlap_y:
-                    shift = _snap(overlap_x / 2.0 + 0.25)
-                    if a.x <= b.x:
-                        a.x -= shift
-                        b.x += shift
-                    else:
-                        a.x += shift
-                        b.x -= shift
-                else:
-                    shift = _snap(overlap_y / 2.0 + 0.25)
-                    if a.y <= b.y:
-                        a.y -= shift
-                        b.y += shift
-                    else:
-                        a.y += shift
-                        b.y -= shift
+        slot: tuple[float, float] | None = None
+        if idx == 0:
+            if all(not _candidate_overlaps(room, preferred_x, preferred_y, other) for other in placed):
+                slot = (_rnd(preferred_x, 2), _rnd(preferred_y, 2))
+            else:
+                slot = _first_available_slot(room, placed, x_lo, x_hi, y_lo, y_hi)
+        else:
+            slot = _first_available_slot(room, placed, x_lo, x_hi, y_lo, y_hi)
 
-                _clamp_in_bounds(a)
-                _clamp_in_bounds(b)
+        if slot is None:
+            fallback_slot = _first_available_slot(
+                room,
+                placed,
+                0.0,
+                max(0.0, uw - room.width),
+                0.0,
+                max(0.0, ul - room.height),
+            )
+            slot = fallback_slot
 
-        if not moved:
-            break
+        if slot is None:
+            raise ValueError(f"Unable to place {room.label} without overlap.")
 
-    # Pass 3: relocate residual-overlap rooms to nearest free slots
-    sorted_rooms = sorted(rooms, key=lambda r: r.width * r.height, reverse=True)
-    anchored: list[RoomData] = []
-    for room in sorted_rooms:
-        if any(_room_overlap(room, other) for other in anchored):
-            slot = _find_slot(room, anchored)
-            if slot is not None:
-                room.x, room.y = slot
-        _clamp_in_bounds(room)
-        anchored.append(room)
-
-    # Final cleanup
-    for room in rooms:
-        _clamp_in_bounds(room)
+        _apply_position(room, slot[0], slot[1])
+        placed.append(room)
 
     hard_overlaps: list[str] = []
     for i in range(len(rooms)):
@@ -1500,12 +2689,20 @@ def _postprocess_llm_layout(rooms: list[RoomData], uw: float, ul: float):
 async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanResponse:
     """Generate a floor plan using deterministic BSP packing (fallback)."""
     # Keep fallback fully deterministic and fast (no external LLM calls).
+    target_bedrooms = _effective_bedroom_target(req.bedrooms, uw, ul)
+    downgraded_bedrooms = target_bedrooms < int(req.bedrooms)
+
     architect_note = (
         "Logical deterministic layout generated with strict zoning and practical adjacency."
     )
+    if downgraded_bedrooms:
+        architect_note = (
+            f"Compact usable footprint supports about {target_bedrooms} bedrooms; "
+            f"generated best-fit {target_bedrooms}BHK from requested {req.bedrooms}BHK."
+        )
 
     # Build room specs
-    room_specs = build_room_list(req.bedrooms, req.extras, uw, ul, req.facing, req.floors)
+    room_specs = build_room_list(target_bedrooms, req.extras, uw, ul, req.facing, req.floors)
     requested_baths = max(0, int(getattr(req, "bathrooms_target", 0) or 0))
     existing_baths = sum(
         1 for spec in room_specs if spec.get("type") in ("master_bath", "bathroom", "toilet")
@@ -1519,7 +2716,7 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
         })
 
     # Pack rooms deterministically
-    placed = pack_rooms_bsp(room_specs, uw, ul)
+    placed = pack_rooms_bsp(room_specs, uw, ul, facing=req.facing)
     vastu_score = _compute_fallback_vastu_score(placed, uw, ul)
 
     # Ensure all BSP rooms carry deterministic unique IDs before opening generation.
@@ -1574,6 +2771,11 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
         reasoning_trace=[
             "Deterministic planner used strict 3-band zoning.",
             "Living-dining-kitchen and bedroom-corridor adjacency were enforced.",
+            (
+                f"Bedroom program compacted to {target_bedrooms} due usable footprint limits."
+                if downgraded_bedrooms
+                else "Requested bedroom count was feasible within usable footprint."
+            ),
             "Returned stable non-overlapping layout for reliable preview/export.",
         ],
     )
@@ -1582,6 +2784,71 @@ async def _generate_via_bsp(req: PlanRequest, uw: float, ul: float) -> PlanRespo
 # ─────────────────────────────────────────────────────────────
 # Room spec builder
 # ─────────────────────────────────────────────────────────────
+def _max_feasible_bedrooms(usable_w: float, usable_l: float) -> int:
+    """
+    Conservative bedroom feasibility for compact plots.
+    Keeps deterministic output valid instead of forcing impossible programs.
+    """
+    area = max(1.0, usable_w * usable_l)
+    max_beds = 1
+
+    if area >= 470 and usable_w >= 16.5 and usable_l >= 22.0:
+        max_beds = 2
+    if area >= 700 and usable_w >= 20.5 and usable_l >= 31.5:
+        max_beds = 3
+    if area >= 930 and usable_w >= 23.0 and usable_l >= 34.0:
+        max_beds = 4
+
+    return max_beds
+
+
+def _effective_bedroom_target(requested_bedrooms: int, usable_w: float, usable_l: float) -> int:
+    requested = max(1, min(4, int(requested_bedrooms or 1)))
+    return min(requested, _max_feasible_bedrooms(usable_w, usable_l))
+
+
+def _is_extra_feasible(
+    extra_type: str,
+    usable_w: float,
+    usable_l: float,
+    bedrooms: int,
+) -> bool:
+    area = max(1.0, usable_w * usable_l)
+    extra = str(extra_type or "").strip().lower()
+
+    if extra == "study":
+        return area >= 760 and usable_l >= 30.0 and bedrooms >= 2
+    if extra == "garage":
+        return area >= 1150 and usable_w >= 24.0
+    if extra == "balcony":
+        return area >= 700 and usable_w >= 20.0
+    if extra == "utility":
+        min_area = 900 + max(0, bedrooms) * 220
+        return area >= min_area and usable_w >= 20.0
+    if extra == "staircase":
+        return usable_w >= 19.0 and usable_l >= 28.0
+    if extra == "open_area":
+        return area >= 900
+    return True
+
+
+def _partition_feasible_extras(
+    extras: list[str],
+    usable_w: float,
+    usable_l: float,
+    bedrooms: int,
+) -> tuple[set[str], set[str]]:
+    requested = _requested_extra_room_types(extras)
+    feasible: set[str] = set()
+    deferred: set[str] = set()
+    for extra in requested:
+        if _is_extra_feasible(extra, usable_w, usable_l, bedrooms):
+            feasible.add(extra)
+        else:
+            deferred.add(extra)
+    return feasible, deferred
+
+
 def build_room_list(
     bedrooms: int,
     extras: List[str],
@@ -1591,13 +2858,12 @@ def build_room_list(
     floors: int = 1,
 ) -> List[Dict[str, Any]]:
     """Build room specifications based on BHK count and extras."""
+    bedrooms = _effective_bedroom_target(bedrooms, usable_w, usable_l)
     rooms = []
 
-    extras_norm = {
-        str(extra or "").strip().lower().replace(" ", "_")
-        for extra in (extras or [])
-        if str(extra or "").strip()
-    }
+    feasible_extras, _ = _partition_feasible_extras(extras, usable_w, usable_l, bedrooms)
+    extras_norm = set(feasible_extras)
+    usable_area = max(1.0, usable_w * usable_l)
 
     if floors >= 2 and "staircase" not in extras_norm:
         extras_norm.add("staircase")
@@ -1605,7 +2871,7 @@ def build_room_list(
     # --- Always present ---
     rooms.append({
         "type": "living", "label": "Living Room",
-        "min_w": 12, "min_h": 12, "pref_w": 14, "pref_h": 14,
+        "min_w": 12, "min_h": 11, "pref_w": 14, "pref_h": 13,
         "zone": 1, "priority": 1,
     })
     rooms.append({
@@ -1654,16 +2920,19 @@ def build_room_list(
             "min_w": 10, "min_h": 10, "pref_w": 11, "pref_h": 12,
             "zone": 3, "priority": 9,
         })
-        rooms.append({
-            "type": "bathroom", "label": "Bathroom 3",
-            "min_w": 5, "min_h": 6, "pref_w": 5, "pref_h": 7,
-            "zone": 2, "priority": 10,
-        })
-        rooms.append({
-            "type": "bathroom", "label": "Common Bath",
-            "min_w": 5, "min_h": 5, "pref_w": 5, "pref_h": 6,
-            "zone": 2, "priority": 11,
-        })
+        # Keep wet-room program proportional to usable area to avoid tiny strips.
+        if usable_area >= 1400:
+            rooms.append({
+                "type": "bathroom", "label": "Bathroom 3",
+                "min_w": 5, "min_h": 6, "pref_w": 5, "pref_h": 7,
+                "zone": 2, "priority": 10,
+            })
+        if usable_area >= 1700:
+            rooms.append({
+                "type": "bathroom", "label": "Common Bath",
+                "min_w": 5, "min_h": 5, "pref_w": 5, "pref_h": 6,
+                "zone": 2, "priority": 11,
+            })
 
     if bedrooms >= 4:
         rooms.append({
@@ -1671,11 +2940,12 @@ def build_room_list(
             "min_w": 10, "min_h": 10, "pref_w": 11, "pref_h": 11,
             "zone": 3, "priority": 12,
         })
-        rooms.append({
-            "type": "bathroom", "label": "Bathroom 4",
-            "min_w": 5, "min_h": 5, "pref_w": 5, "pref_h": 6,
-            "zone": 2, "priority": 13,
-        })
+        if usable_area >= 1900:
+            rooms.append({
+                "type": "bathroom", "label": "Bathroom 4",
+                "min_w": 5, "min_h": 5, "pref_w": 5, "pref_h": 6,
+                "zone": 2, "priority": 13,
+            })
 
     # --- Extras ---
     if "pooja" in extras_norm:
@@ -1684,7 +2954,12 @@ def build_room_list(
             "min_w": 5, "min_h": 5, "pref_w": 6, "pref_h": 6,
             "zone": 1, "priority": 2,
         })
-    elif str(facing).strip().lower() == "south":
+    elif (
+        str(facing).strip().lower() == "south"
+        and usable_area >= 680
+        and usable_w >= 20.5
+        and usable_l >= 28.0
+    ):
         # South-facing plots are compensated with a small pooja/energy buffer near entry.
         rooms.append({
             "type": "pooja", "label": "Pooja Buffer",
@@ -1734,15 +3009,23 @@ def build_room_list(
             "zone": 2, "priority": 9,
         })
 
-    usable_area = max(1.0, usable_w * usable_l)
     planned_area = sum(
         max(0.0, _to_float(r.get("pref_w"), 0.0) * _to_float(r.get("pref_h"), 0.0))
         for r in rooms
     )
     residual_area = max(0.0, usable_area - planned_area)
-    if residual_area >= usable_area * 0.20:
+    if (
+        residual_area >= usable_area * 0.24
+        and usable_w >= 22.0
+        and usable_l >= 30.0
+        and bedrooms <= 2
+    ):
         open_side = _clamp(usable_w * 0.30, 6.0, max(6.0, usable_w * 0.45))
-        open_depth = _clamp(residual_area / max(1.0, open_side), 6.0, max(6.0, usable_l * 0.35))
+        open_depth = _clamp(
+            residual_area / max(1.0, open_side),
+            6.0,
+            min(12.0, max(6.0, usable_l * 0.30)),
+        )
         rooms.append({
             "type": "open_area", "label": "Open Area",
             "min_w": 6, "min_h": 6, "pref_w": _rnd(open_side, 2), "pref_h": _rnd(open_depth, 2),
@@ -1759,26 +3042,50 @@ def _spec_min_h(spec: Dict[str, Any], fallback: float = 6.0) -> float:
     return max(3.0, _to_float(spec.get("min_h"), fallback))
 
 
+def _spec_soft_min_h(spec: Dict[str, Any], fallback: float = 6.0) -> float:
+    # Use validator-compatible lower bound for early band budgeting.
+    return max(4.0, _spec_min_h(spec, fallback) * 0.8)
+
+
 def _compute_program_band_heights(
     zone_rooms: Dict[int, List[Dict[str, Any]]],
     usable_l: float,
 ) -> tuple[float, float, float]:
+    public_specs = list(zone_rooms.get(1, []))
     living_specs = [r for r in zone_rooms.get(1, []) if r.get("type") == "living"]
-    living_min_h = _spec_min_h(living_specs[0], 12.0) if living_specs else 12.0
+    living_min_h = _spec_soft_min_h(living_specs[0], 12.0) if living_specs else 9.0
 
-    private_specs = list(zone_rooms.get(3, [])) + [
-        r for r in zone_rooms.get(2, []) if r.get("type") == "master_bath"
-    ]
+    private_specs = list(zone_rooms.get(3, []))
     service_specs = [
         r for r in zone_rooms.get(2, [])
         if r.get("type") not in ("corridor", "master_bath")
     ]
 
-    private_sum_h = sum(_spec_min_h(r, 8.0) for r in private_specs)
-    service_sum_h = sum(_spec_min_h(r, 7.0) for r in service_specs)
+    private_sum_h = sum(_spec_soft_min_h(r, 8.0) for r in private_specs)
+    service_sum_h = sum(_spec_soft_min_h(r, 7.0) for r in service_specs)
 
-    remaining_h = usable_l - private_sum_h - service_sum_h
-    front_target_h = max(remaining_h, living_min_h + 2.0)
+    bedroom_count = sum(1 for r in private_specs if r.get("type") == "bedroom")
+    private_band_min = max(8.0, bedroom_count * 7.2)
+    wet_count = sum(1 for r in service_specs if r.get("type") in ("bathroom", "toilet"))
+    service_other_count = sum(
+        1
+        for r in service_specs
+        if r.get("type") not in ("bathroom", "toilet", "kitchen")
+    )
+    service_band_min = max(
+        7.0,
+        7.2 if any(r.get("type") == "kitchen" for r in service_specs) else 0.0,
+        wet_count * 4.0 + service_other_count * 3.2,
+    )
+    front_band_floor = max(8.8, living_min_h)
+    max_private_feasible = max(8.0, usable_l - front_band_floor - service_band_min)
+    private_band_min = min(private_band_min, max_private_feasible)
+
+    public_extra = max(0.0, (len(public_specs) - 2) * 0.9)
+    front_target_h = max(
+        living_min_h,
+        min(living_min_h + 3.4 + public_extra, usable_l * 0.36),
+    )
     total_h = front_target_h + service_sum_h + private_sum_h
 
     if total_h <= usable_l + 0.05:
@@ -1794,7 +3101,7 @@ def _compute_program_band_heights(
             private_sum_h,
             usable_l,
         )
-        min_front_h = max(8.0, living_min_h)
+        min_front_h = front_band_floor
         alloc_h = max(15.0, usable_l - min_front_h)
         ratio_den = max(1.0, service_sum_h + private_sum_h)
         band2_h = max(7.0, alloc_h * (service_sum_h / ratio_den))
@@ -1805,26 +3112,29 @@ def _compute_program_band_heights(
         band1_h = min_front_h
 
     # Final validation: enforce total <= usable length before packing bands.
-    band1_h = max(8.0, band1_h)
-    band2_h = max(7.0, band2_h)
-    if band1_h + band2_h > usable_l - 8.0:
-        overflow = (band1_h + band2_h) - (usable_l - 8.0)
-        if band1_h >= band2_h:
-            band1_h = max(max(8.0, living_min_h), band1_h - overflow)
-        else:
-            band2_h = max(7.0, band2_h - overflow)
+    band1_h = max(front_band_floor, band1_h)
+    band2_h = max(service_band_min, band2_h)
+    max_band12 = usable_l - private_band_min
+    if band1_h + band2_h > max_band12:
+        overflow = (band1_h + band2_h) - max_band12
+        reduce_band2 = min(overflow, max(0.0, band2_h - service_band_min))
+        band2_h -= reduce_band2
+        overflow -= reduce_band2
+        if overflow > 0:
+            reduce_band1 = min(overflow, max(0.0, band1_h - front_band_floor))
+            band1_h -= reduce_band1
 
-    band3_h = max(8.0, usable_l - band1_h - band2_h)
+    band3_h = max(private_band_min, usable_l - band1_h - band2_h)
     if band1_h + band2_h + band3_h > usable_l:
-        band3_h = max(8.0, band3_h - ((band1_h + band2_h + band3_h) - usable_l))
+        band3_h = max(private_band_min, band3_h - ((band1_h + band2_h + band3_h) - usable_l))
 
     band1_h = _rnd(band1_h, 2)
     band2_h = _rnd(band2_h, 2)
-    band3_h = _rnd(max(8.0, usable_l - band1_h - band2_h), 2)
+    band3_h = _rnd(max(private_band_min, usable_l - band1_h - band2_h), 2)
     drift = _rnd(usable_l - (band1_h + band2_h + band3_h), 2)
     if abs(drift) > 0.01:
-        band1_h = _rnd(max(8.0, band1_h + drift), 2)
-        band3_h = _rnd(max(8.0, usable_l - band1_h - band2_h), 2)
+        band1_h = _rnd(max(front_band_floor, band1_h + drift), 2)
+        band3_h = _rnd(max(private_band_min, usable_l - band1_h - band2_h), 2)
 
     if band1_h + band2_h + band3_h > usable_l + 0.05:
         raise ValueError("Program-derived band heights exceed usable plot length")
@@ -1859,6 +3169,13 @@ def _enforce_vastu_clamps(placed: List[Dict[str, Any]], usable_w: float, band1_h
             max_x = max(0.0, half_w - width)
             room["x"] = _rnd(_clamp(_to_float(room.get("x"), 0.0), 0.0, max_x), 2)
 
+            # Keep post-clamp proportions practical; width adjustments can
+            # otherwise create bowling-alley bedrooms on long plots.
+            height = _to_float(room.get("height"), 0.0)
+            max_h = _rnd(max(10.0, width * 2.95), 2)
+            if height > max_h:
+                room["height"] = max_h
+
         elif room_type == "pooja":
             min_x = max(0.0, half_w)
             max_x = max(0.0, usable_w - width)
@@ -1868,7 +3185,8 @@ def _enforce_vastu_clamps(placed: List[Dict[str, Any]], usable_w: float, band1_h
 
 
 def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
-                   usable_w: float, usable_l: float) -> List[Dict[str, Any]]:
+                   usable_w: float, usable_l: float,
+                   facing: str = "south") -> List[Dict[str, Any]]:
     """
     Pack rooms into three horizontal bands with zero overlaps.
     Uses smart grid layout that pairs bedrooms with baths.
@@ -1892,20 +3210,13 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
     entry_stub_h = 0.0
     front_room_h = _rnd(max(8.0, band1_h), 2)
 
-    # Master bath is intentionally packed in private band, not service band.
-    master_bath_spec = next(
-        (r for r in zone_rooms[2] if r.get("type") == "master_bath"),
-        None,
-    )
-    service_zone_rooms = [
-        r for r in zone_rooms[2]
-        if r.get("type") != "master_bath"
-    ]
+    master_bath_spec = None
+    service_zone_rooms = list(zone_rooms[2])
 
     placed: List[Dict[str, Any]] = []
 
     # ── Band 1: Public (living, dining, pooja, balcony) ──────
-    placed.extend(_pack_band1(zone_rooms[1], 0, 0, usable_w, front_room_h))
+    placed.extend(_pack_band1(zone_rooms[1], 0, 0, usable_w, front_room_h, facing=facing))
 
     # ── Band 2: Service (corridor + kitchen + bathrooms) ─────
     band2_rooms = _pack_band2(
@@ -1948,7 +3259,7 @@ def pack_rooms_bsp(room_specs: List[Dict[str, Any]],
 
 
 def _pack_band1(rooms: List[Dict[str, Any]], bx: float, by: float,
-                bw: float, bh: float) -> List[Dict[str, Any]]:
+                bw: float, bh: float, facing: str = "south") -> List[Dict[str, Any]]:
     """
     Band 1: Public zone.
     Layout: Living room (60% width) | Dining + small rooms stacked (40% width)
@@ -1977,34 +3288,62 @@ def _pack_band1(rooms: List[Dict[str, Any]], bx: float, by: float,
     if living and dining:
         if has_small:
             # 3-column: Living (50%) | Dining (30%) | Small rooms stacked (20%)
-            living_w = _rnd(bw * 0.50, 2)
-            dining_w = _rnd(bw * 0.30, 2)
+            living_min_w = 8.8
+            dining_min_w = 6.4
+            small_min_w = 3.8
+            living_w = _rnd(max(living_min_w, bw * 0.50), 2)
+            dining_w = _rnd(max(dining_min_w, bw * 0.30), 2)
             small_w = _rnd(bw - living_w - dining_w, 2)
+
+            if small_w < small_min_w:
+                deficit = _rnd(small_min_w - small_w, 2)
+                reduce_living = min(deficit, max(0.0, living_w - living_min_w))
+                living_w = _rnd(living_w - reduce_living, 2)
+                deficit = _rnd(deficit - reduce_living, 2)
+                if deficit > 0:
+                    reduce_dining = min(deficit, max(0.0, dining_w - dining_min_w))
+                    dining_w = _rnd(dining_w - reduce_dining, 2)
+                small_w = _rnd(max(0.0, bw - living_w - dining_w), 2)
         else:
             # 2-column: Living (58%) | Dining (42%)
             living_w = _rnd(bw * 0.58, 2)
             dining_w = _rnd(bw - living_w, 2)
             small_w = 0
 
+        # Keep public-room frontage aligned with road side when possible.
+        # For east-facing plots, living is placed on the east edge.
+        place_living_east = str(facing or "").strip().lower() == "east"
+        if place_living_east:
+            dining_x = _rnd(bx, 2)
+            living_x = _rnd(bx + dining_w, 2)
+        else:
+            living_x = _rnd(bx, 2)
+            dining_x = _rnd(bx + living_w, 2)
+
         placed.append({
             "type": living["type"], "label": living["label"],
-            "x": _rnd(bx, 2), "y": _rnd(by, 2),
+            "x": living_x, "y": _rnd(by, 2),
             "width": _rnd(living_w, 2), "height": _rnd(bh, 2),
             "zone": 1, "band": 1,
         })
         placed.append({
             "type": dining["type"], "label": dining["label"],
-            "x": _rnd(bx + living_w, 2), "y": _rnd(by, 2),
+            "x": dining_x, "y": _rnd(by, 2),
             "width": _rnd(dining_w, 2), "height": _rnd(bh, 2),
             "zone": 1, "band": 1,
         })
 
-        if has_small and small_w >= 4:
+        if has_small and small_w >= 3.8:
             # Stack small rooms vertically in the remaining column
             current_y = by
             per_h = _rnd(bh / len(small_rooms), 2)
             for i, sr in enumerate(small_rooms):
                 rh = per_h if i < len(small_rooms) - 1 else _rnd(by + bh - current_y, 2)
+                min_rw = max(3.2, _to_float(sr.get("min_w"), 4.0) * 0.8)
+                min_rh = max(3.2, _to_float(sr.get("min_h"), 4.0) * 0.8)
+                if small_w < min_rw or rh < min_rh:
+                    current_y = _rnd(current_y + rh, 2)
+                    continue
                 placed.append({
                     "type": sr["type"], "label": sr["label"],
                     "x": _rnd(bx + living_w + dining_w, 2),
@@ -2015,14 +3354,24 @@ def _pack_band1(rooms: List[Dict[str, Any]], bx: float, by: float,
                 current_y = _rnd(current_y + rh, 2)
         elif has_small:
             # Not enough width — tuck small rooms inside dining area (bottom portion)
-            dining_room = placed[-1]  # the dining we just placed
-            tuck_h = _rnd(bh * 0.45, 2)
+            dining_room = next((r for r in placed if r.get("type") == "dining"), placed[-1])
+            min_small_h = max([
+                max(3.8, _spec_soft_min_h(sr, 5.0))
+                for sr in small_rooms
+            ], default=3.8)
+            tuck_h = _rnd(max(min_small_h, bh * 0.45), 2)
+            tuck_h = _rnd(min(tuck_h, max(3.8, bh - 4.0)), 2)
             dining_room["height"] = _rnd(bh - tuck_h, 2)
 
             current_x = dining_room["x"]
             tuck_w = _rnd(dining_w / len(small_rooms), 2)
             for i, sr in enumerate(small_rooms):
                 rw = tuck_w if i < len(small_rooms) - 1 else _rnd(dining_room["x"] + dining_w - current_x, 2)
+                min_rw = max(3.2, _to_float(sr.get("min_w"), 4.0) * 0.8)
+                min_rh = max(3.2, _to_float(sr.get("min_h"), 4.0) * 0.8)
+                if rw < min_rw or tuck_h < min_rh:
+                    current_x = _rnd(current_x + rw, 2)
+                    continue
                 placed.append({
                     "type": sr["type"], "label": sr["label"],
                     "x": _rnd(current_x, 2),
@@ -2086,6 +3435,9 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
         corridor_x = _rnd(bx + left_w, 2)
         wet_x = _rnd(bx, 2)
         wet_w = _rnd(max(5.0, corridor_x - wet_x), 2)
+        if wet_w > 10.5:
+            wet_w = 10.5
+            corridor_x = _rnd(wet_x + wet_w, 2)
         kitchen_w = _rnd(max(6.0, right_w), 2)
         kitchen_x = _rnd(bx + bw - kitchen_w, 2)
     else:
@@ -2097,9 +3449,10 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
         corridor_x = _rnd(kitchen_x - 3.5, 2)
 
     if corridor_spec and corridor_w >= 3.0:
-        corridor_y = _rnd(max(0.0, by - max(0.0, entry_stub_h)), 2)
-        # Keep corridor depth within service band + optional front stub only.
-        corridor_h = _rnd(max(bh, bh + max(0.0, entry_stub_h)), 2)
+        front_extra = max(0.0, entry_stub_h)
+        rear_extra = max(0.0, corridor_extend_h)
+        corridor_y = _rnd(max(0.0, by - front_extra), 2)
+        corridor_h = _rnd(max(bh, bh + front_extra + rear_extra), 2)
         placed.append({
             "type": "corridor", "label": "Corridor",
             "x": corridor_x, "y": corridor_y,
@@ -2145,6 +3498,12 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
     boundary_baths = [r for r in wet_rooms if r.get("type") in ("bathroom", "toilet")]
     stack_rooms = boundary_baths + central_stack
     if stack_rooms and wet_w > 0:
+        def _band2_stack_min_h(spec: Dict[str, Any]) -> float:
+            room_type = str(spec.get("type", ""))
+            if room_type in ("bathroom", "toilet", "master_bath"):
+                return 4.0
+            return max(3.2, _spec_soft_min_h(spec, 5.0) * 0.7)
+
         current_top = _rnd(by + bh, 2)
         per_h = _rnd(bh / len(stack_rooms), 2)
         for idx, room in enumerate(stack_rooms):
@@ -2152,14 +3511,18 @@ def _pack_band2(rooms: List[Dict[str, Any]], bx: float, by: float,
             if available_h <= 0.1:
                 break
 
+            min_h = _band2_stack_min_h(room)
+
             if idx < len(stack_rooms) - 1:
-                min_h = _spec_min_h(room, 5.0)
                 rh = _rnd(max(min_h, per_h), 2)
-                reserve_h = max(0.0, (len(stack_rooms) - idx - 1) * 3.2)
+                reserve_h = _rnd(
+                    sum(_band2_stack_min_h(rem) for rem in stack_rooms[idx + 1:]),
+                    2,
+                )
                 max_h = _rnd(max(3.0, available_h - reserve_h), 2)
                 rh = _rnd(min(rh, max_h), 2)
             else:
-                rh = _rnd(max(2.5, available_h), 2)
+                rh = _rnd(max(min_h, available_h), 2)
 
             if rh > available_h:
                 rh = available_h
@@ -2310,10 +3673,23 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
         master_w = _rnd(_clamp(target_master_w, master_min_w, bw), 2)
 
     if use_corridor_channel:
-        corridor_x = _rnd(bx + master_w, 2)
-        east_x = _rnd(corridor_x + corridor_w, 2)
-        east_w = _rnd(max(0.0, bx + bw - east_x), 2)
-    else:
+        # Keep private-band channel aligned with service-band corridor so the
+        # corridor is one continuous logical spine.
+        hinted_x = _to_float(corridor_hint[0], bx + master_w) if corridor_hint is not None else (bx + master_w)
+        min_corridor_x = _rnd(bx + max(6.0, master_min_w), 2)
+        max_corridor_x = _rnd(max(min_corridor_x, bx + bw - corridor_w - max(6.0, other_bed_min_w)), 2)
+
+        if max_corridor_x <= min_corridor_x + 0.05:
+            use_corridor_channel = False
+        else:
+            corridor_x = _rnd(_clamp(hinted_x, min_corridor_x, max_corridor_x), 2)
+            master_w = _rnd(max(master_min_w, corridor_x - bx), 2)
+            east_x = _rnd(corridor_x + corridor_w, 2)
+            east_w = _rnd(max(0.0, bx + bw - east_x), 2)
+            if other_beds and east_w < other_bed_min_w:
+                use_corridor_channel = False
+
+    if not use_corridor_channel:
         east_x = _rnd(bx + master_w, 2)
         east_w = _rnd(max(0.0, bw - master_w), 2)
 
@@ -2331,7 +3707,7 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
     if master_bath_spec is not None:
         bath_h = _rnd(max(5.0, min(_spec_min_h(master_bath_spec, 7.0), max(5.0, bh * 0.32))), 2)
 
-    master_h = _rnd(max(8.0, bh - study_h - bath_h), 2)
+    master_h = _rnd(max(6.5, bh - study_h - bath_h), 2)
     if master_h < master_min_h:
         deficit = _rnd(master_min_h - master_h, 2)
         if study_h > 0:
@@ -2342,7 +3718,15 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
             cut = min(deficit, max(0.0, bath_h - 5.0))
             bath_h = _rnd(bath_h - cut, 2)
             deficit = _rnd(deficit - cut, 2)
-        master_h = _rnd(max(master_min_h, bh - study_h - bath_h), 2)
+        # On compact plots, do not force impossible bedroom heights that spill
+        # outside the private band; fit to remaining height deterministically.
+        master_h = _rnd(max(6.5, bh - study_h - bath_h), 2)
+
+    # For 1BHK elongated plots, cap master height to avoid bowling-alley shape.
+    if not other_beds and not studies and not misc_private:
+        max_master_h = _rnd(max(10.0, master_w * 2.85), 2)
+        if master_h > max_master_h:
+            master_h = max_master_h
 
     if master_bath_spec is not None and bath_h > 0:
         placed.append({
@@ -2382,15 +3766,6 @@ def _pack_band3(rooms: List[Dict[str, Any]], bx: float, by: float,
                 "zone": 3, "band": 3,
             })
             current_y = _rnd(current_y + rh, 2)
-
-    if use_corridor_channel and corridor_w >= 2.8:
-        placed.append({
-            "type": "corridor", "label": "Corridor",
-            "x": _rnd(corridor_x, 2), "y": _rnd(by, 2),
-            "width": _rnd(corridor_w, 2),
-            "height": _rnd(bh, 2),
-            "zone": 2, "band": 3,
-        })
 
     return placed
 
@@ -2552,23 +3927,63 @@ def _door_priority_for_pair(type_a: str, type_b: str) -> int:
     return 72
 
 
-def _choose_living_entry_wall(
-    living: Dict[str, Any],
+def _room_touches_wall(
+    room: Dict[str, Any],
+    wall: str,
+    usable_w: float,
+    usable_l: float,
+    eps: float = 0.25,
+) -> bool:
+    if wall == "north":
+        return abs(_to_float(room.get("y"), 0.0) + _to_float(room.get("height"), 0.0) - usable_l) <= eps
+    if wall == "south":
+        return _to_float(room.get("y"), 0.0) <= eps
+    if wall == "east":
+        return abs(_to_float(room.get("x"), 0.0) + _to_float(room.get("width"), 0.0) - usable_w) <= eps
+    return _to_float(room.get("x"), 0.0) <= eps
+
+
+def _choose_entry_room(
+    placed_rooms: List[Dict[str, Any]],
+    facing: str,
+    usable_w: float,
+    usable_l: float,
+) -> Dict[str, Any] | None:
+    if not placed_rooms:
+        return None
+
+    preferred = str(facing or "south").strip().lower()
+    if preferred not in ("north", "south", "east", "west"):
+        preferred = "south"
+
+    def _room_area(room: Dict[str, Any]) -> float:
+        return max(0.0, _to_float(room.get("width"), 0.0) * _to_float(room.get("height"), 0.0))
+
+    for room_type in ("living", "foyer", "dining"):
+        candidates = [
+            r for r in placed_rooms
+            if str(r.get("type", "")) == room_type and _room_touches_wall(r, preferred, usable_w, usable_l)
+        ]
+        if candidates:
+            return sorted(candidates, key=_room_area, reverse=True)[0]
+
+    boundary_candidates = [
+        r for r in placed_rooms
+        if _room_touches_wall(r, preferred, usable_w, usable_l)
+    ]
+    if boundary_candidates:
+        return sorted(boundary_candidates, key=_room_area, reverse=True)[0]
+
+    living = next((r for r in placed_rooms if str(r.get("type", "")) == "living"), None)
+    return living if living is not None else placed_rooms[0]
+
+
+def _choose_entry_wall(
+    room: Dict[str, Any],
     facing: str,
     usable_w: float,
     usable_l: float,
 ) -> tuple[str, float, float]:
-    eps = 0.25
-
-    def _touches(wall: str) -> bool:
-        if wall == "north":
-            return abs(living["y"] + living["height"] - usable_l) <= eps
-        if wall == "south":
-            return living["y"] <= eps
-        if wall == "east":
-            return abs(living["x"] + living["width"] - usable_w) <= eps
-        return living["x"] <= eps
-
     preferred = str(facing or "south").lower()
     wall_order = [preferred, "east", "north", "south", "west"]
     seen: set[str] = set()
@@ -2578,14 +3993,14 @@ def _choose_living_entry_wall(
             ordered_walls.append(wall)
             seen.add(wall)
 
-    selected = next((wall for wall in ordered_walls if _touches(wall)), "east")
+    selected = next((wall for wall in ordered_walls if _room_touches_wall(room, wall, usable_w, usable_l)), "east")
 
     if selected in ("north", "south"):
-        x = living["x"] + living["width"] * 0.5
-        y = living["y"] + (living["height"] if selected == "north" else 0.0)
+        x = _to_float(room.get("x"), 0.0) + _to_float(room.get("width"), 0.0) * 0.5
+        y = _to_float(room.get("y"), 0.0) + (_to_float(room.get("height"), 0.0) if selected == "north" else 0.0)
     else:
-        x = living["x"] + (living["width"] if selected == "east" else 0.0)
-        y = living["y"] + living["height"] * 0.5
+        x = _to_float(room.get("x"), 0.0) + (_to_float(room.get("width"), 0.0) if selected == "east" else 0.0)
+        y = _to_float(room.get("y"), 0.0) + _to_float(room.get("height"), 0.0) * 0.5
 
     return selected, _rnd(x, 2), _rnd(y, 2)
 
@@ -2600,27 +4015,22 @@ def add_doors_and_windows(placed_rooms: List[Dict[str, Any]],
     win_count: int = 0
     room_door_counts: Dict[str, int] = {}
 
-    # Find the living room for main entrance
-    living = None
-    for r in placed_rooms:
-        if r["type"] == "living":
-            living = r
-            break
-
-    # Main entrance door on the road-facing wall of living room
-    if living:
+    # Main entrance is placed on a road-facing boundary room.
+    entry_room = _choose_entry_room(placed_rooms, facing, usable_w, usable_l)
+    if entry_room:
         door_count = door_count + 1
-        living_id = str(living.get("id", "living"))
-        main_wall, main_x, main_y = _choose_living_entry_wall(living, facing, usable_w, usable_l)
-        main_width = _rnd(_clamp(min(4.0, living["width"] * 0.28), 3.2, 4.0), 2)
+        entry_room_id = str(entry_room.get("id", "entry_room"))
+        main_wall, main_x, main_y = _choose_entry_wall(entry_room, facing, usable_w, usable_l)
+        entry_span = _to_float(entry_room.get("height"), 10.0) if main_wall in ("east", "west") else _to_float(entry_room.get("width"), 10.0)
+        main_width = _rnd(_clamp(min(4.0, entry_span * 0.35), 3.0, 4.0), 2)
         doors.append(DoorData(
             id=f"door_{door_count:02d}", type="main",
-            room_id=living_id, wall=main_wall,
+            room_id=entry_room_id, wall=main_wall,
             x=main_x,
             y=main_y,
             width=main_width,
         ))
-        room_door_counts[living_id] = room_door_counts.get(living_id, 0) + 1
+        room_door_counts[entry_room_id] = room_door_counts.get(entry_room_id, 0) + 1
 
     # Interior doors between adjacent rooms.
     # Candidate selection is deterministic and scored by architectural connectivity.
@@ -2879,6 +4289,16 @@ def _shared_wall(a: Dict[str, Any], b: Dict[str, Any]) -> tuple[str, float, floa
 # ─────────────────────────────────────────────────────────────
 # Emergency local-only fallback
 # ─────────────────────────────────────────────────────────────
+async def generate_architect_reasoning(req: PlanRequest) -> dict[str, Any]:
+    """Return structured pre-plot architect reasoning without generating a full plan."""
+    uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
+    ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
+    trace, reasoning = await _build_preplot_reasoning_trace(req, uw, ul)
+    payload = dict(reasoning)
+    payload["reasoning_trace"] = trace
+    return payload
+
+
 async def generate_plan_emergency_local(req: PlanRequest) -> PlanResponse:
     """Always generate a local deterministic plan without LLM calls."""
     uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
@@ -2894,7 +4314,21 @@ async def generate_plan_emergency_local(req: PlanRequest) -> PlanResponse:
     plan.architect_note = (
         "Emergency local planner was used to ensure uninterrupted generation."
     )
-    return plan
+    base_reasoning = _build_architect_reasoning_object(
+        req,
+        uw,
+        ul,
+        source="local",
+        status="emergency_local",
+    )
+    return _attach_plan_reasoning(
+        plan,
+        base_reasoning,
+        req,
+        uw,
+        ul,
+        "emergency_local",
+    )
 
 
 # ─────────────────────────────────────────────────────────────

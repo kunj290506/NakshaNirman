@@ -4,9 +4,10 @@ Configuration — loads environment variables for OpenRouter API.
 import os
 from dotenv import load_dotenv
 
-# Load from backend/.env first, fallback to root .env
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+# Load from backend/.env first, then root .env.
+# override=True ensures stale shell env vars do not pin old runtime behavior.
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"), override=True)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_KEY_SECONDARY = os.getenv("OPENROUTER_API_KEY_SECONDARY", "")
@@ -17,6 +18,9 @@ OPENROUTER_PLAN_MODEL = os.getenv("OPENROUTER_PLAN_MODEL", OPENROUTER_MODEL)
 OPENROUTER_BASE_URL = os.getenv(
     "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
 )
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
 # Public no-key fallback provider (OpenAI-compatible) used when OpenRouter
 # is unavailable or quota-restricted.
@@ -34,6 +38,11 @@ PUBLIC_LLM_FALLBACK_MODEL = os.getenv(
 # deterministic completion when external providers are slow.
 FAST_FALLBACK_MODE = os.getenv(
     "FAST_FALLBACK_MODE", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+# Enables a pre-plot architect reasoning stage (deterministic + optional LLM advisory).
+ARCHITECT_REASONING_ENABLED = os.getenv(
+    "ARCHITECT_REASONING_ENABLED", "true"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 # Force deterministic local planning (skip external LLM variability).

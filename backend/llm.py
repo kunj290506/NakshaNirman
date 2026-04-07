@@ -99,15 +99,27 @@ def _build_compact_plan_messages(user_message: str) -> list[dict[str, str]]:
     """Build a shorter, schema-focused prompt for public fallback providers."""
     msg = str(user_message or "")
 
-    m_dims = re.search(r"Usable:\s*([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)ft", msg, flags=re.IGNORECASE)
+    m_dims = re.search(
+        r"(?:Usable:\s*|plot\s+usable\s+area\s+is\s*)([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(?:ft|feet))?",
+        msg,
+        flags=re.IGNORECASE,
+    )
     usable_w = m_dims.group(1) if m_dims else "33"
     usable_l = m_dims.group(2) if m_dims else "28.5"
 
-    m_bhk = re.search(r"BRIEF:.*?(\d+)BHK", msg, flags=re.IGNORECASE | re.DOTALL)
+    m_bhk = re.search(r"(?:BRIEF:.*?(\d+)BHK|(\d+)\s*BHK)", msg, flags=re.IGNORECASE | re.DOTALL)
     bhk = m_bhk.group(1) if m_bhk else "2"
+    if m_bhk and not bhk:
+        bhk = m_bhk.group(2) or "2"
 
-    m_facing = re.search(r"BRIEF:.*?(north|south|east|west)-facing", msg, flags=re.IGNORECASE | re.DOTALL)
-    facing = (m_facing.group(1).lower() if m_facing else "south")
+    m_facing = re.search(
+        r"(?:BRIEF:.*?(north|south|east|west)-facing|facing\s+(north|south|east|west))",
+        msg,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    facing = "south"
+    if m_facing:
+        facing = (m_facing.group(1) or m_facing.group(2) or "south").lower()
 
     m_extras = re.search(r"Extras:\s*(.+)", msg, flags=re.IGNORECASE)
     extras = (m_extras.group(1).strip() if m_extras else "none")
@@ -364,7 +376,7 @@ def _synthesize_plan_from_llm_text(user_message: str, raw_text: str) -> dict | N
         return None
 
     dims = re.search(
-        r"Usable:\s*([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)ft",
+        r"(?:Usable:\s*|plot\s+usable\s+area\s+is\s*)([0-9]+(?:\.[0-9]+)?)\s*[x×]\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(?:ft|feet))?",
         str(user_message or ""),
         flags=re.IGNORECASE,
     )
@@ -374,8 +386,11 @@ def _synthesize_plan_from_llm_text(user_message: str, raw_text: str) -> dict | N
     uw = max(16.0, float(dims.group(1)))
     ul = max(18.0, float(dims.group(2)))
 
-    m_bhk = re.search(r"BRIEF:.*?(\d+)BHK", str(user_message or ""), flags=re.IGNORECASE | re.DOTALL)
-    bhk = max(1, min(4, int(m_bhk.group(1)) if m_bhk else 2))
+    m_bhk = re.search(r"(?:BRIEF:.*?(\d+)BHK|(\d+)\s*BHK)", str(user_message or ""), flags=re.IGNORECASE | re.DOTALL)
+    bhk_val = "2"
+    if m_bhk:
+        bhk_val = m_bhk.group(1) or m_bhk.group(2) or "2"
+    bhk = max(1, min(4, int(bhk_val)))
 
     corridor_w = 3.5
     front_h = 11.0

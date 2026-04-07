@@ -58,7 +58,7 @@ echo [4/4] Starting servers...
 echo.
 
 :: Start backend in a new window
-start "CAD-Backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+start "CAD-Backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8010 --reload"
 
 :: Give backend a moment
 timeout /t 2 /nobreak >nul
@@ -67,9 +67,9 @@ timeout /t 2 /nobreak >nul
 start "CAD-Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo ============================================
-echo   Backend:  http://localhost:8000
+echo   Backend:  http://localhost:8010
 echo   Frontend: http://localhost:5173
-echo   API Docs: http://localhost:8000/docs
+echo   API Docs: http://localhost:8010/api/docs
 echo ============================================
 echo.
 echo Close this window and the server windows to stop.
