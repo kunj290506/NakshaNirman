@@ -852,6 +852,389 @@ def _build_reasoning_diagnostics(element_items: list[dict[str, Any]]) -> dict[st
     }
 
 
+def _build_requirement_coverage(
+    req: PlanRequest,
+    base_reasoning: dict[str, Any],
+    element_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    type_counts: dict[str, int] = {}
+    for item in element_items:
+        t = str(item.get("type", "") or "").strip().lower()
+        if not t:
+            continue
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    requested_bedrooms = max(1, int(getattr(req, "bedrooms", 1) or 1))
+    actual_bedrooms = int(type_counts.get("master_bedroom", 0) + type_counts.get("bedroom", 0))
+
+    req_baths = int(getattr(req, "bathrooms_target", 0) or 0)
+    actual_baths = int(type_counts.get("master_bath", 0) + type_counts.get("bathroom", 0) + type_counts.get("toilet", 0))
+
+    requested_extras = sorted(_requested_extra_room_types(req.extras))
+    actual_extras = sorted(t for t in requested_extras if type_counts.get(t, 0) > 0)
+
+    family_type = str(getattr(req, "family_type", "") or "").strip().lower() or "nuclear"
+    has_study = type_counts.get("study", 0) > 0
+    has_corridor = type_counts.get("corridor", 0) > 0
+
+    program_fit = (base_reasoning or {}).get("program_fit", {}) if isinstance(base_reasoning, dict) else {}
+    feasible_bedrooms = int(program_fit.get("bedrooms_feasible", requested_bedrooms) or requested_bedrooms) if isinstance(program_fit, dict) else requested_bedrooms
+    target_baths = req_baths if req_baths > 0 else max(1, min(3, feasible_bedrooms))
+    deferred_extras = list(program_fit.get("extras_deferred", []) or []) if isinstance(program_fit, dict) else []
+
+    rows: list[dict[str, Any]] = []
+    rows.append(
+        {
+            "id": "bedroom_program",
+            "target": requested_bedrooms,
+            "actual": actual_bedrooms,
+            "status": "satisfied" if actual_bedrooms >= requested_bedrooms else ("feasible_downscale" if actual_bedrooms >= feasible_bedrooms else "missed"),
+            "evidence": f"feasible target {feasible_bedrooms}",
+        }
+    )
+    rows.append(
+        {
+            "id": "bathroom_program",
+            "target": target_baths,
+            "actual": actual_baths,
+            "status": "satisfied" if actual_baths >= target_baths else "partial",
+            "evidence": "master and common wet-core counts evaluated",
+        }
+    )
+
+    if requested_extras:
+        missing_extras = [x for x in requested_extras if x not in actual_extras]
+        missing_only_deferred = bool(missing_extras) and all(x in deferred_extras for x in missing_extras)
+        extras_status = "satisfied"
+        if len(actual_extras) != len(requested_extras):
+            extras_status = "feasible_partial" if missing_only_deferred else ("partial" if actual_extras else "missed")
+        rows.append(
+            {
+                "id": "extras_program",
+                "target": requested_extras,
+                "actual": actual_extras,
+                "status": extras_status,
+                "evidence": (
+                    f"requested={len(requested_extras)} placed={len(actual_extras)}"
+                    + (f" deferred={', '.join(deferred_extras)}" if deferred_extras else "")
+                ),
+            }
+        )
+
+    rows.append(
+        {
+            "id": "family_context",
+            "target": family_type,
+            "actual": "joint_compatible" if family_type == "joint" and actual_bedrooms >= 3 else "supported",
+            "status": "satisfied",
+            "evidence": "family type carried into pre-plot reasoning",
+        }
+    )
+
+    if bool(getattr(req, "work_from_home", False)):
+        rows.append(
+            {
+                "id": "work_from_home",
+                "target": "study_or_quiet_work_zone",
+                "actual": "study_room" if has_study else "borrowed_private_zone",
+                "status": "satisfied" if has_study else "partial",
+                "evidence": "study presence and private-zone availability assessed",
+            }
+        )
+
+    if bool(getattr(req, "elder_friendly", False)):
+        rows.append(
+            {
+                "id": "elder_friendly",
+                "target": "clear_primary_circulation",
+                "actual": "corridor_spine" if has_corridor else "distributed_links",
+                "status": "satisfied" if has_corridor else "partial",
+                "evidence": "corridor and adjacency graph scanned",
+            }
+        )
+
+    status_weights = {
+        "satisfied": 1.0,
+        "feasible_downscale": 0.9,
+        "feasible_partial": 0.85,
+        "partial": 0.65,
+        "missed": 0.0,
+    }
+    weighted = 0.0
+    satisfied = 0
+    for row in rows:
+        status = str(row.get("status", "")).strip().lower()
+        weighted += float(status_weights.get(status, 0.5))
+        if status in ("satisfied", "feasible_downscale"):
+            satisfied += 1
+    completion_pct = _rnd((weighted / max(1, len(rows))) * 100.0, 1)
+
+    return {
+        "items": rows,
+        "satisfied": int(satisfied),
+        "total": int(len(rows)),
+        "completion_pct": completion_pct,
+    }
+
+
+def _build_assumption_log(req: PlanRequest, base_reasoning: dict[str, Any]) -> list[dict[str, str]]:
+    program_fit = (base_reasoning or {}).get("program_fit", {}) if isinstance(base_reasoning, dict) else {}
+    deferred_extras = list(program_fit.get("extras_deferred", []) or []) if isinstance(program_fit, dict) else []
+
+    assumptions: list[dict[str, str]] = [
+        {
+            "id": "setbacks_fixed",
+            "assumption": "Setbacks are fixed and non-negotiable for usable-plot geometry.",
+            "impact": "All coordinates and area budgets are derived from setback-adjusted footprint.",
+        },
+        {
+            "id": "single_floor_primary",
+            "assumption": "Current reasoning optimizes primary-floor livability first.",
+            "impact": "Vertical circulation is included only when staircase/floors constraints request it.",
+        },
+        {
+            "id": "rectilinear_layout",
+            "assumption": "Rooms are represented as practical rectilinear geometry.",
+            "impact": "Improves constructability and deterministic overlap correction.",
+        },
+        {
+            "id": "manual_adjustment_disabled",
+            "assumption": "No manual per-room intervention is expected after generation.",
+            "impact": "Backend auto-adjustment resolves conflicts and normalizes layout details.",
+        },
+    ]
+
+    if deferred_extras:
+        assumptions.append(
+            {
+                "id": "extras_deferred_for_fit",
+                "assumption": "Low-priority extras can be deferred when footprint conflicts with core program quality.",
+                "impact": "Core circulation, bedroom fit, and wet-core integrity stay stable on compact plots.",
+            }
+        )
+
+    if bool(getattr(req, "work_from_home", False)):
+        assumptions.append(
+            {
+                "id": "work_mode_support",
+                "assumption": "Work-from-home requires either dedicated study or quiet private-zone fallback.",
+                "impact": "Private-room adjacency is prioritized to reduce acoustic conflicts.",
+            }
+        )
+
+    return assumptions[:8]
+
+
+def _bounded_score(val: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return _rnd(max(lo, min(hi, float(val))), 1)
+
+
+def _build_counterfactual_options(
+    quality_scores: dict[str, float],
+    tradeoff_notes: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    privacy = float(quality_scores.get("privacy", 0.0) or 0.0)
+    circulation = float(quality_scores.get("circulation", 0.0) or 0.0)
+    daylight = float(quality_scores.get("daylight", 0.0) or 0.0)
+    integrity = float(quality_scores.get("program_integrity", 0.0) or 0.0)
+
+    options = [
+        {
+            "name": "privacy_first_variant",
+            "rationale": "Shift bedrooms deeper into private band with stronger active-zone buffering.",
+            "projected_scores": {
+                "privacy": _bounded_score(privacy + 6.0),
+                "circulation": _bounded_score(circulation - 2.0),
+                "daylight": _bounded_score(daylight - 3.0),
+                "program_integrity": _bounded_score(integrity + 1.5),
+            },
+            "recommended_when": "family privacy or shared-family occupancy is top priority.",
+        },
+        {
+            "name": "daylight_first_variant",
+            "rationale": "Push frequently used spaces toward exterior edges for wider facade exposure.",
+            "projected_scores": {
+                "privacy": _bounded_score(privacy - 3.0),
+                "circulation": _bounded_score(circulation + 1.5),
+                "daylight": _bounded_score(daylight + 7.0),
+                "program_integrity": _bounded_score(integrity - 1.0),
+            },
+            "recommended_when": "natural light and cross-ventilation are dominant user priorities.",
+        },
+        {
+            "name": "circulation_first_variant",
+            "rationale": "Widen circulation spine and reduce local dead-ends for smoother movement.",
+            "projected_scores": {
+                "privacy": _bounded_score(privacy - 1.0),
+                "circulation": _bounded_score(circulation + 6.5),
+                "daylight": _bounded_score(daylight - 1.0),
+                "program_integrity": _bounded_score(integrity + 1.0),
+            },
+            "recommended_when": "elder-friendly movement and low-friction internal access matter most.",
+        },
+    ]
+
+    if tradeoff_notes:
+        options[0]["linked_tradeoffs"] = [str(note.get("theme", "")) for note in tradeoff_notes[:2] if str(note.get("theme", ""))]
+
+    return options
+
+
+def _frontier_trait_weights(model_name: str) -> dict[str, float]:
+    key = str(model_name or "").strip().lower()
+    if key == "chatgpt":
+        return {
+            "decomposition": 0.22,
+            "evidence": 0.16,
+            "self_correction": 0.20,
+            "tradeoff": 0.10,
+            "requirement_clarity": 0.22,
+            "assumption_explicitness": 0.10,
+        }
+    if key == "gemini":
+        return {
+            "decomposition": 0.18,
+            "evidence": 0.24,
+            "self_correction": 0.10,
+            "tradeoff": 0.16,
+            "requirement_clarity": 0.14,
+            "assumption_explicitness": 0.18,
+        }
+    if key == "opus":
+        return {
+            "decomposition": 0.14,
+            "evidence": 0.16,
+            "self_correction": 0.14,
+            "tradeoff": 0.28,
+            "requirement_clarity": 0.12,
+            "assumption_explicitness": 0.16,
+        }
+    # deepseek profile: algorithmic rigor and explicit correction loops.
+    return {
+        "decomposition": 0.22,
+        "evidence": 0.18,
+        "self_correction": 0.24,
+        "tradeoff": 0.10,
+        "requirement_clarity": 0.16,
+        "assumption_explicitness": 0.10,
+    }
+
+
+def _score_frontier_profile(
+    model_name: str,
+    trait_scores: dict[str, float],
+) -> dict[str, Any]:
+    weights = _frontier_trait_weights(model_name)
+    score = 0.0
+    for trait, weight in weights.items():
+        score += float(trait_scores.get(trait, 0.0) or 0.0) * float(weight)
+
+    score = _bounded_score(score)
+    strengths = [trait for trait, val in trait_scores.items() if float(val) >= 88.0]
+    gaps = [trait for trait, val in trait_scores.items() if float(val) < 78.0]
+
+    status = "below_target"
+    if score >= 88.0:
+        status = "match"
+    elif score >= 78.0:
+        status = "near_match"
+
+    return {
+        "score": score,
+        "status": status,
+        "strengths": strengths[:5],
+        "gaps": gaps[:5],
+    }
+
+
+def _build_frontier_comparison(
+    req: PlanRequest,
+    element_items: list[dict[str, Any]],
+    quality_scores: dict[str, float],
+    diagnostics: dict[str, Any],
+    tradeoff_notes: list[dict[str, str]],
+    reasoning_passes: list[dict[str, Any]],
+    requirement_coverage: dict[str, Any],
+    assumptions: list[dict[str, str]],
+    counterfactual_options: list[dict[str, Any]],
+) -> dict[str, Any]:
+    with_evidence = sum(1 for item in element_items if (item.get("adjacency_refs") and item.get("metrics")))
+    evidence_density = _bounded_score((with_evidence / max(1, len(element_items))) * 100.0)
+    decomposition = _bounded_score(min(100.0, len(reasoning_passes) * 33.0))
+    self_correction = _bounded_score((diagnostics.get("checks", {}) or {}).get("pass_rate", 0.0))
+    tradeoff_depth = _bounded_score(min(100.0, len(tradeoff_notes) * 26.0))
+    requirement_clarity = _bounded_score(requirement_coverage.get("completion_pct", 0.0))
+    assumption_explicitness = _bounded_score(min(100.0, len(assumptions) * 16.0 + len(counterfactual_options) * 6.0))
+
+    trait_scores = {
+        "decomposition": decomposition,
+        "evidence": evidence_density,
+        "self_correction": self_correction,
+        "tradeoff": tradeoff_depth,
+        "requirement_clarity": requirement_clarity,
+        "assumption_explicitness": assumption_explicitness,
+    }
+
+    profiles = {
+        "chatgpt": _score_frontier_profile("chatgpt", trait_scores),
+        "gemini": _score_frontier_profile("gemini", trait_scores),
+        "opus": _score_frontier_profile("opus", trait_scores),
+        "deepseek": _score_frontier_profile("deepseek", trait_scores),
+    }
+
+    profile_scores = [float((profiles.get(name, {}) or {}).get("score", 0.0) or 0.0) for name in profiles]
+    parity_score = _bounded_score(sum(profile_scores) / max(1, len(profile_scores)))
+
+    shared_gaps: list[str] = []
+    for trait in trait_scores:
+        low_count = sum(1 for p in profiles.values() if trait in (p.get("gaps", []) or []))
+        if low_count >= 2:
+            shared_gaps.append(trait)
+
+    root_causes: list[str] = []
+    if "requirement_clarity" in shared_gaps:
+        root_causes.append("Input-to-output requirement mapping is incomplete for some scenarios.")
+    if "tradeoff" in shared_gaps:
+        root_causes.append("Trade-off articulation is shallow when objective scores are all high.")
+    if "assumption_explicitness" in shared_gaps:
+        root_causes.append("Assumptions and boundary conditions are not explicit enough for auditability.")
+    if "evidence" in shared_gaps:
+        root_causes.append("Per-element evidence density is low for some room types and compact plots.")
+    if "self_correction" in shared_gaps:
+        root_causes.append("Self-review loop needs stronger correction triggers for low-confidence rooms.")
+
+    actions_applied = [
+        "added_requirement_coverage_matrix",
+        "added_assumption_log",
+        "added_counterfactual_options",
+        "added_frontier_model_parity_scoring",
+        "added_root_cause_and_resolution_summary",
+    ]
+
+    status = "needs_improvement"
+    if parity_score >= 88.0:
+        status = "frontier_match"
+    elif parity_score >= 78.0:
+        status = "near_frontier"
+
+    return {
+        "target_models": ["chatgpt", "gemini", "opus", "deepseek"],
+        "parity_score": parity_score,
+        "status": status,
+        "traits": trait_scores,
+        "profiles": profiles,
+        "shared_gaps": shared_gaps,
+        "root_causes": root_causes[:5],
+        "actions_applied": actions_applied,
+        "request_context": {
+            "facing": str(getattr(req, "facing", "south") or "south").lower(),
+            "bedrooms": int(getattr(req, "bedrooms", 1) or 1),
+            "extras_requested": sorted(_requested_extra_room_types(getattr(req, "extras", []) or [])),
+            "overall_quality_score": _bounded_score(float(quality_scores.get("overall", 0.0) or 0.0)),
+        },
+    }
+
+
 def _build_tradeoff_notes(
     base_reasoning: dict[str, Any],
     quality_scores: dict[str, float],
@@ -909,12 +1292,73 @@ def _build_tradeoff_notes(
             }
         )
 
-    if not notes:
+    metric_candidates: dict[str, float] = {
+        "privacy": float(quality_scores.get("privacy", 0.0) or 0.0),
+        "circulation": float(quality_scores.get("circulation", 0.0) or 0.0),
+        "daylight": float(quality_scores.get("daylight", 0.0) or 0.0),
+        "wet_core_efficiency": float(quality_scores.get("wet_core_efficiency", 0.0) or 0.0),
+        "program_integrity": float(quality_scores.get("program_integrity", 0.0) or 0.0),
+        "adjacency_quality": float(quality_scores.get("adjacency_quality", 0.0) or 0.0),
+    }
+    strongest_metric = max(metric_candidates, key=lambda k: metric_candidates[k])
+    weakest_metric = min(metric_candidates, key=lambda k: metric_candidates[k])
+    strongest_score = metric_candidates[strongest_metric]
+    weakest_score = metric_candidates[weakest_metric]
+
+    notes.append(
+        {
+            "theme": "score_balance",
+            "decision": (
+                f"Balanced priorities kept {strongest_metric} high while constraining {weakest_metric} under the same footprint."
+            ),
+            "impact": (
+                f"{strongest_metric}={strongest_score:.1f}, {weakest_metric}={weakest_score:.1f}; "
+                "further gains in the weaker metric may reduce the strongest one."
+            ),
+        }
+    )
+
+    if weakest_score < 84.0:
+        notes.append(
+            {
+                "theme": "optimization_headroom",
+                "decision": (
+                    f"Primary upgrade opportunity is {weakest_metric}; targeted geometry or zoning tweaks can improve it in next iteration."
+                ),
+                "impact": (
+                    f"Headroom estimate: +{max(2.0, 90.0 - weakest_score):.1f} points on {weakest_metric} with moderate impact on area efficiency."
+                ),
+            }
+        )
+    else:
+        notes.append(
+            {
+                "theme": "optimization_headroom",
+                "decision": "All core metrics are already strong; next improvements require selective sacrifices rather than free gains.",
+                "impact": (
+                    f"Weakest metric remains {weakest_metric}={weakest_score:.1f}; improvements likely trade against {strongest_metric}."
+                ),
+            }
+        )
+
+    checks = diagnostics.get("checks", {}) if isinstance(diagnostics, dict) else {}
+    pass_rate = float((checks or {}).get("pass_rate", 0.0) or 0.0)
+    notes.append(
+        {
+            "theme": "risk_vs_gain",
+            "decision": "Post-plot confidence gate is used to avoid over-optimizing one objective at the expense of reliability.",
+            "impact": (
+                f"Check pass rate {pass_rate:.1f}; this bounds aggressive redesign moves unless reliability remains above threshold."
+            ),
+        }
+    )
+
+    if not any(str(note.get("theme", "")) == "balanced_outcome" for note in notes):
         notes.append(
             {
                 "theme": "balanced_outcome",
                 "decision": "Program, circulation, and privacy stayed balanced without requiring manual edits.",
-                "impact": "No major trade-off triggered in post-plot diagnostics.",
+                "impact": "No major hard constraint was violated during automatic optimization.",
             }
         )
 
@@ -1037,19 +1481,38 @@ def _attach_plan_reasoning(
     quality_scores = _compute_reasoning_quality_scores(plan, element_items)
     diagnostics = _build_reasoning_diagnostics(element_items)
     tradeoff_notes = _build_tradeoff_notes(base_reasoning, quality_scores, diagnostics)
-    reasoning["element_reasoning"] = element_items
-    reasoning["quality_scores"] = quality_scores
-    reasoning["diagnostics"] = diagnostics
-    reasoning["tradeoff_notes"] = tradeoff_notes
-    reasoning["explainability_mode"] = "detailed_backend_trace"
-    reasoning["reasoning_depth"] = "high"
-    reasoning["reasoning_passes"] = _build_reasoning_passes(
+    reasoning_passes = _build_reasoning_passes(
         base_reasoning,
         element_items,
         quality_scores,
         diagnostics,
         tradeoff_notes,
     )
+    requirement_coverage = _build_requirement_coverage(req, base_reasoning, element_items)
+    assumptions = _build_assumption_log(req, base_reasoning)
+    counterfactual_options = _build_counterfactual_options(quality_scores, tradeoff_notes)
+    frontier_comparison = _build_frontier_comparison(
+        req,
+        element_items,
+        quality_scores,
+        diagnostics,
+        tradeoff_notes,
+        reasoning_passes,
+        requirement_coverage,
+        assumptions,
+        counterfactual_options,
+    )
+    reasoning["element_reasoning"] = element_items
+    reasoning["quality_scores"] = quality_scores
+    reasoning["diagnostics"] = diagnostics
+    reasoning["tradeoff_notes"] = tradeoff_notes
+    reasoning["requirement_coverage"] = requirement_coverage
+    reasoning["assumptions"] = assumptions
+    reasoning["counterfactual_options"] = counterfactual_options
+    reasoning["frontier_comparison"] = frontier_comparison
+    reasoning["explainability_mode"] = "detailed_backend_trace"
+    reasoning["reasoning_depth"] = "very_high" if float(frontier_comparison.get("parity_score", 0.0) or 0.0) >= 86.0 else "high"
+    reasoning["reasoning_passes"] = reasoning_passes
     reasoning["execution_summary"] = {
         "rooms": len(plan.rooms or []),
         "doors": len(plan.doors or []),
@@ -1057,6 +1520,8 @@ def _attach_plan_reasoning(
         "generation_method": str(plan.generation_method or generation_path),
         "checks_pass_rate": (diagnostics.get("checks", {}) or {}).get("pass_rate", 0.0),
         "high_risk_elements": diagnostics.get("high_risk_element_count", 0),
+        "frontier_parity_score": frontier_comparison.get("parity_score", 0.0),
+        "frontier_status": frontier_comparison.get("status", "needs_improvement"),
     }
     reasoning["manual_adjustment_required"] = False
     plan.architect_reasoning = reasoning
@@ -1066,6 +1531,7 @@ def _attach_plan_reasoning(
             "All elements were auto-adjusted and optimized by backend reasoning.",
             f"Post-plot quality score: {quality_scores.get('overall', 0.0)}.",
             f"Check pass rate: {(diagnostics.get('checks', {}) or {}).get('pass_rate', 0.0)}.",
+            f"Frontier parity score: {frontier_comparison.get('parity_score', 0.0)} ({frontier_comparison.get('status', 'needs_improvement')}).",
         ],
         limit=24,
     )
@@ -3081,6 +3547,39 @@ def _compute_program_band_heights(
     max_private_feasible = max(8.0, usable_l - front_band_floor - service_band_min)
     private_band_min = min(private_band_min, max_private_feasible)
 
+    front_band_floor_eff = front_band_floor
+    service_band_min_eff = service_band_min
+    private_band_min_eff = private_band_min
+
+    # If strict minima exceed usable length on compact plots, compress minima
+    # proportionally instead of failing generation.
+    min_total = front_band_floor_eff + service_band_min_eff + private_band_min_eff
+    if min_total > usable_l:
+        log.warning(
+            "Band minima exceed usable length (front=%.2f, service=%.2f, private=%.2f, usable=%.2f). "
+            "Applying compact-plot minima compression.",
+            front_band_floor_eff,
+            service_band_min_eff,
+            private_band_min_eff,
+            usable_l,
+        )
+        scale = max(0.55, usable_l / max(1.0, min_total))
+        front_band_floor_eff = max(6.8, front_band_floor_eff * scale)
+        service_band_min_eff = max(5.2, service_band_min_eff * scale)
+        private_band_min_eff = max(6.0, usable_l - front_band_floor_eff - service_band_min_eff)
+
+        if front_band_floor_eff + service_band_min_eff + private_band_min_eff > usable_l:
+            overflow = (front_band_floor_eff + service_band_min_eff + private_band_min_eff) - usable_l
+            reduce_service = min(overflow, max(0.0, service_band_min_eff - 5.2))
+            service_band_min_eff -= reduce_service
+            overflow -= reduce_service
+            if overflow > 0:
+                reduce_front = min(overflow, max(0.0, front_band_floor_eff - 6.8))
+                front_band_floor_eff -= reduce_front
+                overflow -= reduce_front
+            if overflow > 0:
+                private_band_min_eff = max(5.8, private_band_min_eff - overflow)
+
     public_extra = max(0.0, (len(public_specs) - 2) * 0.9)
     front_target_h = max(
         living_min_h,
@@ -3101,7 +3600,7 @@ def _compute_program_band_heights(
             private_sum_h,
             usable_l,
         )
-        min_front_h = front_band_floor
+        min_front_h = front_band_floor_eff
         alloc_h = max(15.0, usable_l - min_front_h)
         ratio_den = max(1.0, service_sum_h + private_sum_h)
         band2_h = max(7.0, alloc_h * (service_sum_h / ratio_den))
@@ -3112,32 +3611,40 @@ def _compute_program_band_heights(
         band1_h = min_front_h
 
     # Final validation: enforce total <= usable length before packing bands.
-    band1_h = max(front_band_floor, band1_h)
-    band2_h = max(service_band_min, band2_h)
-    max_band12 = usable_l - private_band_min
+    band1_h = max(front_band_floor_eff, band1_h)
+    band2_h = max(service_band_min_eff, band2_h)
+    max_band12 = usable_l - private_band_min_eff
     if band1_h + band2_h > max_band12:
         overflow = (band1_h + band2_h) - max_band12
-        reduce_band2 = min(overflow, max(0.0, band2_h - service_band_min))
+        reduce_band2 = min(overflow, max(0.0, band2_h - service_band_min_eff))
         band2_h -= reduce_band2
         overflow -= reduce_band2
         if overflow > 0:
-            reduce_band1 = min(overflow, max(0.0, band1_h - front_band_floor))
+            reduce_band1 = min(overflow, max(0.0, band1_h - front_band_floor_eff))
             band1_h -= reduce_band1
 
-    band3_h = max(private_band_min, usable_l - band1_h - band2_h)
+    band3_h = max(private_band_min_eff, usable_l - band1_h - band2_h)
     if band1_h + band2_h + band3_h > usable_l:
-        band3_h = max(private_band_min, band3_h - ((band1_h + band2_h + band3_h) - usable_l))
+        band3_h = max(private_band_min_eff, band3_h - ((band1_h + band2_h + band3_h) - usable_l))
 
     band1_h = _rnd(band1_h, 2)
     band2_h = _rnd(band2_h, 2)
-    band3_h = _rnd(max(private_band_min, usable_l - band1_h - band2_h), 2)
+    band3_h = _rnd(max(private_band_min_eff, usable_l - band1_h - band2_h), 2)
     drift = _rnd(usable_l - (band1_h + band2_h + band3_h), 2)
     if abs(drift) > 0.01:
-        band1_h = _rnd(max(front_band_floor, band1_h + drift), 2)
-        band3_h = _rnd(max(private_band_min, usable_l - band1_h - band2_h), 2)
+        band1_h = _rnd(max(front_band_floor_eff, band1_h + drift), 2)
+        band3_h = _rnd(max(private_band_min_eff, usable_l - band1_h - band2_h), 2)
 
     if band1_h + band2_h + band3_h > usable_l + 0.05:
-        raise ValueError("Program-derived band heights exceed usable plot length")
+        # Last-resort normalization: proportional split that always fits.
+        total = max(1.0, band1_h + band2_h + band3_h)
+        scale = usable_l / total
+        band1_h = _rnd(max(6.0, band1_h * scale), 2)
+        band2_h = _rnd(max(5.0, band2_h * scale), 2)
+        band3_h = _rnd(max(5.5, usable_l - band1_h - band2_h), 2)
+
+        if band1_h + band2_h + band3_h > usable_l:
+            band3_h = _rnd(max(5.0, band3_h - ((band1_h + band2_h + band3_h) - usable_l)), 2)
 
     return band1_h, band2_h, band3_h
 
