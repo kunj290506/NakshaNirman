@@ -1,7 +1,6 @@
 """
-LLM caller — async functions that hit OpenRouter and return parsed JSON.
-Uses a chain of free models: if one is rate-limited (429), tries the next.
-Optimized for architectural correctness — reasoning models first with longer timeouts.
+LLM caller — async functions that hit a local OpenAI-compatible model server.
+Uses a local model chain and deterministic-safe JSON repair before planner fallback.
 """
 from __future__ import annotations
 import asyncio
@@ -9,41 +8,24 @@ import json
 import logging
 import re
 import time
-import uuid
 import httpx
 from config import (
-    OPENROUTER_API_KEY,
-    OPENROUTER_API_KEY_SECONDARY,
-    OPENROUTER_BASE_URL,
-    OPENROUTER_MODEL,
-    OPENROUTER_PLAN_MODEL,
-    PUBLIC_LLM_FALLBACK_ENABLED,
-    PUBLIC_LLM_FALLBACK_MODEL,
-    PUBLIC_LLM_FALLBACK_URL,
+    LOCAL_LLM_ADVISORY_MODEL,
+    LOCAL_LLM_BACKUP_MODEL,
+    LOCAL_LLM_BASE_URL,
+    LOCAL_LLM_ENABLED,
+    LOCAL_LLM_MODEL,
+    LOCAL_LLM_PLAN_MODEL,
 )
 
 log = logging.getLogger("llm")
 
 # ── Fallback model chains — ordered by speed/reliability ─────
-FALLBACK_PLAN_MODELS = [
-    # Previously the chain preferred fast coders and truncated reasoning.
-    # Reordered for spatial reasoning strength in floor planning tasks.
-    "deepseek/deepseek-r1",
-    "google/gemma-3-27b-it",
-    "qwen/qwen3-coder",
-]
+FALLBACK_PLAN_MODELS = [LOCAL_LLM_PLAN_MODEL, LOCAL_LLM_BACKUP_MODEL, LOCAL_LLM_MODEL]
 
-FALLBACK_ADVICE_MODELS = [
-    "qwen/qwen3-coder:free",
-    "qwen/qwen3.6-plus:free",
-    "google/gemma-3-27b-it:free",
-]
+FALLBACK_ADVICE_MODELS = [LOCAL_LLM_ADVISORY_MODEL, LOCAL_LLM_MODEL, LOCAL_LLM_BACKUP_MODEL]
 
-BACKUP_PLAN_MODELS = [
-    "google/gemma-3-27b-it",
-    "qwen/qwen3-coder",
-    "meta-llama/llama-3.3-70b-instruct",
-]
+BACKUP_PLAN_MODELS = [LOCAL_LLM_BACKUP_MODEL, LOCAL_LLM_MODEL]
 
 # Cache temporarily unavailable models so repeated retries don't waste
 # generation windows on known 429/402 responses.
@@ -58,14 +40,9 @@ REASONING_GUARD = (
 )
 
 
-def _build_openrouter_headers(api_key: str, request_id: str) -> dict[str, str]:
+def _build_local_headers(request_id: str) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://nakshanirman.app",
-        "X-Title": "NakshaNirman",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
         "X-Request-Id": request_id,
     }
 

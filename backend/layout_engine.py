@@ -18,7 +18,7 @@ from models import (
     PlanRequest, PlanResponse, PlotInfo,
     RoomData, DoorData, WindowData, Point2D,
 )
-from llm import call_openrouter, call_openrouter_plan
+from llm import call_openrouter, call_openrouter_plan, call_openrouter_plan_backup
 from prompt_builder import build_master_prompt
 from plan_validator import validate_draft, validate_final
 from config import (
@@ -41,13 +41,14 @@ log = logging.getLogger("layout_engine")
 # ─────────────────────────────────────────────────────────────
 SETBACKS = {"front": 6.5, "rear": 5.0, "left": 3.5, "right": 3.5}
 OPENROUTER_ATTEMPT_TIMEOUT_SEC = 45
+OPENROUTER_BACKUP_ATTEMPT_TIMEOUT_SEC = 40
 CLAUDE_API_TIMEOUT_SEC = 30
 CLAUDE_ATTEMPT_DEADLINE_SEC = 35
 ARCHITECT_REASONING_TIMEOUT_SEC = 14
 
 LOGICAL_ADJ_MIN_SCORE = 72.0 if FAST_FALLBACK_MODE else 68.0
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Awaitable
 
 # ─── Default room colors ────────────────────────────────────
 ROOM_COLORS: Dict[str, str] = {
@@ -476,7 +477,16 @@ def _extract_llm_architect_reasoning(data: dict[str, Any]) -> list[str]:
     for item in _coerce_reasoning_items(advisory.get("risks"), max_items=1):
         trace.append(f"LLM risk note: {item}")
 
-    return _normalize_reasoning_lines(trace, limit=5)
+    for item in _coerce_reasoning_items(advisory.get("assumptions"), max_items=1):
+        trace.append(f"LLM assumption: {item}")
+
+    for item in _coerce_reasoning_items(advisory.get("edge_case_checks"), max_items=1):
+        trace.append(f"LLM edge check: {item}")
+
+    for item in _coerce_reasoning_items(advisory.get("tradeoff_rules"), max_items=1):
+        trace.append(f"LLM tradeoff rule: {item}")
+
+    return _normalize_reasoning_lines(trace, limit=7)
 
 
 def _build_architect_reasoning_object(
@@ -1147,6 +1157,43 @@ def _score_frontier_profile(
     }
 
 
+def _frontier_generation_path_factor(generation_path: str) -> float:
+    key = str(generation_path or "").strip().lower()
+    if key in {"openrouter", "openrouter_backup", "openrouter_retry", "claude", "llm"}:
+        return 1.0
+    if key in {"public_fallback", "plan_backup"}:
+        return 0.92
+    if key in {"bsp_fallback", "bsp"}:
+        return 0.86
+    if key in {"emergency_local", "deterministic_demo"}:
+        return 0.80
+    return 0.90
+
+
+def _candidate_effective_score(reasoning: dict[str, Any], generation_path: str) -> float:
+    fc = (reasoning or {}).get("frontier_comparison", {}) if isinstance(reasoning, dict) else {}
+    q = (reasoning or {}).get("quality_scores", {}) if isinstance(reasoning, dict) else {}
+    rc = (reasoning or {}).get("requirement_coverage", {}) if isinstance(reasoning, dict) else {}
+    diagnostics = (reasoning or {}).get("diagnostics", {}) if isinstance(reasoning, dict) else {}
+
+    parity = float((fc or {}).get("parity_score", 0.0) or 0.0)
+    quality_overall = float((q or {}).get("overall", 0.0) or 0.0)
+    completion_pct = float((rc or {}).get("completion_pct", 0.0) or 0.0)
+    check_pass_rate = float(((diagnostics or {}).get("checks", {}) or {}).get("pass_rate", 0.0) or 0.0)
+
+    grounded_quality = (fc or {}).get("grounded_quality", {}) if isinstance(fc, dict) else {}
+    effective_path = str((grounded_quality or {}).get("generation_path", generation_path) or generation_path)
+    path_factor = _frontier_generation_path_factor(effective_path)
+
+    base_score = (
+        (parity * 0.45)
+        + (quality_overall * 0.25)
+        + (completion_pct * 0.20)
+        + (check_pass_rate * 0.10)
+    )
+    return _bounded_score(base_score * path_factor)
+
+
 def _build_frontier_comparison(
     req: PlanRequest,
     element_items: list[dict[str, Any]],
@@ -1157,6 +1204,7 @@ def _build_frontier_comparison(
     requirement_coverage: dict[str, Any],
     assumptions: list[dict[str, str]],
     counterfactual_options: list[dict[str, Any]],
+    generation_path: str,
 ) -> dict[str, Any]:
     with_evidence = sum(1 for item in element_items if (item.get("adjacency_refs") and item.get("metrics")))
     evidence_density = _bounded_score((with_evidence / max(1, len(element_items))) * 100.0)
@@ -1183,13 +1231,45 @@ def _build_frontier_comparison(
     }
 
     profile_scores = [float((profiles.get(name, {}) or {}).get("score", 0.0) or 0.0) for name in profiles]
-    parity_score = _bounded_score(sum(profile_scores) / max(1, len(profile_scores)))
+    base_parity = _bounded_score(sum(profile_scores) / max(1, len(profile_scores)))
+
+    overall_quality = float(quality_scores.get("overall", 0.0) or 0.0)
+    program_integrity = float(quality_scores.get("program_integrity", 0.0) or 0.0)
+    space_efficiency = float(quality_scores.get("space_efficiency", 0.0) or 0.0)
+    requirement_completion = float(requirement_coverage.get("completion_pct", 0.0) or 0.0)
+    check_pass_rate = float((diagnostics.get("checks", {}) or {}).get("pass_rate", 0.0) or 0.0)
+    high_risk_count = int(diagnostics.get("high_risk_element_count", 0) or 0)
+    element_count = max(1, len(element_items))
+    high_risk_ratio = high_risk_count / element_count
+
+    objective_quality = _bounded_score(
+        (overall_quality * 0.34)
+        + (program_integrity * 0.18)
+        + (requirement_completion * 0.22)
+        + (check_pass_rate * 0.16)
+        + (space_efficiency * 0.10)
+    )
+    quality_gate = 0.72 + (objective_quality / 100.0) * 0.28
+    generation_path_factor = _frontier_generation_path_factor(generation_path)
+
+    risk_penalty = min(12.0, (high_risk_ratio * 100.0) * 0.16)
+    if requirement_completion < 80.0:
+        risk_penalty += 3.0
+    if check_pass_rate < 85.0:
+        risk_penalty += 3.0
+
+    parity_score = _bounded_score((base_parity * quality_gate * generation_path_factor) - risk_penalty)
+    generation_path_key = str(generation_path or "unknown").strip().lower() or "unknown"
+    if generation_path_key in {"bsp_fallback", "bsp", "emergency_local", "deterministic_demo"}:
+        parity_score = min(parity_score, 84.0)
 
     shared_gaps: list[str] = []
     for trait in trait_scores:
         low_count = sum(1 for p in profiles.values() if trait in (p.get("gaps", []) or []))
         if low_count >= 2:
             shared_gaps.append(trait)
+    if objective_quality < 82.0 and "layout_quality_grounding" not in shared_gaps:
+        shared_gaps.append("layout_quality_grounding")
 
     root_causes: list[str] = []
     if "requirement_clarity" in shared_gaps:
@@ -1202,12 +1282,15 @@ def _build_frontier_comparison(
         root_causes.append("Per-element evidence density is low for some room types and compact plots.")
     if "self_correction" in shared_gaps:
         root_causes.append("Self-review loop needs stronger correction triggers for low-confidence rooms.")
+    if "layout_quality_grounding" in shared_gaps:
+        root_causes.append("Narrative reasoning is stronger than geometric outcome quality on difficult inputs.")
 
     actions_applied = [
         "added_requirement_coverage_matrix",
         "added_assumption_log",
         "added_counterfactual_options",
         "added_frontier_model_parity_scoring",
+        "added_quality_grounded_parity_gate",
         "added_root_cause_and_resolution_summary",
     ]
 
@@ -1223,6 +1306,15 @@ def _build_frontier_comparison(
         "status": status,
         "traits": trait_scores,
         "profiles": profiles,
+        "grounded_quality": {
+            "base_parity_score": base_parity,
+            "objective_quality_score": objective_quality,
+            "quality_gate_multiplier": _rnd(quality_gate, 3),
+            "generation_path": generation_path_key,
+            "generation_path_factor": _rnd(generation_path_factor, 2),
+            "high_risk_ratio_pct": _rnd(high_risk_ratio * 100.0, 1),
+            "risk_penalty": _rnd(risk_penalty, 1),
+        },
         "shared_gaps": shared_gaps,
         "root_causes": root_causes[:5],
         "actions_applied": actions_applied,
@@ -1501,6 +1593,7 @@ def _attach_plan_reasoning(
         requirement_coverage,
         assumptions,
         counterfactual_options,
+        generation_path,
     )
     reasoning["element_reasoning"] = element_items
     reasoning["quality_scores"] = quality_scores
@@ -1606,13 +1699,20 @@ async def _build_preplot_reasoning_trace(req: PlanRequest, uw: float, ul: float)
     )
     user_message = (
         "Analyze this request and return only JSON with keys: "
-        "design_strategy (string), priority_order (array), critical_checks (array), risks (array).\n"
+        "design_strategy (string), priority_order (array), critical_checks (array), risks (array), "
+        "assumptions (array), edge_case_checks (array), tradeoff_rules (array).\n"
         f"plot_usable_ft: {uw} x {ul}\n"
         f"road_facing: {str(req.facing).lower()}\n"
         f"requested_bedrooms: {int(req.bedrooms)}\n"
         f"bathrooms_target: {int(getattr(req, 'bathrooms_target', 0) or 0)}\n"
         f"extras: {', '.join(sorted(_requested_extra_room_types(req.extras))) or 'none'}\n"
         f"family_type: {str(getattr(req, 'family_type', '') or '').lower() or 'nuclear'}\n"
+        f"floors: {int(getattr(req, 'floors', 1) or 1)}\n"
+        f"design_style: {str(getattr(req, 'design_style', '') or 'modern').lower()}\n"
+        f"kitchen_preference: {str(getattr(req, 'kitchen_preference', '') or 'semi_open').lower()}\n"
+        f"work_from_home: {bool(getattr(req, 'work_from_home', False))}\n"
+        f"elder_friendly: {bool(getattr(req, 'elder_friendly', False))}\n"
+        f"city: {str(getattr(req, 'city', '') or '').strip()}\n"
         "Keep each item concise and practical."
     )
 
@@ -1886,7 +1986,7 @@ def _polygon_area(points: list[dict[str, float]]) -> float:
 # MAIN PUBLIC API
 # ─────────────────────────────────────────────────────────────
 async def generate_plan(req: PlanRequest) -> PlanResponse:
-    """Generate a floor plan with OpenRouter -> Claude -> BSP fallback."""
+    """Generate a floor plan with best-of-three candidate selection."""
     uw = _rnd(req.plot_width - SETBACKS["left"] - SETBACKS["right"], 2)
     ul = _rnd(req.plot_length - SETBACKS["front"] - SETBACKS["rear"], 2)
     preplot_trace, preplot_reasoning = await _build_preplot_reasoning_trace(req, uw, ul)
@@ -1921,85 +2021,153 @@ async def generate_plan(req: PlanRequest) -> PlanResponse:
             "deterministic_demo",
         )
 
-    # Attempt 1: OpenRouter with hard 45s cap.
-    openrouter_issues: list[str] = []
-    try:
-        openrouter_plan, openrouter_issues, _ = await asyncio.wait_for(
-            _generate_via_llm(req, uw, ul),
-            timeout=OPENROUTER_ATTEMPT_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        openrouter_plan = None
-        openrouter_issues = ["OpenRouter attempt timed out"]
-        log.warning("OpenRouter attempt timed out after %ss", OPENROUTER_ATTEMPT_TIMEOUT_SEC)
+    candidate_pool: list[dict[str, Any]] = []
 
-    if openrouter_plan is not None:
-        openrouter_plan.reasoning_trace = _merge_reasoning_trace(
+    def _register_candidate(plan: PlanResponse, generation_path: str, trace_note: str) -> None:
+        plan.reasoning_trace = _merge_reasoning_trace(
             preplot_trace,
-            list(openrouter_plan.reasoning_trace or [])
-            + ["Plotting completed via OpenRouter architectural planner."],
+            list(plan.reasoning_trace or []) + [trace_note],
             limit=18,
         )
-        return _attach_plan_reasoning(
-            openrouter_plan,
+        enriched = _attach_plan_reasoning(
+            plan,
             preplot_reasoning,
             req,
             uw,
             ul,
-            "openrouter",
+            generation_path,
+        )
+        eff_score = _candidate_effective_score(enriched.architect_reasoning or {}, generation_path)
+        candidate_pool.append(
+            {
+                "path": generation_path,
+                "score": eff_score,
+                "plan": enriched,
+            }
         )
 
-    if openrouter_issues:
-        log.warning("OpenRouter draft rejected: %s", openrouter_issues[:4])
+    # Candidate 1: OpenRouter primary chain.
+    openrouter_issues: list[str] = []
+    correction_feedback: list[str] | None = None
+    try:
+        openrouter_plan, openrouter_issues, correction_feedback = await asyncio.wait_for(
+            _generate_via_llm(req, uw, ul, planner_call=call_openrouter_plan),
+            timeout=OPENROUTER_ATTEMPT_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        openrouter_plan = None
+        openrouter_issues = ["OpenRouter primary attempt timed out"]
+        log.warning("OpenRouter primary attempt timed out after %ss", OPENROUTER_ATTEMPT_TIMEOUT_SEC)
 
-    # Attempt 2: Claude (only if key is configured). No OpenRouter retries.
+    if openrouter_plan is not None:
+        _register_candidate(
+            openrouter_plan,
+            "openrouter",
+            "Candidate generated via OpenRouter primary planner.",
+        )
+    elif openrouter_issues:
+        log.warning("OpenRouter primary draft rejected: %s", openrouter_issues[:4])
+
+    # Candidate 2: OpenRouter backup chain with retry guidance.
+    if has_llm_keys:
+        try:
+            retry_issues = correction_feedback or openrouter_issues[:10] or None
+            backup_plan, backup_issues, _ = await asyncio.wait_for(
+                _generate_via_llm(
+                    req,
+                    uw,
+                    ul,
+                    prev_issues=retry_issues,
+                    planner_call=call_openrouter_plan_backup,
+                ),
+                timeout=OPENROUTER_BACKUP_ATTEMPT_TIMEOUT_SEC,
+            )
+            if backup_plan is not None:
+                _register_candidate(
+                    backup_plan,
+                    "openrouter_backup",
+                    "Candidate generated via OpenRouter backup model chain.",
+                )
+            elif backup_issues:
+                log.warning("OpenRouter backup draft rejected: %s", backup_issues[:4])
+        except asyncio.TimeoutError:
+            log.warning("OpenRouter backup attempt timed out after %ss", OPENROUTER_BACKUP_ATTEMPT_TIMEOUT_SEC)
+        except Exception as e:
+            log.warning("OpenRouter backup attempt failed: %s", str(e)[:200])
+
+    # Candidate 3: Claude candidate when configured.
     if ANTHROPIC_API_KEY.strip():
         try:
             claude_plan = await asyncio.wait_for(
                 _generate_via_claude(req, uw, ul),
                 timeout=CLAUDE_ATTEMPT_DEADLINE_SEC,
             )
-            claude_plan.reasoning_trace = _merge_reasoning_trace(
-                preplot_trace,
-                list(claude_plan.reasoning_trace or [])
-                + ["Plotting completed via Claude after architect reasoning stage."],
-                limit=18,
-            )
-            return _attach_plan_reasoning(
+            _register_candidate(
                 claude_plan,
-                preplot_reasoning,
-                req,
-                uw,
-                ul,
                 "claude",
+                "Candidate generated via Claude planner.",
             )
         except asyncio.TimeoutError:
             log.warning("Claude attempt exceeded %ss end-to-end deadline", CLAUDE_ATTEMPT_DEADLINE_SEC)
         except Exception as e:
             log.warning("Claude attempt failed: %s", str(e)[:200])
-    else:
-        log.info("ANTHROPIC_API_KEY not set; skipping Claude and falling back to BSP")
 
-    # Final fallback: deterministic BSP immediately.
-    fallback = await _generate_via_bsp(req, uw, ul)
-    fallback.generation_method = "bsp"
-    fallback.reasoning_trace = _merge_reasoning_trace(
-        preplot_trace,
-        [
-            "External plotting attempts were unavailable or invalid.",
-            *list(fallback.reasoning_trace or []),
-            "Returned deterministic BSP fallback for guaranteed completion.",
+    # Deterministic safety-net candidate so selection always has a stable option.
+    if len(candidate_pool) < 3:
+        fallback = await _generate_via_bsp(req, uw, ul)
+        fallback.generation_method = "bsp"
+        _register_candidate(
+            fallback,
+            "bsp_fallback",
+            "Deterministic BSP candidate generated as best-of-three safety net.",
+        )
+
+    if not candidate_pool:
+        emergency = await _generate_via_bsp(req, uw, ul)
+        emergency.generation_method = "bsp"
+        return _attach_plan_reasoning(
+            emergency,
+            preplot_reasoning,
+            req,
+            uw,
+            ul,
+            "bsp_fallback",
+        )
+
+    ranked = sorted(candidate_pool, key=lambda item: float(item["score"]), reverse=True)
+    best = ranked[0]
+    selected = best["plan"]
+
+    selection_summary = ", ".join(
+        f"{str(item['path'])}={_rnd(float(item['score']), 1)}"
+        for item in ranked[:3]
+    )
+
+    reasoning = dict(selected.architect_reasoning or {})
+    reasoning["candidate_selection"] = {
+        "mode": "best_of_three",
+        "evaluated": int(len(ranked)),
+        "selected_path": str(best["path"]),
+        "selected_effective_score": _rnd(float(best["score"]), 1),
+        "candidate_scores": [
+            {
+                "path": str(item["path"]),
+                "effective_score": _rnd(float(item["score"]), 1),
+            }
+            for item in ranked[:3]
         ],
-        limit=18,
+    }
+    selected.architect_reasoning = reasoning
+    selected.reasoning_trace = _merge_reasoning_trace(
+        list(selected.reasoning_trace or []),
+        [
+            f"Best-of-three selector chose {best['path']} candidate.",
+            f"Candidate effective scores: {selection_summary}.",
+        ],
+        limit=24,
     )
-    return _attach_plan_reasoning(
-        fallback,
-        preplot_reasoning,
-        req,
-        uw,
-        ul,
-        "bsp_fallback",
-    )
+
+    return selected
 
 
 def _zone_bounds_for_room_spec(
@@ -2257,6 +2425,7 @@ async def _generate_via_llm(
     uw: float,
     ul: float,
     prev_issues: list[str] | None = None,
+    planner_call: Callable[[str, str], Awaitable[dict[str, Any]]] = call_openrouter_plan,
 ) -> tuple[PlanResponse | None, list[str], list[str] | None]:
     """
     Try to generate a plan via the LLM.
@@ -2272,8 +2441,12 @@ async def _generate_via_llm(
     system_prompt, user_message = build_master_prompt(req)
     _push_reasoning(
         reasoning_trace,
-        "Built coordinate-first OpenRouter prompt with hard room ranges.",
+        "Built coordinate-first planner prompt with hard room ranges.",
         )
+
+    planner_name = "OpenRouter"
+    if planner_call is call_openrouter_plan_backup:
+        planner_name = "OpenRouter backup chain"
 
     # Append correction feedback if retrying
     if prev_issues:
@@ -2292,19 +2465,19 @@ async def _generate_via_llm(
             f"Retrying with {len(prev_issues)} validator corrections from previous draft.",
         )
 
-    _push_reasoning(reasoning_trace, "Requesting floor plan draft from OpenRouter.")
+    _push_reasoning(reasoning_trace, f"Requesting floor plan draft from {planner_name}.")
 
     try:
-        plan_dict = await call_openrouter_plan(system_prompt, user_message)
+        plan_dict = await planner_call(system_prompt, user_message)
     except Exception as e:
-        log.error("LLM call failed across all models: %s", e)
+        log.error("LLM call failed in %s: %s", planner_name, e)
         return None, [str(e)], None
 
     draft_rooms = plan_dict.get("rooms", []) if isinstance(plan_dict, dict) else []
     if isinstance(draft_rooms, list):
         _push_reasoning(
             reasoning_trace,
-            f"OpenRouter returned draft with {len(draft_rooms)} rooms; running draft validation.",
+            f"{planner_name} returned draft with {len(draft_rooms)} rooms; running draft validation.",
         )
 
     draft_valid, draft_issues = validate_draft(plan_dict, uw, ul)
@@ -2312,7 +2485,7 @@ async def _generate_via_llm(
         correction_feedback = _build_geometric_correction_feedback(plan_dict, uw, ul, draft_issues)
         _push_reasoning(
             reasoning_trace,
-            f"OpenRouter draft failed fatal validation with {len(draft_issues)} issues.",
+            f"{planner_name} draft failed fatal validation with {len(draft_issues)} issues.",
         )
         return None, draft_issues, correction_feedback
 
