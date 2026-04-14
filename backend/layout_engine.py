@@ -120,6 +120,10 @@ def _room_program(
     for i in range(max(0, bedrooms_on_floor - 1)):
         rooms.append("bedroom")
 
+    # Privacy spine is mandatory for multi-bedroom plans.
+    if bedrooms_on_floor >= 2 and "corridor" not in rooms:
+        rooms.append("corridor")
+
     # Bathrooms: use explicit target if provided, otherwise one per bedroom.
     bathrooms_target = max(0, bathrooms_target)
     bathrooms_total = max(1, bathrooms_target if bathrooms_target > 0 else bedrooms)
@@ -298,6 +302,7 @@ def generate_bsp_layout(
     work_from_home = bool(kwargs.get("work_from_home", False))
     parking_slots = int(kwargs.get("parking_slots", 0) or 0)
     floors = int(kwargs.get("floors", 1) or 1)
+    strict_geometry = bool(kwargs.get("strict_geometry", False))
     must_have = kwargs.get("must_have", [])
     avoid = kwargs.get("avoid", [])
 
@@ -310,10 +315,22 @@ def generate_bsp_layout(
     band2_h = max(8.0, ul * 0.26)
     band3_h = ul - band1_h - band2_h
 
-    # Ensure band3 has enough space for bedrooms
-    if band3_h < 9.0 and ul > 20:
-        band1_h = max(11.0, ul * 0.28)
-        band2_h = max(8.0, ul * 0.24)
+    # Ensure private band has enough depth for bedrooms.
+    target_band3 = 10.0 if strict_geometry and bedrooms >= 2 else 9.0
+    if band3_h < target_band3 and ul > 20:
+        deficit = target_band3 - band3_h
+        min_band2 = 7.5 if strict_geometry else 8.0
+        min_band1 = 9.0 if strict_geometry else 11.0
+
+        take_from_band2 = min(deficit, max(0.0, band2_h - min_band2))
+        band2_h -= take_from_band2
+        deficit -= take_from_band2
+
+        if deficit > 0:
+            take_from_band1 = min(deficit, max(0.0, band1_h - min_band1))
+            band1_h -= take_from_band1
+            deficit -= take_from_band1
+
         band3_h = ul - band1_h - band2_h
 
     # ── Step 3: Determine room program ───────────────────────────────
@@ -333,13 +350,21 @@ def generate_bsp_layout(
     corridor_enabled = "corridor" in room_types
     corridor_width = (4.0 if family_type == "joint" and uw >= 24.0 else 3.5) if corridor_enabled else 0.0
     corridor_x = (uw - corridor_width) / 2 if corridor_enabled else (uw / 2.0)
+    if corridor_enabled and strict_geometry:
+        # Keep at least a 10' left bedroom column and 8' right column where feasible.
+        min_left = 10.0 if bedrooms >= 2 else 8.0
+        min_right = 8.0
+        lower = min_left
+        upper = uw - corridor_width - min_right
+        if upper >= lower:
+            corridor_x = min(max(corridor_x, lower), upper)
     left_w = corridor_x
     right_x_start = corridor_x + corridor_width
     right_w = uw - right_x_start
 
     placed_rooms: list[dict] = []
     room_counter: dict[str, int] = {}
-    soft_fit = 0.85
+    soft_fit = 1.0 if strict_geometry else 0.85
 
     def _make_room(rtype: str, x: float, y: float, w: float, h: float) -> dict:
         count = room_counter.get(rtype, 0) + 1
@@ -399,7 +424,13 @@ def generate_bsp_layout(
         h = min(band1_h, max(min_h, band1_h))
 
         if rtype == "living":
-            w = min(left_w, max(min_w, left_w))
+            if strict_geometry and corridor_enabled:
+                # Corridor starts from Band2; Band1 can use the full front span
+                # up to the right-column start, improving compact-plot livability.
+                front_span = max(left_w, right_x_start)
+                w = min(front_span, max(min_w, front_span))
+            else:
+                w = min(left_w, max(min_w, left_w))
             placed_rooms.append(_make_room(rtype, 0.0, 0.0, w, h))
             band1_cursor_left = w
         elif rtype == "dining":
@@ -457,12 +488,20 @@ def generate_bsp_layout(
 
         if rtype == "kitchen":
             # Kitchen on right side (Vastu: SE)
-            w = min(right_w, max(min_w, right_w * 0.6))
+            target_w = max(min_w, right_w * 0.6)
+            # In strict mode with compressed service depth, widen kitchen
+            # so rotated minimum checks can still pass.
+            if strict_geometry and h < min_h:
+                target_w = max(target_w, min_h)
+            w = min(right_w, target_w)
             placed_rooms.append(_make_room(rtype, band2_right_cursor, band2_y, w, h))
             band2_right_cursor += w
         elif rtype == "master_bath":
             # Master bath on left (near master bedroom above)
-            w = min(left_w * 0.4, max(min_w, left_w * 0.35))
+            if strict_geometry:
+                w = min(left_w, max(min_w, left_w * 0.4))
+            else:
+                w = min(left_w * 0.4, max(min_w, left_w * 0.35))
             placed_rooms.append(_make_room(rtype, band2_left_cursor, band2_y, w, h))
             band2_left_cursor += w
         elif rtype == "bathroom":

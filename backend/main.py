@@ -155,6 +155,10 @@ def _merge_practical_program(data: dict[str, Any]) -> None:
 
 
 def _remove_corridor_rooms(plan: dict[str, Any]) -> int:
+    # Keep corridor rooms in final output.
+    # They are essential for privacy/circulation in 2BHK+ layouts.
+    return 0
+
     rooms = plan.get("rooms")
     if not isinstance(rooms, list):
         return 0
@@ -196,6 +200,53 @@ def _remove_corridor_rooms(plan: dict[str, Any]) -> int:
     return removed
 
 
+def _build_deterministic_plan(
+    data: dict[str, Any],
+    *,
+    llm_rescue: bool,
+    reason: str = "",
+) -> tuple[dict[str, Any], int]:
+    """Build deterministic geometry either as explicit BSP mode or LLM rescue."""
+    plan = generate_bsp_layout(
+        plot_width=data["plot_width"],
+        plot_length=data["plot_length"],
+        bedrooms=data["bedrooms"],
+        facing=data["facing"],
+        extras=data["extras"],
+        family_type=data["family_type"],
+        bathrooms_target=data.get("bathrooms_target", 0),
+        work_from_home=data.get("work_from_home", False),
+        elder_friendly=data.get("elder_friendly", False),
+        floors=data.get("floors", 1),
+        parking_slots=data.get("parking_slots", 0),
+        kitchen_preference=data.get("kitchen_preference", "semi_open"),
+        must_have=data.get("must_have", []),
+        avoid=data.get("avoid", []),
+        strict_geometry=llm_rescue,
+    )
+
+    removed_corridors = _remove_corridor_rooms(plan)
+
+    if llm_rescue:
+        meta = plan.get("metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+            plan["metadata"] = meta
+
+        reason_text = (reason or "invalid geometry").replace("_", " ").strip()
+        base_note = str(meta.get("architect_note") or "").strip()
+        rescue_note = (
+            f"LLM draft auto-repaired with deterministic geometry enforcement ({reason_text})."
+        )
+        meta["architect_note"] = f"{rescue_note} {base_note}".strip()
+        plan["architect_note"] = meta["architect_note"]
+        plan["generation_method"] = "llm"
+        plan["llm_rescued"] = True
+        plan["llm_rescue_reason"] = reason_text
+
+    return plan, removed_corridors
+
+
 # ── Health ───────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health():
@@ -233,20 +284,18 @@ async def generate(req: GenerateRequest):
     Main generation endpoint.
 
     Flow:
-    1. Build user prompt from form data
-    2. (Optional) Call advisory LLM for architect reasoning
-    3. Call LLM for floor plan JSON
-    4. Validate the plan
-    5. If invalid, try to fix overlaps
-    6. If still invalid, fall back to BSP engine
-    7. Return final plan
+    1. Build prompts from form data
+    2. (Optional) Run architect advisory reasoning
+    3. Generate with LLM
+    4. Validate and repair
+    5. If still invalid, apply deterministic LLM rescue (no implicit BSP fallback)
+    6. Return final enriched plan
     """
     start_time = time.time()
     data = req.model_dump()
     _merge_practical_program(data)
     strict_mode = bool(data.get("strict_real_life", False))
     engine_mode = str(data.get("engine_mode", "gnn_advanced") or "gnn_advanced").strip().lower()
-    force_bsp = engine_mode in {"bsp", "deterministic", "rule_based", "local", "practical_strict", "strict"}
     reasoning_trace: list[str] = []
 
     log.info(
@@ -264,49 +313,64 @@ async def generate(req: GenerateRequest):
     )
 
     # Step 2: Advisory reasoning (optional)
-    advisory = {}
+    advisory: dict[str, Any] = {}
 
-    # Step 3: Try LLM generation (unless deterministic mode is requested)
-    plan = None
-    generation_method = "bsp"
+    # Step 3: LLM generation (engine_mode overrides are ignored in LLM-only pipeline)
+    plan: dict[str, Any] | None = None
+    generation_method = "llm"
+    removed_corridors = 0
 
-    if force_bsp:
-        reasoning_trace.append(
-            f"Engine mode '{engine_mode}' selected — skipping LLM and using deterministic BSP"
-        )
-    else:
-        if ARCHITECT_REASONING_ENABLED:
-            try:
-                reasoning_trace.append("Running architect reasoning analysis...")
-                advisory = await call_openrouter(system_prompt, user_prompt)
-                if advisory.get("design_strategy"):
-                    reasoning_trace.append(f"Strategy: {advisory['design_strategy'][:120]}")
-            except Exception as e:
-                log.warning("Advisory failed (non-fatal): %s", str(e)[:80])
-                reasoning_trace.append("Advisory reasoning skipped (non-fatal)")
-
+    async def _call_plan(payload_user_prompt: str) -> dict[str, Any]:
+        # Keep backward compatibility for monkeypatched tests using old signature.
         try:
-            reasoning_trace.append("Calling local LLM for floor plan generation...")
-            # Keep backward compatibility for monkeypatched tests using old signature.
-            try:
-                plan = await call_openrouter_plan(
-                    system_prompt,
-                    user_prompt,
-                    advisory=advisory,
-                    request_data=data,
-                )
-            except TypeError:
-                plan = await call_openrouter_plan(system_prompt, user_prompt)
-            generation_method = "llm"
-            reasoning_trace.append(
-                f"LLM returned {len(plan.get('rooms', []))} rooms"
+            return await call_openrouter_plan(
+                system_prompt,
+                payload_user_prompt,
+                advisory=advisory,
+                request_data=data,
             )
-        except Exception as e:
-            log.warning("LLM generation failed: %s", str(e)[:150])
-            reasoning_trace.append(f"LLM failed: {str(e)[:100]}")
+        except TypeError:
+            return await call_openrouter_plan(system_prompt, payload_user_prompt)
 
-    # Step 4: Validate
-    if plan and isinstance(plan.get("rooms"), list) and len(plan["rooms"]) >= 2:
+    if engine_mode in {"bsp", "deterministic", "rule_based", "local", "practical_strict", "strict"}:
+        reasoning_trace.append(
+            f"Engine mode '{engine_mode}' requested, but LLM-only mode is enforced"
+        )
+
+    if ARCHITECT_REASONING_ENABLED:
+        try:
+            reasoning_trace.append("Running architect reasoning analysis...")
+            advisory = await call_openrouter(system_prompt, user_prompt)
+            if advisory.get("design_strategy"):
+                reasoning_trace.append(f"Strategy: {advisory['design_strategy'][:120]}")
+        except Exception as e:
+            log.warning("Advisory failed (non-fatal): %s", str(e)[:80])
+            reasoning_trace.append("Advisory reasoning skipped (non-fatal)")
+
+    try:
+        reasoning_trace.append("Calling local LLM for floor plan generation...")
+        plan = await _call_plan(user_prompt)
+        reasoning_trace.append(
+            f"LLM returned {len(plan.get('rooms', []))} rooms"
+        )
+    except Exception as e:
+        log.warning("LLM generation failed: %s", str(e)[:150])
+        reasoning_trace.append(f"LLM failed: {str(e)[:100]}")
+        plan, removed_corridors = _build_deterministic_plan(
+            data,
+            llm_rescue=True,
+            reason="llm_generation_failure",
+        )
+        reasoning_trace.append(
+            f"Applied deterministic LLM rescue and generated {len(plan.get('rooms', []))} rooms"
+        )
+
+    # Step 4: Validate and repair
+    if (
+        plan
+        and isinstance(plan.get("rooms"), list)
+        and len(plan["rooms"]) >= 2
+    ):
         validation = validate_plan(plan, data["plot_width"], data["plot_length"])
 
         if not validation["valid"]:
@@ -317,60 +381,92 @@ async def generate(req: GenerateRequest):
                 f"size={len(validation['size_violations'])})"
             )
 
-            # Step 5: Try to fix overlaps
+            # Step 4a: Try overlap repair first
             if not validation["law1_ok"]:
                 plan = fix_overlaps(plan, data["plot_width"], data["plot_length"])
                 validation = validate_plan(plan, data["plot_width"], data["plot_length"])
 
                 if validation["law1_ok"]:
                     reasoning_trace.append("Overlaps fixed successfully")
-                else:
-                    reasoning_trace.append("Could not fix all overlaps — using BSP fallback")
-                    plan = None
 
-            # If boundary or size issues, still use the plan but note issues
-            if plan and (not validation["law2_ok"] or not validation["law3_ok"]):
-                if generation_method == "llm":
-                    reasoning_trace.append(
-                        "LLM layout has boundary/size violations — switching to BSP fallback"
+            # Step 4b: Ask LLM once more with validator feedback before rescue.
+            if not validation["valid"]:
+                issue_lines = "\n".join(
+                    f"- {issue}" for issue in validation["issues"][:8]
+                )
+                correction_prompt = (
+                    f"{user_prompt}\n\n"
+                    "CORRECTION REQUIRED:\n"
+                    "Your previous JSON violated geometry constraints. "
+                    "Regenerate the full plan and fix these issues:\n"
+                    f"{issue_lines}\n\n"
+                    "Return only valid JSON."
+                )
+                try:
+                    reasoning_trace.append("Requesting corrected LLM draft with validator feedback...")
+                    corrected = await _call_plan(correction_prompt)
+                    corrected_validation = validate_plan(
+                        corrected,
+                        data["plot_width"],
+                        data["plot_length"],
                     )
-                    plan = None
-                else:
                     reasoning_trace.append(
-                        "Minor validation issues (boundary/size) — plan usable"
+                        f"Correction pass issues: overlaps={len(corrected_validation['overlap_pairs'])}, "
+                        f"boundary={len(corrected_validation['boundary_violations'])}, "
+                        f"size={len(corrected_validation['size_violations'])}"
+                    )
+
+                    if corrected_validation["valid"]:
+                        plan = corrected
+                        validation = corrected_validation
+                        reasoning_trace.append("LLM correction pass succeeded")
+                    else:
+                        plan, removed_corridors = _build_deterministic_plan(
+                            data,
+                            llm_rescue=True,
+                            reason="post_validation_invalid",
+                        )
+                        reasoning_trace.append(
+                            "Correction still invalid — applied deterministic LLM rescue"
+                        )
+                except Exception as e:
+                    log.warning("LLM correction pass failed: %s", str(e)[:120])
+                    reasoning_trace.append(
+                        f"LLM correction pass failed: {str(e)[:100]}"
+                    )
+                    plan, removed_corridors = _build_deterministic_plan(
+                        data,
+                        llm_rescue=True,
+                        reason="correction_attempt_failed",
+                    )
+                    reasoning_trace.append(
+                        "Applied deterministic LLM rescue after correction failure"
                     )
         else:
             reasoning_trace.append("Validation passed — all 3 laws satisfied")
-    else:
-        if plan:
-            reasoning_trace.append("LLM plan has too few rooms — using BSP fallback")
-        plan = None
 
-    # Step 6: BSP fallback
+    if plan and (
+        not isinstance(plan.get("rooms"), list) or len(plan.get("rooms", [])) < 2
+    ):
+        reasoning_trace.append("LLM plan has too few rooms — applying deterministic LLM rescue")
+        plan, removed_corridors = _build_deterministic_plan(
+            data,
+            llm_rescue=True,
+            reason="too_few_rooms",
+        )
+
     if plan is None:
-        reasoning_trace.append("Generating plan with BSP layout engine...")
-        plan = generate_bsp_layout(
-            plot_width=data["plot_width"],
-            plot_length=data["plot_length"],
-            bedrooms=data["bedrooms"],
-            facing=data["facing"],
-            extras=data["extras"],
-            family_type=data["family_type"],
-            bathrooms_target=data.get("bathrooms_target", 0),
-            work_from_home=data.get("work_from_home", False),
-            elder_friendly=data.get("elder_friendly", False),
-            floors=data.get("floors", 1),
-            parking_slots=data.get("parking_slots", 0),
-            kitchen_preference=data.get("kitchen_preference", "semi_open"),
-            must_have=data.get("must_have", []),
-            avoid=data.get("avoid", []),
+        # Hard guard: never return an empty plan.
+        plan, removed_corridors = _build_deterministic_plan(
+            data,
+            llm_rescue=True,
+            reason="empty_plan_guard",
         )
-        generation_method = "bsp"
-        reasoning_trace.append(
-            f"BSP generated {len(plan.get('rooms', []))} rooms"
-        )
+        generation_method = "llm"
+        reasoning_trace.append("Plan guard triggered deterministic generation")
 
-    removed_corridors = _remove_corridor_rooms(plan)
+    if removed_corridors == 0:
+        removed_corridors = _remove_corridor_rooms(plan)
     if removed_corridors:
         reasoning_trace.append(
             f"Removed {removed_corridors} corridor room(s) to maximize practical usable space"
@@ -393,8 +489,13 @@ async def generate(req: GenerateRequest):
     quality_gate_threshold = 75 if strict_mode else 62
     strict_coverage_fail = _strict_coverage_failed(quality_report)
 
-    if generation_method == "llm" and (
-        quality_report.get("score", 0) < quality_gate_threshold or strict_coverage_fail
+    if (
+        generation_method == "llm"
+        and (
+            quality_report.get("score", 0) < quality_gate_threshold
+            or strict_coverage_fail
+        )
+        and not bool(plan.get("llm_rescued"))
     ):
         if strict_coverage_fail:
             reasoning_trace.append(
@@ -402,34 +503,21 @@ async def generate(req: GenerateRequest):
                 "(core/bed/bath/must-have/avoid)"
             )
         reasoning_trace.append(
-            "LLM layout practical score is low — switching to enhanced BSP fallback"
+            "LLM practical score is low — applying deterministic LLM rescue"
         )
-        plan = generate_bsp_layout(
-            plot_width=data["plot_width"],
-            plot_length=data["plot_length"],
-            bedrooms=data["bedrooms"],
-            facing=data["facing"],
-            extras=data["extras"],
-            family_type=data["family_type"],
-            bathrooms_target=data.get("bathrooms_target", 0),
-            work_from_home=data.get("work_from_home", False),
-            elder_friendly=data.get("elder_friendly", False),
-            floors=data.get("floors", 1),
-            parking_slots=data.get("parking_slots", 0),
-            kitchen_preference=data.get("kitchen_preference", "semi_open"),
-            must_have=data.get("must_have", []),
-            avoid=data.get("avoid", []),
+        plan, removed_after_quality_rescue = _build_deterministic_plan(
+            data,
+            llm_rescue=True,
+            reason="quality_gate",
         )
-        removed_corridors = _remove_corridor_rooms(plan)
-        if removed_corridors:
+        if removed_after_quality_rescue:
             reasoning_trace.append(
-                f"Removed {removed_corridors} corridor room(s) from enhanced BSP layout"
+                f"Removed {removed_after_quality_rescue} corridor room(s) after quality rescue"
             )
-        generation_method = "bsp"
         quality_report = evaluate_real_life_fit(plan, data)
         strict_coverage_fail = _strict_coverage_failed(quality_report)
         reasoning_trace.append(
-            f"Enhanced BSP score: {quality_report.get('score', 0)}/100"
+            f"Post-rescue score: {quality_report.get('score', 0)}/100"
         )
         if strict_coverage_fail:
             reasoning_trace.append(
@@ -452,37 +540,28 @@ async def generate(req: GenerateRequest):
         plan = fix_overlaps(plan, data["plot_width"], data["plot_length"])
         final_validation = validate_plan(plan, data["plot_width"], data["plot_length"])
 
-    if not final_validation["valid"] and generation_method == "llm":
+    if (
+        not final_validation["valid"]
+        and generation_method == "llm"
+        and not bool(plan.get("llm_rescued"))
+    ):
         reasoning_trace.append(
-            "Final LLM geometry still invalid — forcing deterministic BSP fallback"
+            "Final LLM geometry invalid — applying deterministic LLM rescue"
         )
-        plan = generate_bsp_layout(
-            plot_width=data["plot_width"],
-            plot_length=data["plot_length"],
-            bedrooms=data["bedrooms"],
-            facing=data["facing"],
-            extras=data["extras"],
-            family_type=data["family_type"],
-            bathrooms_target=data.get("bathrooms_target", 0),
-            work_from_home=data.get("work_from_home", False),
-            elder_friendly=data.get("elder_friendly", False),
-            floors=data.get("floors", 1),
-            parking_slots=data.get("parking_slots", 0),
-            kitchen_preference=data.get("kitchen_preference", "semi_open"),
-            must_have=data.get("must_have", []),
-            avoid=data.get("avoid", []),
+        plan, removed_after_final_rescue = _build_deterministic_plan(
+            data,
+            llm_rescue=True,
+            reason="final_geometry_invalid",
         )
-        removed_corridors = _remove_corridor_rooms(plan)
-        if removed_corridors:
+        if removed_after_final_rescue:
             reasoning_trace.append(
-                f"Removed {removed_corridors} corridor room(s) in final fallback"
+                f"Removed {removed_after_final_rescue} corridor room(s) in final rescue"
             )
-        generation_method = "bsp"
         quality_report = evaluate_real_life_fit(plan, data)
         strict_coverage_fail = _strict_coverage_failed(quality_report)
         final_validation = validate_plan(plan, data["plot_width"], data["plot_length"])
         reasoning_trace.append(
-            f"Final fallback BSP score: {quality_report.get('score', 0)}/100"
+            f"Final rescue score: {quality_report.get('score', 0)}/100"
         )
 
     if not final_validation["valid"]:

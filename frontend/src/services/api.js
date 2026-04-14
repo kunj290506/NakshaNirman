@@ -1,5 +1,5 @@
 const API_BASE = '';  // Use Vite proxy — requests go through /api
-const REQUEST_TIMEOUT_MS = 330000; // 5.5min — GTX 1650 local LLM needs 2-4min for floor plans
+const REQUEST_TIMEOUT_MS = 600000; // 10min — full NAKSHA-MASTER prompt needs 4-8min on GTX 1650
 const RETRY_TIMEOUT_INCREMENT_MS = 60000; // Give retries extra warm-up time
 const MAX_ATTEMPTS = 2;
 const RETRYABLE_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
