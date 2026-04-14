@@ -1,507 +1,614 @@
 """
-NakshaNirman — FastAPI backend.
-Uses LLM-first layout engine with BSP fallback.
+NakshaNirman Backend — FastAPI application.
+Local Ollama mode. GTX 1650 + 24GB RAM.
+
+Endpoints:
+  POST /api/generate       — Generate floor plan (LLM + BSP fallback)
+  GET  /api/health         — Health check (verifies Ollama connectivity)
+  POST /api/auth/login     — Simple in-memory auth
+  POST /api/auth/signup    — Simple in-memory auth
+  POST /api/auth/save-and-login — Legacy auth compat
 """
 from __future__ import annotations
-import hashlib
-import hmac
+
 import logging
-import os
-import re
-import secrets
-import uuid
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List
-from collections import defaultdict
-from fastapi import FastAPI, HTTPException, Request
+import traceback
+from typing import Any
+
+import httpx
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
 
-from config import EXPORTS_DIR
-from models import PlanRequest, PlanResponse
-from layout_engine import generate_architect_reasoning, generate_plan, generate_plan_emergency_local
-from dxf_export import plan_to_dxf
-from plan_validator import validate_llm_plan
+from config import CORS_ORIGINS, LOCAL_LLM_BASE_URL, ARCHITECT_REASONING_ENABLED
+from prompt_builder import build_user_prompt, build_system_prompt
+from llm import call_openrouter_plan, call_openrouter, NAKSHA_SYSTEM_PROMPT
+from layout_engine import generate_bsp_layout
+from validators import validate_plan, fix_overlaps
+from quality_engine import evaluate_real_life_fit, build_real_life_architect_note
 
-logging.basicConfig(level=logging.INFO)
+# ── Logging ──────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)-14s %(levelname)-5s %(message)s",
+    datefmt="%H:%M:%S",
+)
 log = logging.getLogger("main")
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "nakshanirman")
-MONGO_USERS_COLLECTION = os.getenv("MONGO_USERS_COLLECTION", "users")
-_mongo_client: MongoClient | None = None
-
-
-class LoginRequest(BaseModel):
-    user_id: str = Field(..., min_length=3, max_length=64)
-    password: str = Field(..., min_length=6, max_length=128)
-
-
-class SignupRequest(LoginRequest):
-    email: str = Field(default="", max_length=254)
-    full_name: str = Field(default="", max_length=120)
-
-
-# Backward-compatible alias for old route payload.
-AuthRequest = LoginRequest
-
-
-def _get_users_collection():
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = MongoClient(
-            MONGO_URI,
-            serverSelectionTimeoutMS=2500,
-            connectTimeoutMS=2500,
-        )
-    _mongo_client.admin.command("ping")
-    return _mongo_client[MONGO_DB_NAME][MONGO_USERS_COLLECTION]
-
-
-def _clean_credential(value: str) -> str:
-    return str(value or "").strip()
-
-
-def _clean_user_id(value: str) -> str:
-    return _clean_credential(value)
-
-
-def _clean_full_name(value: str) -> str:
-    cleaned = _clean_credential(value)
-    return re.sub(r"\s+", " ", cleaned)
-
-
-def _clean_email(value: str) -> str:
-    return _clean_credential(value).lower()
-
-
-def _is_valid_email(value: str) -> bool:
-    # Lightweight validation for API-level checks without extra dependencies.
-    return bool(re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$", value))
-
-
-def _hash_password(raw_password: str) -> str:
-    iterations = 240_000
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        raw_password.encode("utf-8"),
-        salt.encode("utf-8"),
-        iterations,
-    )
-    return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
-
-
-def _verify_password(raw_password: str, encoded_hash: str) -> bool:
-    try:
-        algo, iters_s, salt, expected_hex = str(encoded_hash or "").split("$", 3)
-        if algo != "pbkdf2_sha256":
-            return False
-        digest = hashlib.pbkdf2_hmac(
-            "sha256",
-            raw_password.encode("utf-8"),
-            salt.encode("utf-8"),
-            int(iters_s),
-        )
-        return hmac.compare_digest(digest.hex(), expected_hex)
-    except Exception:
-        return False
-
-
-def _ensure_valid_credentials(user_id: str, password: str):
-    if not user_id or not password:
-        raise HTTPException(status_code=400, detail="User ID and password are required")
-    if not re.match(r"^[a-zA-Z0-9_.@-]{3,64}$", user_id):
-        raise HTTPException(
-            status_code=400,
-            detail="User ID must be 3-64 chars and may contain letters, numbers, ., _, @, -",
-        )
-
-
-def _ensure_valid_signup(user_id: str, password: str, email: str):
-    _ensure_valid_credentials(user_id, password)
-    if email and not _is_valid_email(email):
-        raise HTTPException(status_code=400, detail="Please provide a valid email address")
-
-
-def _auth_success_payload(user_id: str, full_name: str, email: str, *, new_user: bool) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "user_id": user_id,
-        "full_name": full_name,
-        "email": email,
-        "saved_in_db": True,
-        "new_user": new_user,
-    }
-
-
-def _create_user(
-    users,
-    user_id: str,
-    password: str,
-    full_name: str,
-    now: str,
-    *,
-    email: str = "",
-) -> dict[str, Any]:
-    clean_email = _clean_email(email)
-    user_doc: dict[str, Any] = {
-        "user_id": user_id,
-        "full_name": full_name,
-        "password_hash": _hash_password(password),
-        "created_at": now,
-        "updated_at": now,
-        "last_login_at": now,
-    }
-
-    if clean_email:
-        user_doc["email"] = clean_email
-        user_doc["email_lower"] = clean_email
-
-    users.insert_one(user_doc)
-    return _auth_success_payload(user_id, full_name, clean_email, new_user=True)
-
-
-def _login_existing_user(users, existing: dict[str, Any], password: str, now: str) -> dict[str, Any]:
-    user_id = str(existing.get("user_id", ""))
-    full_name = _clean_full_name(existing.get("full_name", ""))
-    email = _clean_email(existing.get("email", ""))
-    password_hash = str(existing.get("password_hash", ""))
-    legacy_password = str(existing.get("password", ""))
-
-    is_valid = False
-    if password_hash:
-        is_valid = _verify_password(password, password_hash)
-    elif legacy_password:
-        # Backward compatibility for older plain-text records before hash rollout.
-        is_valid = hmac.compare_digest(legacy_password, password)
-
-    if not is_valid:
-        raise HTTPException(status_code=401, detail="Invalid user ID or password")
-
-    update_doc: dict[str, Any] = {
-        "$set": {
-            "updated_at": now,
-            "last_login_at": now,
-        }
-    }
-    if legacy_password and not password_hash:
-        update_doc["$set"]["password_hash"] = _hash_password(password)
-        update_doc["$set"]["password_migrated_at"] = now
-        update_doc["$unset"] = {"password": ""}
-
-    users.update_one({"_id": existing["_id"]}, update_doc)
-    return _auth_success_payload(user_id, full_name, email, new_user=False)
-
-# ── App ──────────────────────────────────────────────────────
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="NakshaNirman API",
-    version="3.0.0",
-    description="Indian residential floor plan generator with deterministic BSP layout",
+    title="NakshaNirman",
+    description="AI Floor Plan Generator — Local Ollama Mode",
+    version="2.0.0",
     docs_url="/api/docs",
-    redoc_url=None,
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
-# ── Security headers middleware ──────────────────────────────
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
+# ── In-memory user store (no MongoDB needed for local mode) ──────────
+_users: dict[str, dict] = {}
 
 
-# ── Simple rate limiter (per IP) ─────────────────────────────
-_rate_store: Dict[str, List[float]] = defaultdict(list)
+# ── Request / Response Models ────────────────────────────────────────
+class GenerateRequest(BaseModel):
+    plot_width: float = Field(30, ge=15, le=200)
+    plot_length: float = Field(40, ge=15, le=200)
+    bedrooms: int = Field(2, ge=1, le=4)
+    facing: str = Field("east")
+    extras: list[str] = Field(default_factory=list)
+    family_type: str = Field("nuclear")
+    city: str = Field("")
+    state: str = Field("")
+    vastu: bool = Field(True)
+    elder_friendly: bool = Field(False)
+    work_from_home: bool = Field(False)
+    notes: str = Field("")
+    bathrooms_target: int = Field(0, ge=0, le=8)
+    floors: int = Field(1, ge=1, le=4)
+    design_style: str = Field("modern")
+    kitchen_preference: str = Field("semi_open")
+    parking_slots: int = Field(0, ge=0, le=4)
+    vastu_priority: int = Field(3, ge=1, le=5)
+    natural_light_priority: int = Field(3, ge=1, le=5)
+    privacy_priority: int = Field(3, ge=1, le=5)
+    storage_priority: int = Field(3, ge=1, le=5)
+    strict_real_life: bool = Field(False)
+    must_have: list[str] = Field(default_factory=list)
+    avoid: list[str] = Field(default_factory=list)
+    engine_mode: str = Field("gnn_advanced")
+    total_area: float = Field(0)
+    bathrooms: int = Field(0, ge=0, le=8)
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return max(1, int(os.getenv(name, str(default)).strip()))
-    except Exception:
-        return default
+class AuthRequest(BaseModel):
+    user_id: str
+    password: str
+    email: str = ""
+    full_name: str = ""
 
 
-RATE_LIMIT = _env_int("RATE_LIMIT_GENERATE_PER_MINUTE", 120)
-RATE_WINDOW = _env_int("RATE_LIMIT_WINDOW_SECONDS", 60)
-RATE_LIMIT_BYPASS_LOCAL = os.getenv(
-    "RATE_LIMIT_BYPASS_LOCAL", "true"
-).strip().lower() in {"1", "true", "yes", "on"}
+ROOM_TOKEN_ALIASES: dict[str, str] = {
+    "puja": "pooja",
+    "mandir": "pooja",
+    "office": "study",
+    "home_office": "study",
+    "guest_room": "bedroom",
+    "guest_bedroom": "bedroom",
+    "common_bath": "bathroom",
+    "common_bathroom": "bathroom",
+    "wc": "bathroom",
+    "stairs": "staircase",
+}
 
 
-def _is_local_client(ip: str) -> bool:
-    ip_norm = str(ip or "").strip().lower()
-    return ip_norm in {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+def _normalize_room_token(raw: str) -> str:
+    token = str(raw or "").strip().lower().replace(" ", "_")
+    token = token.replace("-", "_")
+    return ROOM_TOKEN_ALIASES.get(token, token)
 
 
-@app.middleware("http")
-async def rate_limit_generate(request: Request, call_next):
-    if request.url.path == "/api/generate" and request.method == "POST":
-        ip = request.client.host if request.client else "unknown"
-
-        if RATE_LIMIT_BYPASS_LOCAL and _is_local_client(ip):
-            return await call_next(request)
-
-        now = time.time()
-        _rate_store[ip] = [t for t in _rate_store[ip] if now - t < RATE_WINDOW]
-        if len(_rate_store[ip]) >= RATE_LIMIT:
-            return JSONResponse(
-                status_code=429,
-                headers={"Retry-After": str(RATE_WINDOW)},
-                content={"detail": "Too many requests. Please wait and retry."},
-            )
-        _rate_store[ip].append(now)
-
-        # Opportunistic cleanup to prevent unbounded key growth over time.
-        if len(_rate_store) > 5000:
-            stale_ips = [k for k, times in _rate_store.items() if not times or now - times[-1] > RATE_WINDOW * 2]
-            for stale_ip in stale_ips:
-                _rate_store.pop(stale_ip, None)
-
-    return await call_next(request)
+def _normalize_tag_list(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = str(raw or "").split(",")
+    out = []
+    seen = set()
+    for item in items:
+        token = _normalize_room_token(str(item or ""))
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
-# ── Health ───────────────────────────────────────────────────
+def _merge_practical_program(data: dict[str, Any]) -> None:
+    extras = {_normalize_room_token(x) for x in data.get("extras", []) if str(x or "").strip()}
+    must_have = set(_normalize_tag_list(data.get("must_have", [])))
+    avoid = set(_normalize_tag_list(data.get("avoid", [])))
+
+    known_extras = {
+        "pooja", "study", "store", "balcony", "garage", "utility", "foyer", "staircase"
+    }
+
+    for token in must_have:
+        if token in known_extras:
+            extras.add(token)
+
+    for token in avoid:
+        if token in extras:
+            extras.remove(token)
+
+    data["must_have"] = sorted(must_have)
+    data["avoid"] = sorted(avoid)
+    data["extras"] = sorted(extras)
+
+
+def _remove_corridor_rooms(plan: dict[str, Any]) -> int:
+    rooms = plan.get("rooms")
+    if not isinstance(rooms, list):
+        return 0
+
+    kept: list[Any] = []
+    removed_ids: set[str] = set()
+    removed = 0
+
+    for room in rooms:
+        if isinstance(room, dict) and str(room.get("type", "")).strip().lower() == "corridor":
+            removed += 1
+            rid = str(room.get("id", "")).strip()
+            if rid:
+                removed_ids.add(rid)
+            continue
+        kept.append(room)
+
+    if removed == 0:
+        return 0
+
+    plan["rooms"] = kept
+
+    # Drop door/window entries tied to removed corridor ids.
+    for key in ("doors", "windows"):
+        values = plan.get(key)
+        if not isinstance(values, list):
+            continue
+        filtered: list[Any] = []
+        for item in values:
+            if not isinstance(item, dict):
+                filtered.append(item)
+                continue
+            room_id = str(item.get("room_id", "")).strip()
+            if room_id and room_id in removed_ids:
+                continue
+            filtered.append(item)
+        plan[key] = filtered
+
+    return removed
+
+
+# ── Health ───────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "NakshaNirman", "version": "3.0.0"}
-
-
-# ── Auth ─────────────────────────────────────────────────────
-@app.post("/api/auth/signup")
-async def signup(payload: SignupRequest):
-    user_id = _clean_user_id(payload.user_id)
-    password = _clean_credential(payload.password)
-    email = _clean_email(payload.email)
-    full_name = _clean_full_name(payload.full_name)
-
-    _ensure_valid_signup(user_id, password, email)
-
-    now = datetime.now(timezone.utc).isoformat()
+    """Check if backend and Ollama are running."""
+    ollama_ok = False
+    ollama_msg = "not checked"
 
     try:
-        users = _get_users_collection()
-        if email:
-            existing = users.find_one(
-                {
-                    "$or": [
-                        {"user_id": user_id},
-                        {"email_lower": email},
-                    ]
-                }
-            )
+        # Check Ollama is reachable
+        base = LOCAL_LLM_BASE_URL.replace("/v1", "")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(base)
+        if resp.status_code == 200:
+            ollama_ok = True
+            ollama_msg = "running"
         else:
-            existing = users.find_one({"user_id": user_id})
-        if existing:
-            raise HTTPException(status_code=409, detail="User already exists. Please login.")
-
-        return _create_user(users, user_id, password, full_name, now, email=email)
-
-    except HTTPException:
-        raise
-    except PyMongoError as e:
-        log.error("MongoDB signup error: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not connect to MongoDB at mongodb://localhost:27017/",
-        )
-
-
-@app.post("/api/auth/login")
-async def login(payload: LoginRequest):
-    user_id = _clean_user_id(payload.user_id)
-    password = _clean_credential(payload.password)
-
-    _ensure_valid_credentials(user_id, password)
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    try:
-        users = _get_users_collection()
-        existing = users.find_one({"user_id": user_id})
-        if not existing:
-            raise HTTPException(status_code=401, detail="Invalid user ID or password")
-
-        return _login_existing_user(users, existing, password, now)
-
-    except HTTPException:
-        raise
-    except PyMongoError as e:
-        log.error("MongoDB login error: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not connect to MongoDB at mongodb://localhost:27017/",
-        )
-
-
-@app.post("/api/auth/save-and-login")
-async def save_and_login(payload: AuthRequest):
-    user_id = _clean_user_id(payload.user_id)
-    password = _clean_credential(payload.password)
-
-    _ensure_valid_credentials(user_id, password)
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    try:
-        users = _get_users_collection()
-        existing = users.find_one({"user_id": user_id})
-
-        if existing:
-            return _login_existing_user(users, existing, password, now)
-
-        return _create_user(users, user_id, password, "", now)
-
-    except HTTPException:
-        raise
-    except PyMongoError as e:
-        log.error("MongoDB auth error: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not connect to MongoDB at mongodb://localhost:27017/",
-        )
-
-
-# ── Generate ─────────────────────────────────────────────────
-@app.post("/api/architect/reason")
-async def architect_reason(req: PlanRequest | dict[str, Any]):
-    """Run architect reasoning stage only (no layout plotting)."""
-    if isinstance(req, dict):
-        payload = dict(req)
-        if str(payload.get("family_type", "")).strip().lower() == "working_couple":
-            payload["family_type"] = "couple"
-        req = PlanRequest(**payload)
-
-    try:
-        reasoning = await generate_architect_reasoning(req)
-        return {
-            "ok": True,
-            "reasoning": reasoning,
-        }
+            ollama_msg = f"responded with {resp.status_code}"
+    except httpx.ConnectError:
+        ollama_msg = "not reachable — is Ollama running?"
     except Exception as e:
-        log.exception("Architect reasoning failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        ollama_msg = f"error: {str(e)[:80]}"
+
+    return {
+        "status": "ok" if ollama_ok else "degraded",
+        "backend": "running",
+        "ollama": ollama_msg,
+        "ollama_url": LOCAL_LLM_BASE_URL,
+    }
 
 
-@app.post("/api/generate", response_model=PlanResponse)
-async def generate(req: PlanRequest | dict[str, Any]):
-    """Generate a floor plan using LLM-first engine with BSP fallback."""
-    # Support a known frontend/client alias without changing PlanResponse shape.
-    if isinstance(req, dict):
-        payload = dict(req)
-        if str(payload.get("family_type", "")).strip().lower() == "working_couple":
-            payload["family_type"] = "couple"
-        req = PlanRequest(**payload)
+# ── Generate Floor Plan ─────────────────────────────────────────────
+@app.post("/api/generate")
+async def generate(req: GenerateRequest):
+    """
+    Main generation endpoint.
+
+    Flow:
+    1. Build user prompt from form data
+    2. (Optional) Call advisory LLM for architect reasoning
+    3. Call LLM for floor plan JSON
+    4. Validate the plan
+    5. If invalid, try to fix overlaps
+    6. If still invalid, fall back to BSP engine
+    7. Return final plan
+    """
+    start_time = time.time()
+    data = req.model_dump()
+    _merge_practical_program(data)
+    strict_mode = bool(data.get("strict_real_life", False))
+    engine_mode = str(data.get("engine_mode", "gnn_advanced") or "gnn_advanced").strip().lower()
+    force_bsp = engine_mode in {"bsp", "deterministic", "rule_based", "local", "practical_strict", "strict"}
+    reasoning_trace: list[str] = []
 
     log.info(
-        "Generate request: %sx%s %dBHK %s extras=%s",
-        req.plot_width, req.plot_length, req.bedrooms, req.facing, req.extras,
+        "Generate: %sx%s %dBHK %s-facing",
+        data["plot_width"], data["plot_length"],
+        data["bedrooms"], data["facing"],
     )
-    try:
-        plan = await generate_plan(req)
-    except Exception:
-        log.exception("Plan generation failed in primary pipeline; switching to emergency local mode")
-        try:
-            plan = await generate_plan_emergency_local(req)
-        except Exception as e:
-            log.exception("Emergency local generation also failed")
-            raise HTTPException(status_code=500, detail=str(e))
 
-    # Generate DXF
-    try:
-        filename = f"plan_{uuid.uuid4().hex[:8]}.dxf"
-        filepath = os.path.join(EXPORTS_DIR, filename)
-        plan_to_dxf(plan, filepath)
-        plan.dxf_url = f"/api/download/{filename}"
-        log.info("DXF saved: %s", filename)
-    except Exception as e:
-        log.warning("DXF generation failed: %s", e)
-        plan.dxf_url = None
+    # Step 1: Build prompts
+    user_prompt = build_user_prompt(data)
+    system_prompt = build_system_prompt(data)
+    reasoning_trace.append(
+        f"Input: {data['plot_width']:.0f}x{data['plot_length']:.0f}, "
+        f"{data['bedrooms']}BHK, {data['facing']}-facing"
+    )
+
+    # Step 2: Advisory reasoning (optional)
+    advisory = {}
+
+    # Step 3: Try LLM generation (unless deterministic mode is requested)
+    plan = None
+    generation_method = "bsp"
+
+    if force_bsp:
+        reasoning_trace.append(
+            f"Engine mode '{engine_mode}' selected — skipping LLM and using deterministic BSP"
+        )
+    else:
+        if ARCHITECT_REASONING_ENABLED:
+            try:
+                reasoning_trace.append("Running architect reasoning analysis...")
+                advisory = await call_openrouter(system_prompt, user_prompt)
+                if advisory.get("design_strategy"):
+                    reasoning_trace.append(f"Strategy: {advisory['design_strategy'][:120]}")
+            except Exception as e:
+                log.warning("Advisory failed (non-fatal): %s", str(e)[:80])
+                reasoning_trace.append("Advisory reasoning skipped (non-fatal)")
+
+        try:
+            reasoning_trace.append("Calling local LLM for floor plan generation...")
+            # Keep backward compatibility for monkeypatched tests using old signature.
+            try:
+                plan = await call_openrouter_plan(
+                    system_prompt,
+                    user_prompt,
+                    advisory=advisory,
+                    request_data=data,
+                )
+            except TypeError:
+                plan = await call_openrouter_plan(system_prompt, user_prompt)
+            generation_method = "llm"
+            reasoning_trace.append(
+                f"LLM returned {len(plan.get('rooms', []))} rooms"
+            )
+        except Exception as e:
+            log.warning("LLM generation failed: %s", str(e)[:150])
+            reasoning_trace.append(f"LLM failed: {str(e)[:100]}")
+
+    # Step 4: Validate
+    if plan and isinstance(plan.get("rooms"), list) and len(plan["rooms"]) >= 2:
+        validation = validate_plan(plan, data["plot_width"], data["plot_length"])
+
+        if not validation["valid"]:
+            reasoning_trace.append(
+                f"Validation issues: {len(validation['issues'])} "
+                f"(overlaps={len(validation['overlap_pairs'])}, "
+                f"boundary={len(validation['boundary_violations'])}, "
+                f"size={len(validation['size_violations'])})"
+            )
+
+            # Step 5: Try to fix overlaps
+            if not validation["law1_ok"]:
+                plan = fix_overlaps(plan, data["plot_width"], data["plot_length"])
+                validation = validate_plan(plan, data["plot_width"], data["plot_length"])
+
+                if validation["law1_ok"]:
+                    reasoning_trace.append("Overlaps fixed successfully")
+                else:
+                    reasoning_trace.append("Could not fix all overlaps — using BSP fallback")
+                    plan = None
+
+            # If boundary or size issues, still use the plan but note issues
+            if plan and (not validation["law2_ok"] or not validation["law3_ok"]):
+                if generation_method == "llm":
+                    reasoning_trace.append(
+                        "LLM layout has boundary/size violations — switching to BSP fallback"
+                    )
+                    plan = None
+                else:
+                    reasoning_trace.append(
+                        "Minor validation issues (boundary/size) — plan usable"
+                    )
+        else:
+            reasoning_trace.append("Validation passed — all 3 laws satisfied")
+    else:
+        if plan:
+            reasoning_trace.append("LLM plan has too few rooms — using BSP fallback")
+        plan = None
+
+    # Step 6: BSP fallback
+    if plan is None:
+        reasoning_trace.append("Generating plan with BSP layout engine...")
+        plan = generate_bsp_layout(
+            plot_width=data["plot_width"],
+            plot_length=data["plot_length"],
+            bedrooms=data["bedrooms"],
+            facing=data["facing"],
+            extras=data["extras"],
+            family_type=data["family_type"],
+            bathrooms_target=data.get("bathrooms_target", 0),
+            work_from_home=data.get("work_from_home", False),
+            elder_friendly=data.get("elder_friendly", False),
+            floors=data.get("floors", 1),
+            parking_slots=data.get("parking_slots", 0),
+            kitchen_preference=data.get("kitchen_preference", "semi_open"),
+            must_have=data.get("must_have", []),
+            avoid=data.get("avoid", []),
+        )
+        generation_method = "bsp"
+        reasoning_trace.append(
+            f"BSP generated {len(plan.get('rooms', []))} rooms"
+        )
+
+    removed_corridors = _remove_corridor_rooms(plan)
+    if removed_corridors:
+        reasoning_trace.append(
+            f"Removed {removed_corridors} corridor room(s) to maximize practical usable space"
+        )
+
+    # Step 6.1: Practical quality gate (real-life use case readiness)
+    quality_report = evaluate_real_life_fit(plan, data)
+    reasoning_trace.append(
+        f"Real-life fit score: {quality_report.get('score', 0)}/100 "
+        f"(grade {quality_report.get('grade', 'C')})"
+    )
+
+    def _strict_coverage_failed(report: dict[str, Any]) -> bool:
+        if not strict_mode:
+            return False
+        cov = report.get("coverage", {}) if isinstance(report, dict) else {}
+        required_full = ("core", "bedroom", "bathroom", "must_have", "avoid")
+        return any(float(cov.get(k, 1.0) or 0.0) < 1.0 for k in required_full)
+
+    quality_gate_threshold = 75 if strict_mode else 62
+    strict_coverage_fail = _strict_coverage_failed(quality_report)
+
+    if generation_method == "llm" and (
+        quality_report.get("score", 0) < quality_gate_threshold or strict_coverage_fail
+    ):
+        if strict_coverage_fail:
+            reasoning_trace.append(
+                "Strict practical mode: coverage incomplete in LLM output "
+                "(core/bed/bath/must-have/avoid)"
+            )
+        reasoning_trace.append(
+            "LLM layout practical score is low — switching to enhanced BSP fallback"
+        )
+        plan = generate_bsp_layout(
+            plot_width=data["plot_width"],
+            plot_length=data["plot_length"],
+            bedrooms=data["bedrooms"],
+            facing=data["facing"],
+            extras=data["extras"],
+            family_type=data["family_type"],
+            bathrooms_target=data.get("bathrooms_target", 0),
+            work_from_home=data.get("work_from_home", False),
+            elder_friendly=data.get("elder_friendly", False),
+            floors=data.get("floors", 1),
+            parking_slots=data.get("parking_slots", 0),
+            kitchen_preference=data.get("kitchen_preference", "semi_open"),
+            must_have=data.get("must_have", []),
+            avoid=data.get("avoid", []),
+        )
+        removed_corridors = _remove_corridor_rooms(plan)
+        if removed_corridors:
+            reasoning_trace.append(
+                f"Removed {removed_corridors} corridor room(s) from enhanced BSP layout"
+            )
+        generation_method = "bsp"
+        quality_report = evaluate_real_life_fit(plan, data)
+        strict_coverage_fail = _strict_coverage_failed(quality_report)
+        reasoning_trace.append(
+            f"Enhanced BSP score: {quality_report.get('score', 0)}/100"
+        )
+        if strict_coverage_fail:
+            reasoning_trace.append(
+                "Strict practical mode: some required constraints remain unmet for this plot/program"
+            )
+
+    for suggestion in quality_report.get("opportunities", [])[:2]:
+        reasoning_trace.append(f"Refinement: {suggestion}")
+
+    if strict_mode and (
+        quality_report.get("score", 0) < quality_gate_threshold or strict_coverage_fail
+    ):
+        reasoning_trace.append(
+            "Strict practical mode warning: constraints are difficult for current plot and program"
+        )
+
+    # Final geometry safety pass after all planner choices.
+    final_validation = validate_plan(plan, data["plot_width"], data["plot_length"])
+    if not final_validation["law1_ok"]:
+        plan = fix_overlaps(plan, data["plot_width"], data["plot_length"])
+        final_validation = validate_plan(plan, data["plot_width"], data["plot_length"])
+
+    if not final_validation["valid"] and generation_method == "llm":
+        reasoning_trace.append(
+            "Final LLM geometry still invalid — forcing deterministic BSP fallback"
+        )
+        plan = generate_bsp_layout(
+            plot_width=data["plot_width"],
+            plot_length=data["plot_length"],
+            bedrooms=data["bedrooms"],
+            facing=data["facing"],
+            extras=data["extras"],
+            family_type=data["family_type"],
+            bathrooms_target=data.get("bathrooms_target", 0),
+            work_from_home=data.get("work_from_home", False),
+            elder_friendly=data.get("elder_friendly", False),
+            floors=data.get("floors", 1),
+            parking_slots=data.get("parking_slots", 0),
+            kitchen_preference=data.get("kitchen_preference", "semi_open"),
+            must_have=data.get("must_have", []),
+            avoid=data.get("avoid", []),
+        )
+        removed_corridors = _remove_corridor_rooms(plan)
+        if removed_corridors:
+            reasoning_trace.append(
+                f"Removed {removed_corridors} corridor room(s) in final fallback"
+            )
+        generation_method = "bsp"
+        quality_report = evaluate_real_life_fit(plan, data)
+        strict_coverage_fail = _strict_coverage_failed(quality_report)
+        final_validation = validate_plan(plan, data["plot_width"], data["plot_length"])
+        reasoning_trace.append(
+            f"Final fallback BSP score: {quality_report.get('score', 0)}/100"
+        )
+
+    if not final_validation["valid"]:
+        reasoning_trace.append(
+            "Final layout has remaining geometry warnings "
+            f"(boundary={len(final_validation['boundary_violations'])}, "
+            f"size={len(final_validation['size_violations'])})"
+        )
+    else:
+        reasoning_trace.append("Final geometry check passed")
+
+    # Step 7: Enrich plan with metadata
+    elapsed = round(time.time() - start_time, 1)
+    meta = plan.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+        plan["metadata"] = meta
+
+    plan["generation_method"] = generation_method
+    plan.setdefault("vastu_score", meta.get("vastu_score", 65))
+    plan.setdefault("adjacency_score", meta.get("adjacency_score", 70))
+
+    base_note = str(plan.get("architect_note") or meta.get("architect_note") or "").strip()
+    advisory_strategy = str(advisory.get("design_strategy") or "").strip()
+    architect_note = build_real_life_architect_note(
+        request_data=data,
+        quality_report=quality_report,
+        base_note=base_note,
+        advisory_strategy=advisory_strategy,
+    )
+
+    plan["architect_note"] = architect_note
+    plan["real_life_score"] = quality_report.get("score", 0)
+    plan["quality_report"] = quality_report
+    plan["model_alignment"] = quality_report.get("model_alignment", {})
+    meta["architect_note"] = architect_note
+    meta["quality_report"] = quality_report
+
+    # Add plot info for frontend area calculations
+    uw = data["plot_width"] - 7.0
+    ul = data["plot_length"] - 11.5
+    plan.setdefault("plot", {
+        "width": data["plot_width"],
+        "length": data["plot_length"],
+        "usable_width": uw,
+        "usable_length": ul,
+        "boundary": plan.get("plot_boundary", [
+            {"x": 0, "y": 0}, {"x": uw, "y": 0},
+            {"x": uw, "y": ul}, {"x": 0, "y": ul},
+        ]),
+    })
+
+    reasoning_trace.append(
+        f"Done in {elapsed}s — {generation_method.upper()} engine, "
+        f"{len(plan.get('rooms', []))} rooms"
+    )
+    plan["reasoning_trace"] = reasoning_trace
+
+    log.info(
+        "Generated %dBHK via %s in %.1fs (%d rooms)",
+        data["bedrooms"], generation_method, elapsed, len(plan.get("rooms", [])),
+    )
 
     return plan
 
 
-# ── Download DXF ─────────────────────────────────────────────
-@app.get("/api/download/{filename}")
-async def download(filename: str):
-    """Download a generated DXF file."""
-    if not re.match(r"^plan_[a-f0-9]{8}\.dxf$", filename):
-        raise HTTPException(status_code=400, detail="Invalid filename format")
-    filepath = os.path.join(EXPORTS_DIR, filename)
-    real_path = os.path.realpath(filepath)
-    if not real_path.startswith(os.path.realpath(EXPORTS_DIR)):
-        raise HTTPException(status_code=403, detail="Access denied")
-    if not os.path.isfile(real_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        real_path,
-        media_type="application/dxf",
-        filename=filename,
-    )
+# ── Auth Endpoints (simple in-memory) ────────────────────────────────
+@app.post("/api/auth/signup")
+async def signup(req: AuthRequest):
+    """Register a new user (in-memory, no database)."""
+    uid = req.user_id.strip()
+    if not uid:
+        raise HTTPException(400, "user_id is required")
+    if uid in _users:
+        raise HTTPException(409, "User already exists")
 
-
-# ── Validate ─────────────────────────────────────────────────
-@app.post("/api/validate")
-async def validate(plan: PlanResponse):
-    """Validate an existing plan using the same rules as the generation pipeline."""
-    # Earlier this endpoint used stricter ad-hoc checks than plan generation,
-    # which created contradictory pass/fail results. Reuse the shared validator.
-    plan_dict = {
-        "rooms": [
-            {
-                "id": room.id,
-                "type": room.type,
-                "label": room.label,
-                "x": room.x,
-                "y": room.y,
-                "width": room.width,
-                "height": room.height,
-                "area": room.area,
-                "polygon": [{"x": p.x, "y": p.y} for p in (room.polygon or [])],
-            }
-            for room in plan.rooms
-        ]
+    _users[uid] = {
+        "user_id": uid,
+        "password": req.password,
+        "email": req.email,
+        "full_name": req.full_name,
+    }
+    return {
+        "status": "ok",
+        "userId": uid,
+        "fullName": req.full_name,
+        "email": req.email,
     }
 
-    is_valid, issues = validate_llm_plan(
-        plan_dict,
-        plan.plot.usable_width,
-        plan.plot.usable_length,
-        None,
-    )
+
+@app.post("/api/auth/login")
+async def login(req: AuthRequest):
+    """Login (in-memory, no database). Auto-creates user if not found."""
+    uid = req.user_id.strip()
+    if not uid:
+        raise HTTPException(400, "user_id is required")
+
+    user = _users.get(uid)
+    if user and user["password"] != req.password:
+        raise HTTPException(401, "Invalid password")
+
+    # Auto-register if not found (convenience for local mode)
+    if not user:
+        _users[uid] = {
+            "user_id": uid,
+            "password": req.password,
+            "email": req.email,
+            "full_name": req.full_name or uid,
+        }
+        user = _users[uid]
 
     return {
-        "valid": is_valid,
-        "issues": issues,
-        "room_count": len(plan.rooms),
+        "status": "ok",
+        "userId": uid,
+        "fullName": user.get("full_name", uid),
+        "email": user.get("email", ""),
     }
 
 
-# ── Run ──────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+@app.post("/api/auth/save-and-login")
+async def save_and_login(req: AuthRequest):
+    """Legacy endpoint — same as login with auto-create."""
+    return await login(req)
+
+
+# ── Root redirect ────────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    return {"status": "ok", "app": "NakshaNirman", "mode": "local-ollama"}

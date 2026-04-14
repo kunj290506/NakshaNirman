@@ -175,6 +175,45 @@ export default function PropertyPanel() {
                 </div>
             )}
 
+            {/* Practical Fit Report */}
+            {layout.quality_report && (
+                <div className="property-section">
+                    <div className="property-section-title">Practical Fit</div>
+                    <div className="property-grid summary">
+                        <label>Real-Life Score</label>
+                        <span>{layout.real_life_score ?? layout.quality_report.score ?? '–'} / 100</span>
+                        <label>Grade</label>
+                        <span>{layout.quality_report.grade || '–'}</span>
+                        <label>Gemini-Like</label>
+                        <span>{layout.model_alignment?.gemini_like ?? '–'}</span>
+                        <label>ChatGPT-Like</label>
+                        <span>{layout.model_alignment?.chatgpt_like ?? '–'}</span>
+                    </div>
+
+                    {Array.isArray(layout.quality_report.findings) && layout.quality_report.findings.length > 0 && (
+                        <div style={{ marginTop: '0.55rem' }}>
+                            <div className="property-section-title" style={{ fontSize: '0.8rem' }}>Satisfied</div>
+                            <div style={{ display: 'grid', gap: '0.25rem' }}>
+                                {layout.quality_report.findings.slice(0, 4).map((item, idx) => (
+                                    <div key={`${item}-${idx}`} className="score-issue-item bonus">✓ {item}</div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {Array.isArray(layout.quality_report.opportunities) && layout.quality_report.opportunities.length > 0 && (
+                        <div style={{ marginTop: '0.55rem' }}>
+                            <div className="property-section-title" style={{ fontSize: '0.8rem' }}>Need Improvement</div>
+                            <div style={{ display: 'grid', gap: '0.25rem' }}>
+                                {layout.quality_report.opportunities.slice(0, 4).map((item, idx) => (
+                                    <div key={`${item}-${idx}`} className="score-issue-item warning">○ {item}</div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Design Score Card */}
             {designScore && (
                 <div className="property-section score-card">

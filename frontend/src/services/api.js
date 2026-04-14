@@ -1,6 +1,6 @@
 const API_BASE = '';  // Use Vite proxy — requests go through /api
-const REQUEST_TIMEOUT_MS = 150000; // Base timeout for first attempt
-const RETRY_TIMEOUT_INCREMENT_MS = 60000; // Give retries substantial extra warm-up time
+const REQUEST_TIMEOUT_MS = 330000; // 5.5min — GTX 1650 local LLM needs 2-4min for floor plans
+const RETRY_TIMEOUT_INCREMENT_MS = 60000; // Give retries extra warm-up time
 const MAX_ATTEMPTS = 2;
 const RETRYABLE_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
 

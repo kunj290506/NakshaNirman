@@ -1,120 +1,159 @@
 """
-Prompt Builder — coordinate-first compact prompt for OpenRouter planning.
+NakshaNirman Prompt Builder — Converts form data into a concise
+user message for the local LLM.
 """
 from __future__ import annotations
-from models import PlanRequest
 
-SYSTEM_PROMPT = (
-    "You are NAKSHA-AI. Generate strict JSON only for a residential floor plan. "
-    "Use only the numeric coordinate ranges provided. "
-    "Do not output markdown or explanations."
-)
+# Minimum usable area needed per BHK
+MIN_AREA = {1: 280, 2: 480, 3: 680, 4: 900}
 
 
-def _room_program(req: PlanRequest) -> list[dict[str, object]]:
-    rooms: list[dict[str, object]] = [
-        {"type": "living", "label": "Living Room", "min_w": 12.0, "min_h": 12.0, "zone": 1},
-        {"type": "dining", "label": "Dining", "min_w": 9.0, "min_h": 9.0, "zone": 1},
-        {"type": "kitchen", "label": "Kitchen", "min_w": 8.0, "min_h": 9.0, "zone": 2},
-        {"type": "corridor", "label": "Corridor", "min_w": 3.5, "min_h": 8.0, "zone": 2},
-        {"type": "master_bedroom", "label": "Master Bedroom", "min_w": 11.0, "min_h": 11.0, "zone": 3},
-        {"type": "master_bath", "label": "Master Bath", "min_w": 5.0, "min_h": 7.0, "zone": 2},
-    ]
+def build_user_prompt(data: dict) -> str:
+    """
+    Build a user-facing prompt from the frontend form payload.
 
-    if req.bedrooms >= 2:
-        rooms.append({"type": "bedroom", "label": "Bedroom 2", "min_w": 10.0, "min_h": 10.0, "zone": 3})
-        rooms.append({"type": "bathroom", "label": "Bathroom 2", "min_w": 5.0, "min_h": 6.0, "zone": 2})
-    if req.bedrooms >= 3:
-        rooms.append({"type": "bedroom", "label": "Bedroom 3", "min_w": 10.0, "min_h": 10.0, "zone": 3})
-        rooms.append({"type": "bathroom", "label": "Bathroom 3", "min_w": 5.0, "min_h": 6.0, "zone": 2})
-    if req.bedrooms >= 4:
-        rooms.append({"type": "bedroom", "label": "Bedroom 4", "min_w": 10.0, "min_h": 10.0, "zone": 3})
-        rooms.append({"type": "bathroom", "label": "Bathroom 4", "min_w": 5.0, "min_h": 6.0, "zone": 2})
+    Expected keys in *data*:
+        plot_width, plot_length, bedrooms, facing, extras,
+        family_type, city, state, vastu, elder_friendly,
+        work_from_home, notes, bathrooms_target, kitchen_preference
+    """
+    pw = float(data.get("plot_width", 30))
+    pl = float(data.get("plot_length", 40))
+    bedrooms = int(data.get("bedrooms", 2))
+    facing = str(data.get("facing", "east")).lower()
+    extras = data.get("extras", [])
+    family_type = str(data.get("family_type", "nuclear")).lower()
+    city = str(data.get("city", "") or "").strip()
+    state = str(data.get("state", "") or "").strip()
+    vastu = data.get("vastu", True)
+    elder_friendly = data.get("elder_friendly", False)
+    work_from_home = data.get("work_from_home", False)
+    notes = str(data.get("notes", "") or "").strip()
+    bathrooms_target = int(data.get("bathrooms_target", 0) or 0)
+    kitchen_preference = str(data.get("kitchen_preference", "semi_open"))
+    floors = int(data.get("floors", 1) or 1)
+    parking_slots = int(data.get("parking_slots", 0) or 0)
+    vastu_priority = int(data.get("vastu_priority", 3) or 3)
+    natural_light_priority = int(data.get("natural_light_priority", 3) or 3)
+    privacy_priority = int(data.get("privacy_priority", 3) or 3)
+    storage_priority = int(data.get("storage_priority", 3) or 3)
+    strict_real_life = bool(data.get("strict_real_life", False))
+    must_have = [str(x).strip().lower().replace(" ", "_") for x in data.get("must_have", []) if str(x).strip()]
+    avoid = [str(x).strip().lower().replace(" ", "_") for x in data.get("avoid", []) if str(x).strip()]
 
-    extras = {str(x).strip().lower() for x in (req.extras or [])}
-    if "pooja" in extras:
-        rooms.append({"type": "pooja", "label": "Pooja Room", "min_w": 4.0, "min_h": 5.0, "zone": 1})
-    if "study" in extras:
-        rooms.append({"type": "study", "label": "Study", "min_w": 8.0, "min_h": 9.0, "zone": 3})
-    if "store" in extras:
-        rooms.append({"type": "store", "label": "Store", "min_w": 4.0, "min_h": 5.0, "zone": 2})
-    if "balcony" in extras:
-        rooms.append({"type": "balcony", "label": "Balcony", "min_w": 4.0, "min_h": 7.0, "zone": 1})
-    if "garage" in extras:
-        rooms.append({"type": "garage", "label": "Garage", "min_w": 10.0, "min_h": 18.0, "zone": 1})
-    if "utility" in extras:
-        rooms.append({"type": "utility", "label": "Utility", "min_w": 4.0, "min_h": 5.0, "zone": 2})
-    if "foyer" in extras:
-        rooms.append({"type": "foyer", "label": "Foyer", "min_w": 4.0, "min_h": 4.0, "zone": 1})
-    if "staircase" in extras or req.floors >= 2:
-        rooms.append({"type": "staircase", "label": "Staircase", "min_w": 6.0, "min_h": 8.0, "zone": 2})
+    # Usable area check
+    uw = pw - 7.0
+    ul = pl - 11.5
+    usable_area = uw * ul
+    min_needed = MIN_AREA.get(bedrooms, 900)
 
-    return rooms
+    parts = []
 
+    # Core specification
+    parts.append(f"{pw:.0f}x{pl:.0f} plot, {facing}-facing, {bedrooms}BHK")
 
-def _zone_bounds(room_type: str, zone: int, uw: float, ul: float) -> tuple[float, float, float, float]:
-    front_max = ul * 0.32
-    service_min = ul * 0.22
-    service_max = ul * 0.78
-    private_min = ul * 0.45
+    # Family type
+    if family_type == "joint":
+        parts.append("joint family (corridor 4ft wide, elder room ground floor)")
+    elif family_type == "couple":
+        parts.append("working couple")
+    else:
+        parts.append("nuclear family")
 
-    x0, y0, x1, y1 = 0.0, 0.0, uw, ul
-    if zone == 1:
-        y1 = front_max
-    elif zone == 2:
-        y0, y1 = service_min, service_max
-    elif zone == 3:
-        y0 = private_min
+    # Location
+    location_parts = []
+    if city:
+        location_parts.append(city)
+    if state:
+        location_parts.append(state)
+    if location_parts:
+        parts.append(", ".join(location_parts))
 
-    if room_type == "kitchen":
-        x0 = max(x0, uw * 0.5)
-    if room_type == "master_bedroom":
-        x1 = min(x1, uw * 0.55)
-    if room_type == "pooja":
-        x0 = max(x0, uw * 0.5)
-        y1 = min(y1, front_max)
-    if room_type == "corridor":
-        y0, y1 = 0.0, ul
+    # Extras
+    if isinstance(extras, list) and extras:
+        parts.append(f"Extra rooms: {', '.join(extras)}")
+    else:
+        parts.append("Extra rooms: none")
 
-    return round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)
+    # Bathrooms
+    if bathrooms_target and bathrooms_target > 0:
+        parts.append(f"Target bathrooms: {bathrooms_target}")
+    else:
+        parts.append(f"Target bathrooms: {max(1, bedrooms)}")
 
+    # Kitchen preference
+    if kitchen_preference and kitchen_preference != "semi_open":
+        parts.append(f"Kitchen: {kitchen_preference.replace('_', ' ')}")
 
-def build_master_prompt(req: PlanRequest) -> tuple[str, str]:
-    """Build (system_prompt, user_message) for the LLM call."""
-    uw = round(req.plot_width - 7.0, 2)
-    ul = round(req.plot_length - 11.5, 2)
-    rooms = _room_program(req)
+    # Vastu
+    if vastu is False or vastu == "false":
+        parts.append("Vastu compliance: not required")
 
-    type_counts: dict[str, int] = {}
-    lines: list[str] = []
-    for room in rooms:
-        room_type = str(room["type"])
-        type_counts[room_type] = type_counts.get(room_type, 0) + 1
-        room_id = f"{room_type}_{type_counts[room_type]:02d}"
-        zone = int(room["zone"])
-        min_w = float(room["min_w"])
-        min_h = float(room["min_h"])
-        x0, y0, x1, y1 = _zone_bounds(room_type, zone, uw, ul)
-        x_max = round(max(x0, x1 - min_w), 2)
-        y_max = round(max(y0, y1 - min_h), 2)
-        lines.append(
-            f"{room_id} ({room_type}): x {x0} to {x_max}, y {y0} to {y_max}, min width {min_w}, min height {min_h}."
-        )
+    # Special requirements
+    if elder_friendly:
+        parts.append("Elder-friendly: all rooms ground floor, no steps, wide corridors")
+    if work_from_home:
+        parts.append("Work-from-home: include study/office room")
+    if floors > 1:
+        parts.append("Multi-floor home: include staircase access")
+    if parking_slots > 0:
+        parts.append(f"Parking requirement: {parking_slots} slot(s)")
 
-    msg = (
-        f"Plot usable area is {uw} x {ul} feet. "
-        f"Plot size is {req.plot_width} x {req.plot_length} feet, facing {req.facing}, {req.bedrooms}BHK.\n"
-        "Place rooms only in these exact coordinate ranges:\n"
-        + "\n".join(lines)
-        + "\nReturn only JSON matching this schema exactly:\n"
-        "{\n"
-        "  \"plot_boundary\": [{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0},{\"x\":0,\"y\":0}],\n"
-        "  \"rooms\": [{\"id\":\"living_01\",\"type\":\"living\",\"label\":\"Living Room\",\"x\":0,\"y\":0,\"width\":12,\"height\":12,\"area\":144,\"polygon\":[{\"x\":0,\"y\":0},{\"x\":12,\"y\":0},{\"x\":12,\"y\":12},{\"x\":0,\"y\":12}],\"zone\":\"public\",\"band\":1,\"color\":\"#E8F5E9\"}],\n"
-        "  \"doors\": [],\n"
-        "  \"windows\": [],\n"
-        "  \"metadata\": {\"bhk\":2,\"vastu_score\":75,\"adjacency_score\":80,\"architect_note\":\"\",\"vastu_issues\":[]}\n"
-        "}\n"
-        "Return only JSON."
+    # Priority profile
+    priority_tags = []
+    if vastu_priority >= 4:
+        priority_tags.append("strong_vastu")
+    if natural_light_priority >= 4:
+        priority_tags.append("daylight")
+    if privacy_priority >= 4:
+        priority_tags.append("privacy")
+    if storage_priority >= 4:
+        priority_tags.append("storage")
+    if priority_tags:
+        parts.append(f"High priorities: {', '.join(priority_tags)}")
+
+    if must_have:
+        parts.append(f"Must-have program constraints: {', '.join(sorted(set(must_have)))}")
+    if avoid:
+        parts.append(f"Avoid constraints: {', '.join(sorted(set(avoid)))}")
+    if strict_real_life:
+        parts.append("Strict practical mode: do not randomize room program; follow all constraints before aesthetics")
+
+    # Real-world flow constraints used by stronger planning models.
+    parts.append(
+        "Real-life checks: maintain privacy gradient (public->service->private), "
+        "kitchen near dining, and at least one common bathroom reachable without crossing bedrooms"
     )
 
-    return SYSTEM_PROMPT, msg
+    # Notes
+    if notes:
+        parts.append(f"Design notes: {notes}")
+
+    # Area feasibility warning
+    if usable_area < min_needed:
+        max_feasible = max(
+            (bhk for bhk, area in MIN_AREA.items() if usable_area >= area),
+            default=1,
+        )
+        parts.append(
+            f"WARNING: Usable area {usable_area:.0f} sqft is below minimum "
+            f"{min_needed} sqft for {bedrooms}BHK. Maximum feasible: {max_feasible}BHK. "
+            f"Generate {max_feasible}BHK instead."
+        )
+
+    parts.append("Output JSON only.")
+
+    return ". ".join(parts)
+
+
+def build_system_prompt(data: dict) -> str:
+    """
+    Build a system prompt.  For local Ollama, the llm.py module overrides
+    this with NAKSHA_SYSTEM_PROMPT, but this function is kept for
+    interface compatibility.
+    """
+    return (
+        "You are NAKSHA-MASTER, an expert Indian residential floor plan "
+        "architect. Generate geometrically correct, Vastu-compliant JSON "
+        "floor plans. Output only valid JSON."
+    )

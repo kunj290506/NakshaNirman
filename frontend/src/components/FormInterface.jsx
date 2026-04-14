@@ -6,6 +6,9 @@ const EXTRA_OPTIONS = [
   { key: 'store', label: 'Store Room' },
   { key: 'balcony', label: 'Balcony' },
   { key: 'garage', label: 'Garage' },
+  { key: 'utility', label: 'Utility' },
+  { key: 'foyer', label: 'Foyer' },
+  { key: 'staircase', label: 'Staircase' },
 ]
 
 function toRooms(payload) {
@@ -34,9 +37,6 @@ export default function FormInterface({ onGenerate, loading }) {
   const [facing, setFacing] = useState('east')
   const [vastu, setVastu] = useState(true)
   const [extras, setExtras] = useState([])
-  const [city, setCity] = useState('')
-  const [stateName, setStateName] = useState('')
-  const [familyType, setFamilyType] = useState('nuclear')
 
   const area = useMemo(() => Number(plotWidth || 0) * Number(plotLength || 0), [plotWidth, plotLength])
 
@@ -63,13 +63,11 @@ export default function FormInterface({ onGenerate, loading }) {
       total_area: Math.round(dimensions.width * dimensions.length * 10) / 10,
       bedrooms: Number(bedrooms),
       bathrooms: Number(bathrooms || bedrooms),
-      engine_mode: 'gnn_advanced',
+      bathrooms_target: Number(bathrooms || bedrooms),
+      engine_mode: 'practical_strict',
       facing,
       vastu,
       extras,
-      city: city.trim() || null,
-      state: stateName.trim() || null,
-      family_type: familyType,
     }
 
     const rooms = toRooms(payload)
@@ -134,28 +132,6 @@ export default function FormInterface({ onGenerate, loading }) {
             </select>
           </div>
         </div>
-
-        <details className="advanced-options">
-          <summary>Optional Context (for smarter placement)</summary>
-          <div className="form-compact-grid-4" style={{ marginTop: '0.55rem' }}>
-            <div className="form-group">
-              <label className="form-label">City</label>
-              <input className="form-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">State</label>
-              <input className="form-input" value={stateName} onChange={(e) => setStateName(e.target.value)} placeholder="State" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Family</label>
-              <select className="form-input" value={familyType} onChange={(e) => setFamilyType(e.target.value)}>
-                <option value="nuclear">Nuclear</option>
-                <option value="joint">Joint</option>
-                <option value="couple">Working Couple</option>
-              </select>
-            </div>
-          </div>
-        </details>
 
         <div className="form-group">
           <label className="form-label">Extra Rooms</label>
