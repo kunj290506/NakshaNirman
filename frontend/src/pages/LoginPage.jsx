@@ -90,65 +90,92 @@ export default function LoginPage({ initialMode = 'login' }) {
   }
 
   return (
-    <div className='auth-uiverse-shell'>
-      <form className='auth-uiverse-card' onSubmit={handleSubmit}>
-        <p className='auth-uiverse-title'>
-          {mode === 'signup' ? 'Sign Up' : 'Login'}
-        </p>
+    <div className='auth-shell'>
+      <form className='auth-card' onSubmit={handleSubmit}>
+        <div>
+          <h1>{mode === 'signup' ? 'Create an account' : 'Welcome back'}</h1>
+          <p className='auth-subtitle'>
+            {mode === 'signup'
+              ? 'Start designing precise floor plans today.'
+              : 'Enter your credentials to access the workspace.'}
+          </p>
+        </div>
 
-        {mode === 'signup' ? (
-          <div className='auth-uiverse-input auth-uiverse-input-email'>
+        {mode === 'signup' && (
+          <div>
+            <label className='auth-label'>Email</label>
             <input
+              className='auth-input'
               autoComplete='email'
               type='email'
-              required={mode === 'signup'}
+              required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              placeholder='you@example.com'
             />
-            <span>Email</span>
           </div>
-        ) : null}
+        )}
 
-        <div className='auth-uiverse-input'>
+        <div>
+          <label className='auth-label'>Username</label>
           <input
+            className='auth-input'
             autoComplete='username'
             type='text'
             required
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
+            placeholder='architect_01'
           />
-          <span>Username</span>
         </div>
 
-        <div className='auth-uiverse-input'>
+        <div>
+          <label className='auth-label'>Password</label>
           <input
+            className='auth-input'
             autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
             type='password'
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            placeholder='••••••••'
           />
-          <span>Password</span>
         </div>
 
-        {error ? <p className='auth-uiverse-error'>{error}</p> : null}
+        {error && <p className='auth-error'>{error}</p>}
 
-        <button className='auth-uiverse-enter' type='submit' disabled={loading}>
-          {loading ? (mode === 'signup' ? 'Creating...' : 'Entering...') : 'Enter'}
-        </button>
+        <div className='auth-actions'>
+          <button className='fw-button fw-button-solid pulse-on-hover glow-on-hover' type='submit' disabled={loading} style={{ width: '100%', padding: '12px 24px', fontSize: '0.95rem' }}>
+            {loading ? (mode === 'signup' ? 'Creating...' : 'Signing in...') : 'Continue'}
+          </button>
+        </div>
 
-        <button
-          className='auth-uiverse-switch'
-          type='button'
-          onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}
-          disabled={loading}
-        >
-          {mode === 'signup' ? 'Use Login Instead' : 'Create New Account'}
-        </button>
+        <div style={{ textAlign: 'center', marginTop: '16px', fontSize: '0.85rem' }}>
+          <span style={{ color: 'var(--saas-muted)' }}>
+            {mode === 'signup' ? 'Already have an account? ' : "Don't have an account? "}
+          </span>
+          <button
+            type='button'
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--saas-primary)',
+              fontWeight: 600,
+              cursor: 'pointer',
+              textDecoration: 'underline'
+            }}
+            onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}
+            disabled={loading}
+          >
+            {mode === 'signup' ? 'Log in' : 'Sign up'}
+          </button>
+        </div>
 
-        <Link className='auth-uiverse-back' to='/'>
-          Back to Landing
-        </Link>
+        <div style={{ textAlign: 'center', marginTop: '8px', fontSize: '0.8rem' }}>
+          <Link to='/' style={{ color: 'var(--saas-muted)', textDecoration: 'none' }}>
+            &larr; Back to Landing Page
+          </Link>
+        </div>
       </form>
     </div>
   )

@@ -692,12 +692,33 @@ body {
   }
 }
 
-/* Workspace (Unified CAD flow) */
+:root {
+  /* SaaS Modern Tokens */
+  --saas-bg: #F8FAFC;
+  --saas-surface: #FFFFFF;
+  --saas-border: #E2E8F0;
+  --saas-border-focus: #94A3B8;
+  --saas-primary: #0F172A;
+  --saas-primary-hover: #1E293B;
+  --saas-text: #0F172A;
+  --saas-muted: #64748B;
+  --saas-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --saas-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --saas-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --saas-radius-md: 8px;
+  --saas-radius-lg: 12px;
+  --saas-radius-xl: 16px;
+  --saas-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Workspace (Unified SaaS CAD flow) */
 .workspace-shell {
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto 1fr;
-  background: #f3f4f6;
+  background: var(--saas-bg);
+  color: var(--saas-text);
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
 .workspace-topbar {
@@ -705,9 +726,15 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 12px 18px;
-  border-bottom: 1px solid #d1d5db;
-  background: #ffffff;
+  padding: 14px 24px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--saas-border);
+  box-shadow: var(--saas-shadow-sm);
+  z-index: 50;
+  position: sticky;
+  top: 0;
 }
 
 .workspace-title {
@@ -734,6 +761,17 @@ body {
   min-height: 0;
 }
 
+@keyframes slideInUp {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .workspace-left-pane,
 .workspace-right-pane {
   min-height: 0;
@@ -741,11 +779,18 @@ body {
   padding: 12px;
   background: #ffffff;
   border-right: 1px solid #e5e7eb;
+  opacity: 0;
+  animation: slideInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.workspace-left-pane {
+  animation-delay: 0.1s;
 }
 
 .workspace-right-pane {
   border-right: 0;
   border-left: 1px solid #e5e7eb;
+  animation-delay: 0.3s;
 }
 
 .workspace-center-pane {
@@ -753,6 +798,9 @@ body {
   display: grid;
   grid-template-rows: auto 1fr;
   background: #f8fafc;
+  opacity: 0;
+  animation: slideInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: 0.2s;
 }
 
 .workspace-canvas-wrap {
@@ -777,6 +825,12 @@ body {
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 
 .btn:disabled {
@@ -1113,11 +1167,18 @@ body {
   padding: 7px 8px;
   font-size: 0.74rem;
   cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.room-list-item:hover {
+  transform: translateX(4px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
 }
 
 .room-list-item.selected {
   border-color: #0f172a;
   background: #f8fafc;
+  transform: translateX(4px);
 }
 
 .room-type-dot {
