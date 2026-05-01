@@ -182,7 +182,7 @@ def evaluate_real_life_fit(plan: dict[str, Any], request_data: dict[str, Any]) -
 
     corridor_required = False
     corridor_present = counts.get("corridor", 0) > 0
-    corridor_ratio = 1.0
+    # corridor_ratio = 1.0
 
     zoning_ratio = _band_zone_alignment(rooms)
 

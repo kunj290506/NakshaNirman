@@ -416,7 +416,7 @@ def generate_bsp_layout(
         if r in ("living", "dining", "pooja", "foyer")
         and (corridor_enabled or r != "foyer")
     ]
-    band1_cursor_left = 0.0
+    # band1_cursor_left = 0.0
     band1_cursor_right = right_x_start
 
     for rtype in band1_rooms:
@@ -432,7 +432,7 @@ def generate_bsp_layout(
             else:
                 w = min(left_w, max(min_w, left_w))
             placed_rooms.append(_make_room(rtype, 0.0, 0.0, w, h))
-            band1_cursor_left = w
+            # band1_cursor_left = w
         elif rtype == "dining":
             w = min(right_w, max(min_w, right_w))
             placed_rooms.append(_make_room(rtype, band1_cursor_right, 0.0, w, h))
