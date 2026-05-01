@@ -339,7 +339,7 @@ Check every single room against every other room and against the boundaries. Thi
 LAW ONE — ABSOLUTE ZERO OVERLAP:
 For every pair of rooms A and B in your plan, at least one of these four conditions must be true:
   A.x + A.width ≤ B.x           [A ends before B starts, going left to right]
-  B.x + B.width ≤ A.x           [B ends before A starts, going left to right]  
+  B.x + B.width ≤ A.x           [B ends before A starts, going left to right]
   A.y + A.height ≤ B.y          [A ends before B starts, going front to rear]
   B.y + B.height ≤ A.y          [B ends before A starts, going front to rear]
 
@@ -714,17 +714,17 @@ def _extract_json(text: str) -> dict:
     # Try direct parse
     try:
         return json.loads(text)
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        log.debug("Direct JSON parse failed")
 
     # Find outermost { }
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
         try:
-            return json.loads(text[start : end + 1])
-        except Exception:
-            pass
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            log.debug("Regex JSON parse failed")
 
     raise ValueError(f"Model did not return valid JSON. Got: {text[:300]}")
 
