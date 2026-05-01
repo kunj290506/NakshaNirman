@@ -21,21 +21,24 @@ The current codebase is focused on:
 
 ## Repository Layout
 
-- docker-compose.yml
-- nginx.conf
-- start.bat
 - start.ps1
 - backend/
-  - main.py
-  - config.py
-  - models.py
-  - layout_engine.py
-  - llm.py
-  - plan_validator.py
-  - prompt_builder.py
-  - dxf_export.py
+  - app/
+    - main.py
+    - core/
+      - config.py
+    - services/
+      - llm.py
+      - prompt_builder.py
+    - engines/
+      - layout_engine.py
+      - quality_engine.py
+    - validators/
+      - plan_validator.py
   - requirements.txt
-  - reasoning_accuracy_benchmark.py
+  - scripts/
+    - finetune.py
+  - tests/
   - exports/
 - frontend/
   - package.json
@@ -47,6 +50,12 @@ The current codebase is focused on:
     - pages/
     - services/
     - store/
+- docs/
+  - ARCHITECTURE.md
+  - FOLDER_STRUCTURE.md
+- .github/
+  - workflows/
+    - ci.yml
 
 ## Key Backend APIs
 
@@ -145,7 +154,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8010 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
 ```
 
 Frontend:
@@ -184,14 +193,6 @@ Common variables:
 - MONGO_URI
 - MONGO_DB_NAME
 - MONGO_USERS_COLLECTION
-
-## Docker
-
-To run with docker compose:
-
-```bash
-docker-compose up --build
-```
 
 ## Notes
 

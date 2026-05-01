@@ -3,10 +3,14 @@ NakshaNirman Config — Local-only mode.
 Runs on GTX 1650 + 24GB RAM. Zero external API dependency.
 """
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"), override=True)
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = BACKEND_ROOT.parent
+
+load_dotenv(BACKEND_ROOT / ".env", override=True)
+load_dotenv(REPO_ROOT / ".env", override=True)
 
 # ── Local Ollama Model Settings ──────────────────────────────────────
 LOCAL_LLM_ENABLED = os.getenv("LOCAL_LLM_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -46,5 +50,5 @@ CORS_ORIGINS = [
 ]
 
 # ── Paths ────────────────────────────────────────────────────────────
-EXPORTS_DIR = os.path.join(os.path.dirname(__file__), "exports")
+EXPORTS_DIR = str(BACKEND_ROOT / "exports")
 os.makedirs(EXPORTS_DIR, exist_ok=True)

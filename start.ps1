@@ -8,7 +8,7 @@
     .\start.ps1
 #>
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendPort = 8010
 
@@ -94,7 +94,7 @@ Write-Host "[4/5] Starting servers..." -ForegroundColor Yellow
 $backendJob = Start-Job -ScriptBlock {
     param($venvPython, $backendDir, $backendPort)
     Set-Location $backendDir
-    & $venvPython -m uvicorn main:app --host 0.0.0.0 --port $backendPort --reload
+    & $venvPython -m uvicorn app.main:app --host 0.0.0.0 --port $backendPort --reload
 } -ArgumentList $venvPython, $backendDir, $BackendPort
 
 Write-Host "  Backend  -> http://localhost:$BackendPort  (API + docs at /api/docs)" -ForegroundColor Green
