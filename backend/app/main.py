@@ -21,12 +21,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from config import CORS_ORIGINS, LOCAL_LLM_BASE_URL, ARCHITECT_REASONING_ENABLED
-from prompt_builder import build_user_prompt, build_system_prompt
-from llm import call_openrouter_plan, call_openrouter, NAKSHA_SYSTEM_PROMPT
-from layout_engine import generate_bsp_layout
-from validators import validate_plan, fix_overlaps
-from quality_engine import evaluate_real_life_fit, build_real_life_architect_note
+from app.core.config import CORS_ORIGINS, LOCAL_LLM_BASE_URL, ARCHITECT_REASONING_ENABLED
+from app.services.prompt_builder import build_user_prompt, build_system_prompt
+from app.services.llm import call_openrouter_plan, call_openrouter, NAKSHA_SYSTEM_PROMPT
+from app.engines.layout_engine import generate_bsp_layout
+from app.validators.plan_validator import validate_plan, fix_overlaps
+from app.engines.quality_engine import evaluate_real_life_fit, build_real_life_architect_note
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(

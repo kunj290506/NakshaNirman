@@ -9,7 +9,7 @@ import logging
 import re
 import httpx
 from typing import Any
-from config import (
+from app.core.config import (
     LOCAL_LLM_BASE_URL,
     LOCAL_LLM_PLAN_MODEL,
     LOCAL_LLM_BACKUP_MODEL,
